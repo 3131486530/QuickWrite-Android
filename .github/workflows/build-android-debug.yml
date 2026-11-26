@@ -135,7 +135,7 @@ jobs:
             if flutter build apk --release \
                  --target-platform android-arm64 \
                  --build-name "${APP_VERSION}" \
-                 --build-number "${CODE}"; then
+                 --build-number "${CODE}" 2>&1 | tee -a /tmp/build.log; then
               echo "::endgroup::"
               exit 0
             fi
@@ -152,6 +152,21 @@ jobs:
               sleep 240
             fi
           done
+
+      - name: Dump build log on failure
+        # 构建失败时把输出推到 ci-log 分支，便于不进 GitHub 页面直接定位编译错误
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cp /tmp/build.log ci-build.log 2>/dev/null || echo "no log captured" > ci-build.log
+          git config user.name "ci-bot"
+          git config user.email "ci-bot@users.noreply.github.com"
+          git checkout --orphan ci-log-tmp 2>/dev/null || git checkout ci-log-tmp
+          git add -f ci-build.log
+          git commit -m "ci build log for ${GITHUB_SHA:0:7}" || true
+          git push -f origin HEAD:ci-log
 
       - name: Rename artifact
         run: |
