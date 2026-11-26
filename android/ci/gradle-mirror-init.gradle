@@ -1,13 +1,13 @@
-// CI 专用 Gradle 初始化脚本（仅在工作流里安装到 ~/.gradle/init.d，不参与本地构建）
+// CI 专用 Gradle 初始化脚本（仅工作流安装到 ~/.gradle/init.d，不参与本地构建）
 //
 // Maven Central 对 GitHub 共享出口 IP 会周期性返回 429 Too Many Requests，
-// 直接导致插件与依赖解析失败（Flutter 插件体系一启动就去拉 kotlin-stdlib）。
-// 这里把可用的公共镜像前置，官方仓库保留在末尾兜底。
+// 直接导致插件与依赖解析失败。这里把可用的公共镜像前置，官方仓库保留兜底。
 //
-// 注意：不要动 settings 的 dependencyResolutionManagement.repositories，
-// 一旦在 settings 里声明仓库，Gradle 会切到 PREFER_SETTINGS 模式，
-// 与项目 build.gradle.kts 里的 allprojects.repositories 冲突并直接构建失败。
-// 因此项目仓库统一在 beforeProject 阶段前插镜像，原有声明保持不变。
+// 约束：
+// 1. 不改写 settings 的 dependencyResolutionManagement，否则 Gradle 切到
+//    PREFER_SETTINGS 模式，与项目 allprojects.repositories 冲突；
+// 2. Flutter 的 includeBuild（:gradle）自身启用了 PREFER_SETTINGS，
+//    向这类项目的 repositories 添加仓库会抛异常，必须跳过。
 
 def MIRRORS = [
     // Google 官方托管的 Maven Central 镜像，GitHub runner 访问稳定
@@ -32,8 +32,15 @@ settingsEvaluated { settings ->
 }
 
 gradle.beforeProject { project ->
-    // 先插入镜像，项目脚本随后追加的 google()/mavenCentral() 自然排在后面
-    [project.buildscript.repositories, project.repositories].each { RepositoryHandler handler ->
-        MIRRORS.each { String u -> handler.maven { url = uri(u) } }
+    // 先插入镜像，项目脚本随后追加的 google()/mavenCentral() 自然排在后面；
+    // 启用 PREFER_SETTINGS 的构建（Flutter 的 includeBuild）会抛异常，跳过即可。
+    try {
+        MIRRORS.each { String u -> project.repositories.maven { url = uri(u) } }
+    } catch (Throwable ignored) {
+        // 该类构建不允许追加项目仓库，走它自己的 settings 仓库
+    }
+    try {
+        MIRRORS.each { String u -> project.buildscript.repositories.maven { url = uri(u) } }
+    } catch (Throwable ignored) {
     }
 }
