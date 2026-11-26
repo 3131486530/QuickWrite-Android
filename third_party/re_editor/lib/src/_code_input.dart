@@ -213,6 +213,8 @@ class _CodeInputController extends ChangeNotifier implements DeltaTextInputClien
       }
       newValue = _applyDelta(newValue, appliedDelta);
     }
+    // 输入法侧实际持有的文本：本次增量应用完成、规则改写之前的值
+    final TextEditingValue appliedValue = newValue;
     // 输入内容以规则原文本结尾时改写为替换文本，与本次输入合并为一次编辑
     final TextEditingValue replacedValue = _applyTextReplacements(newValue);
     if (replacedValue != newValue) {
@@ -226,9 +228,10 @@ class _CodeInputController extends ChangeNotifier implements DeltaTextInputClien
     final bool textChanged = smartChange || newValue.text != _remoteEditingValue!.text;
     // 本次光标在镜像中移动的步数，用于区分方向键与输入法的行首行尾操作
     final int caretMove = newValue.selection.start - _remoteEditingValue!.selection.start;
-    if (!smartChange) {
-      _remoteEditingValue = newValue;
-    }
+    // 改写类变更（智能括号补全 / 自动替换）发生时，输入法侧持有的是改写前的
+    // appliedValue，镜像记录必须对齐到它；否则替换为空这类"改写后正文与镜像记录
+    // 完全一致"的情形会被误判为无需同步，输入法永远停留在被删掉的原文本上
+    _remoteEditingValue = smartChange ? appliedValue : newValue;
     // 多行选区时镜像只包含选区起始行，正文无法从镜像直接推得：
     // 不改变镜像文本的更新（如组合开始）只同步组合区，不能交给控制器，
     // 否则控制器会按整段选区把镜像文本写回正文，造成选区内各行被错误合并替换

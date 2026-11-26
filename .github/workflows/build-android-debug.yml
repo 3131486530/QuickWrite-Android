@@ -10,6 +10,8 @@ on:
     branches: [main]
     paths:
       - 'lib/**'
+      # 编辑器内核在 third_party/re_editor，漏掉这一条会让内核修复推上去不出包
+      - 'third_party/**'
       - 'android/**'
       - 'assets/**'
       - 'pubspec.yaml'
