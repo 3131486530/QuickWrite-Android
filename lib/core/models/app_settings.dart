@@ -88,6 +88,24 @@ class AppSettings {
   /// 大纲编辑器字体大小（单位：像素）
   final double outlineFontSize;
 
+  /// 大纲标题字体名称
+  ///
+  /// null 表示跟随大纲编辑器字体
+  final String? outlineTitleFontFamily;
+
+  /// 大纲标题字体大小（单位：像素）
+  final double outlineTitleFontSize;
+
+  /// 大纲标题对齐方式
+  /// 'center' - 居中 / 'left' - 向左对齐
+  final String outlineTitleAlignment;
+
+  /// 大纲标题颜色（亮色主题，十六进制字符串）
+  final String? outlineTitleColorLight;
+
+  /// 大纲标题颜色（暗色主题，十六进制字符串）
+  final String? outlineTitleColorDark;
+
   // ================= 布局设置（右侧边栏 - 布局设置面板）=================
   
   /// 是否显示章节标题
@@ -337,6 +355,12 @@ class AppSettings {
   /// 章节标题对齐方式：向左对齐
   static const String chapterTitleAlignLeft = 'left';
 
+  /// 大纲标题对齐方式：居中
+  static const String outlineTitleAlignCenter = 'center';
+
+  /// 大纲标题对齐方式：向左对齐
+  static const String outlineTitleAlignLeft = 'left';
+
   /// 应用默认设置常量
   static const AppSettings defaults = AppSettings();
 
@@ -414,6 +438,11 @@ class AppSettings {
     // 大纲编辑器字体设置
     this.outlineFontFamily = 'Microsoft YaHei', // 大纲编辑器字体名称
     this.outlineFontSize = 16.0, // 大纲编辑器字体大小（单位：像素）
+    this.outlineTitleFontFamily, // 大纲标题字体名称（null 跟随大纲字体）
+    this.outlineTitleFontSize = 26.0, // 大纲标题字体大小（单位：像素）
+    this.outlineTitleAlignment = outlineTitleAlignLeft, // 大纲标题对齐方式
+    this.outlineTitleColorLight, // 大纲标题颜色（亮色主题，十六进制字符串）
+    this.outlineTitleColorDark, // 大纲标题颜色（暗色主题，十六进制字符串）
     // 其他设置
     this.autoSaveEnabled = false, // 是否开启自动保存
     this.autoBackupEnabled = true, // 是否开启自动备份
@@ -545,6 +574,16 @@ class AppSettings {
       // 大纲编辑器字体设置（编辑器）
       outlineFontFamily: fontJson['outlineFamily'] as String? ?? defaults.outlineFontFamily,
       outlineFontSize: (fontJson['outlineSize'] as num?)?.toDouble() ?? defaults.outlineFontSize,
+      outlineTitleFontFamily:
+          fontJson['outlineTitleFamily'] as String? ?? defaults.outlineTitleFontFamily,
+      outlineTitleFontSize:
+          (fontJson['outlineTitleSize'] as num?)?.toDouble() ?? defaults.outlineTitleFontSize,
+      outlineTitleAlignment:
+          fontJson['outlineTitleAlign'] as String? ?? defaults.outlineTitleAlignment,
+      outlineTitleColorLight:
+          fontJson['outlineTitleColorLight'] as String? ?? defaults.outlineTitleColorLight,
+      outlineTitleColorDark:
+          fontJson['outlineTitleColorDark'] as String? ?? defaults.outlineTitleColorDark,
 
       // 其他设置（编辑器）
       autoSaveEnabled: autoSaveJson['enabled'] as bool? ?? defaults.autoSaveEnabled,
@@ -643,6 +682,11 @@ class AppSettings {
           },
           'outlineFamily': outlineFontFamily,
           'outlineSize': outlineFontSize,
+          'outlineTitleFamily': outlineTitleFontFamily,
+          'outlineTitleSize': outlineTitleFontSize,
+          'outlineTitleAlign': outlineTitleAlignment,
+          'outlineTitleColorLight': outlineTitleColorLight,
+          'outlineTitleColorDark': outlineTitleColorDark,
         },
         // 布局设置
         'layout': {
@@ -812,6 +856,11 @@ class AppSettings {
     // 大纲编辑器字体设置
     String? outlineFontFamily,
     double? outlineFontSize,
+    Object? outlineTitleFontFamily = _unset,
+    double? outlineTitleFontSize,
+    String? outlineTitleAlignment,
+    Object? outlineTitleColorLight = _unset,
+    Object? outlineTitleColorDark = _unset,
     // 其他设置（右侧边栏 - 其他设置面板）
     bool? autoSaveEnabled,
     bool? autoBackupEnabled,
@@ -911,6 +960,17 @@ class AppSettings {
       // 大纲编辑器字体设置
       outlineFontFamily: outlineFontFamily ?? this.outlineFontFamily,
       outlineFontSize: outlineFontSize ?? this.outlineFontSize,
+      outlineTitleFontFamily: outlineTitleFontFamily == _unset
+          ? this.outlineTitleFontFamily
+          : outlineTitleFontFamily as String?,
+      outlineTitleFontSize: outlineTitleFontSize ?? this.outlineTitleFontSize,
+      outlineTitleAlignment: outlineTitleAlignment ?? this.outlineTitleAlignment,
+      outlineTitleColorLight: outlineTitleColorLight == _unset
+          ? this.outlineTitleColorLight
+          : outlineTitleColorLight as String?,
+      outlineTitleColorDark: outlineTitleColorDark == _unset
+          ? this.outlineTitleColorDark
+          : outlineTitleColorDark as String?,
       // 其他设置（右侧边栏 - 其他设置面板）
       autoSaveEnabled: autoSaveEnabled ?? this.autoSaveEnabled,
       autoBackupEnabled: autoBackupEnabled ?? this.autoBackupEnabled,
@@ -1043,6 +1103,11 @@ class AppSettings {
            // 大纲编辑器字体设置
            other.outlineFontFamily == outlineFontFamily &&
            other.outlineFontSize == outlineFontSize &&
+           other.outlineTitleFontFamily == outlineTitleFontFamily &&
+           other.outlineTitleFontSize == outlineTitleFontSize &&
+           other.outlineTitleAlignment == outlineTitleAlignment &&
+           other.outlineTitleColorLight == outlineTitleColorLight &&
+           other.outlineTitleColorDark == outlineTitleColorDark &&
            // 其他设置（右侧边栏 - 其他设置面板）
            other.autoSaveEnabled == autoSaveEnabled &&
            other.autoBackupEnabled == autoBackupEnabled &&
@@ -1155,6 +1220,11 @@ class AppSettings {
         // 大纲编辑器字体设置
         outlineFontFamily,
         outlineFontSize,
+        outlineTitleFontFamily,
+        outlineTitleFontSize,
+        outlineTitleAlignment,
+        outlineTitleColorLight,
+        outlineTitleColorDark,
       ),
       // 其他设置（右侧边栏 - 其他设置面板）与字数浮窗设置（移动端）
       Object.hash(

@@ -39,10 +39,12 @@ class TextReplacementPolicy {
       if (trigger.isEmpty || trigger.length > offset) continue;
       // 已有更长的规则命中时，短规则不再覆盖
       if (matched != null && trigger.length <= matched.trigger.length) continue;
+      // 替换文本必须有内容，留空的规则视为无效
+      if (rule.replacement.isEmpty) continue;
       if (!line.startsWith(trigger, offset - trigger.length)) continue;
       matched = rule;
     }
-    if (matched == null || matched.trigger == matched.replacement) return false;
+    if (matched == null || matched.replacement.isEmpty || matched.trigger == matched.replacement) return false;
 
     final int start = offset - matched.trigger.length;
     controller.replaceSelection(

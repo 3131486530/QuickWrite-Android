@@ -672,6 +672,25 @@ class SettingsService extends ChangeNotifier {
   /// 获取大纲编辑器默认字号（像素）
   double get defaultOutlineFontSize => AppSettings.defaults.outlineFontSize;
 
+  /// 获取大纲标题字体名称（null 表示跟随大纲字体）
+  String? get outlineTitleFontFamily => _settings.outlineTitleFontFamily;
+
+  /// 获取大纲标题字体大小
+  double get outlineTitleFontSize => _settings.outlineTitleFontSize;
+
+  /// 获取大纲标题默认字号（像素）
+  double get defaultOutlineTitleFontSize => AppSettings.defaults.outlineTitleFontSize;
+
+  /// 大纲标题是否为向左对齐
+  bool get isOutlineTitleLeftAligned =>
+      _settings.outlineTitleAlignment == AppSettings.outlineTitleAlignLeft;
+
+  /// 获取大纲标题颜色（亮色主题，为 null 时跟随主题默认颜色）
+  String? get outlineTitleColorLight => _settings.outlineTitleColorLight;
+
+  /// 获取大纲标题颜色（暗色主题，为 null 时跟随主题默认颜色）
+  String? get outlineTitleColorDark => _settings.outlineTitleColorDark;
+
   // ================= 其他设置 =================
 
   /// 获取是否开启自动保存
@@ -819,6 +838,40 @@ class SettingsService extends ChangeNotifier {
   /// 更新大纲编辑器字体大小
   Future<bool> updateOutlineFontSize(double value) async {
     final newSettings = _settings.copyWith(outlineFontSize: value);
+    return updateSettings(newSettings);
+  }
+
+  /// 更新大纲标题字体名称（传 null 表示跟随大纲字体）
+  Future<bool> updateOutlineTitleFontFamily(String? value) async {
+    final newSettings = _settings.copyWith(outlineTitleFontFamily: value);
+    return updateSettings(newSettings);
+  }
+
+  /// 更新大纲标题字体大小
+  Future<bool> updateOutlineTitleFontSize(double value) async {
+    final newSettings = _settings.copyWith(outlineTitleFontSize: value);
+    return updateSettings(newSettings);
+  }
+
+  /// 更新大纲标题对齐方式
+  Future<bool> updateOutlineTitleAlignment(bool isLeftAligned) async {
+    final newSettings = _settings.copyWith(
+      outlineTitleAlignment: isLeftAligned
+          ? AppSettings.outlineTitleAlignLeft
+          : AppSettings.outlineTitleAlignCenter,
+    );
+    return updateSettings(newSettings);
+  }
+
+  /// 更新大纲标题颜色（亮色主题）
+  Future<bool> updateOutlineTitleColorLight(String colorHex) async {
+    final newSettings = _settings.copyWith(outlineTitleColorLight: colorHex);
+    return updateSettings(newSettings);
+  }
+
+  /// 更新大纲标题颜色（暗色主题）
+  Future<bool> updateOutlineTitleColorDark(String colorHex) async {
+    final newSettings = _settings.copyWith(outlineTitleColorDark: colorHex);
     return updateSettings(newSettings);
   }
 

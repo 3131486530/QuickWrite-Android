@@ -82,23 +82,49 @@ class _MobileFormatCardState extends State<MobileFormatCard> {
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      _buildGroupLabel('正文', colorScheme),
+                      _buildGroupLabel(widget.isOutline ? '大纲' : '正文', colorScheme),
                       const SizedBox(height: 12),
                       _buildSettingRow(Icons.text_fields_rounded, '字体', _buildFontDropdown()),
                       const SizedBox(height: 10),
                       _buildSettingRow(Icons.format_size_rounded, '字号', _buildFontSizeDropdown()),
                       const SizedBox(height: 10),
                       _wrapDisabled(_buildStyleRow()),
-                      _buildDivider(colorScheme),
-                      _buildGroupLabel('标题', colorScheme),
-                      const SizedBox(height: 12),
-                      _wrapDisabled(_buildSettingRow(Icons.font_download_rounded, '字体', _buildTitleFontDropdown())),
-                      const SizedBox(height: 10),
-                      _wrapDisabled(_buildSettingRow(Icons.format_size_rounded, '字号', _buildTitleFontSizeDropdown())),
-                      const SizedBox(height: 10),
-                      _wrapDisabled(_buildSettingRow(Icons.format_align_left_rounded, '对齐', _buildTitleAlignmentControl())),
-                      const SizedBox(height: 10),
-                      _wrapDisabled(_buildTitleColorRow(colorScheme)),
+                      // 大纲编辑器展示「大纲标题」样式，小说编辑器展示「章节标题」样式
+                      if (widget.isOutline) ...[
+                        _buildDivider(colorScheme),
+                        _buildGroupLabel('大纲标题', colorScheme),
+                        const SizedBox(height: 12),
+                        _buildSettingRow(
+                          Icons.font_download_rounded,
+                          '字体',
+                          _buildOutlineTitleFontDropdown(),
+                        ),
+                        const SizedBox(height: 10),
+                        _buildSettingRow(
+                          Icons.format_size_rounded,
+                          '字号',
+                          _buildOutlineTitleFontSizeDropdown(),
+                        ),
+                        const SizedBox(height: 10),
+                        _buildSettingRow(
+                          Icons.format_align_left_rounded,
+                          '对齐',
+                          _buildOutlineTitleAlignmentControl(),
+                        ),
+                        const SizedBox(height: 10),
+                        _buildOutlineTitleColorRow(colorScheme),
+                      ] else ...[
+                        _buildDivider(colorScheme),
+                        _buildGroupLabel('标题', colorScheme),
+                        const SizedBox(height: 12),
+                        _wrapDisabled(_buildSettingRow(Icons.font_download_rounded, '字体', _buildTitleFontDropdown())),
+                        const SizedBox(height: 10),
+                        _wrapDisabled(_buildSettingRow(Icons.format_size_rounded, '字号', _buildTitleFontSizeDropdown())),
+                        const SizedBox(height: 10),
+                        _wrapDisabled(_buildSettingRow(Icons.format_align_left_rounded, '对齐', _buildTitleAlignmentControl())),
+                        const SizedBox(height: 10),
+                        _wrapDisabled(_buildTitleColorRow(colorScheme)),
+                      ],
                     ],
                   ),
                 ),
@@ -478,4 +504,133 @@ class _MobileFormatCardState extends State<MobileFormatCard> {
       onColorSelected: (colorHex) => ColorUtils.updateChapterTitleColorForTheme(context, colorHex),
     );
   }
+
+  /// 大纲标题字体下拉框中「跟随大纲」选项的取值
+  static const String _outlineFollowValue = '__outline_follow__';
+
+  /// 当前生效的大纲标题字体（null 显示为「跟随大纲」）
+  String get _currentOutlineTitleFontFamily =>
+      SettingsService.instance.outlineTitleFontFamily ?? _outlineFollowValue;
+
+  /// 构建大纲标题字体下拉框（跟随大纲 + 已导入字体 + 选择字体文件）
+  Widget _buildOutlineTitleFontDropdown() {
+    return CustomDropdown(
+      key: ValueKey('mobile-outline-title-font-$_fontDropdownNonce'),
+      width: _dropdownWidth,
+      height: 36,
+      value: _currentOutlineTitleFontFamily,
+      items: [
+        const DropdownItem(displayText: '跟随大纲', value: _outlineFollowValue),
+        ...FontService().userFonts.map(
+              (font) => DropdownItem(displayText: font.displayName, value: font.fontFamily),
+            ),
+        const DropdownItem(displayText: '选择字体文件…', value: _pickFontValue),
+      ],
+      onChanged: _onOutlineTitleFontChanged,
+    );
+  }
+
+  /// 处理大纲标题字体选择
+  Future<void> _onOutlineTitleFontChanged(String value) async {
+    if (value == _pickFontValue) {
+      await _pickOutlineTitleFontFile();
+      return;
+    }
+    // 选择「跟随大纲」时清空独立字体，恢复跟随大纲编辑器字体
+    await SettingsService.instance.updateOutlineTitleFontFamily(
+      value == _outlineFollowValue ? null : value,
+    );
+  }
+
+  /// 唤起系统文件选择器导入字体文件并应用到大纲标题
+  Future<void> _pickOutlineTitleFontFile() async {
+    final family = await _importFontFile();
+    if (family == null) return;
+    await SettingsService.instance.updateOutlineTitleFontFamily(family);
+  }
+
+  /// 构建大纲标题字号下拉框
+  Widget _buildOutlineTitleFontSizeDropdown() {
+    return CustomDropdown(
+      width: _dropdownWidth,
+      height: 36,
+      value: SettingsService.instance.outlineTitleFontSize.toStringAsFixed(0),
+      items: _buildSizeItems(minSize: 12, maxSize: 48),
+      onChanged: _onOutlineTitleFontSizeChanged,
+    );
+  }
+
+  /// 处理大纲标题字号选择
+  Future<void> _onOutlineTitleFontSizeChanged(String value) async {
+    final settings = SettingsService.instance;
+    final double size = value == _defaultSizeValue
+        ? settings.defaultOutlineTitleFontSize
+        : (double.tryParse(value) ?? 0);
+    if (size <= 0) return;
+    await settings.updateOutlineTitleFontSize(size);
+  }
+
+  /// 构建大纲标题对齐方式分段选择器（居中 / 向左）
+  Widget _buildOutlineTitleAlignmentControl() {
+    final bool isLeftAligned = SettingsService.instance.isOutlineTitleLeftAligned;
+    return SizedBox(
+      width: _dropdownWidth,
+      child: SegmentedControl(
+        labels: const ['居中', '向左'],
+        selectedIndex: isLeftAligned ? 1 : 0,
+        height: 32,
+        onChanged: (index) => SettingsService.instance.updateOutlineTitleAlignment(index == 1),
+      ),
+    );
+  }
+
+  /// 构建大纲标题颜色设置行
+  Widget _buildOutlineTitleColorRow(ColorScheme colorScheme) {
+    return InkWell(
+      onTap: _showOutlineTitleColorPicker,
+      borderRadius: BorderRadius.circular(8),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.color_lens_outlined, size: 18, color: colorScheme.onSurfaceVariant),
+                const SizedBox(width: 6),
+                Text(
+                  '颜色',
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: colorScheme.onSurfaceVariant,
+                      ),
+                ),
+              ],
+            ),
+            // 颜色指示器
+            Container(
+              width: 24,
+              height: 24,
+              decoration: BoxDecoration(
+                color: ColorUtils.getOutlineTitleColorForTheme(context, colorScheme.onSurface),
+                shape: BoxShape.circle,
+                border: Border.all(color: colorScheme.outline.withValues(alpha: 0.3)),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 打开大纲标题颜色选择器
+  void _showOutlineTitleColorPicker() {
+    ColorPickerDialog.show(
+      context: context,
+      title: '选择大纲标题颜色',
+      initialColorHex: ColorUtils.getOutlineTitleColorHexForTheme(context),
+      onColorSelected: (colorHex) => ColorUtils.updateOutlineTitleColorForTheme(context, colorHex),
+    );
+  }
+
 }

@@ -264,20 +264,6 @@ class _CodeInputController extends ChangeNotifier implements DeltaTextInputClien
     } else {
       _controller.edit(newValue);
     }
-    // 自动替换改写后的文本可能与正文完全一致（如替换内容为空，原文本被直接删掉），
-    // 此时控制器没有任何变化、不会发出通知，镜像也不会随之下发，
-    // 输入法侧仍保留着被改写掉的原文本。此后输入法上报的每条增量都以它自己的
-    // 旧文本为基准，与镜像文本对不上而被丢弃，表现为怎么按都输不进字，
-    // 只有退格让输入法重置文本后才恢复。这里主动回推一次镜像打断该失配。
-    if (smartChange) {
-      _updateRemoteEditingValueIfNeeded();
-    }
-    // 只下发镜像不足以让输入法丢弃它自己维护的文本：部分输入法（如豆包）
-    // 仍按旧文本提交增量，框架侧为保护正文只能丢弃这些增量，依然输不进字。
-    // 重建一次输入会话，强制输入法按当前镜像重新同步。
-    if (replaced) {
-      _restartImeInput();
-    }
     notifyListeners();
     // _Trace.end('updateEditingValue all');
   }
@@ -329,6 +315,7 @@ class _CodeInputController extends ChangeNotifier implements DeltaTextInputClien
       // 已有更长的规则命中时，短规则不再覆盖
       if (trigger.length <= matchedLength) continue;
       if (!value.text.startsWith(trigger, caret - trigger.length)) continue;
+      if (rule.replacement.isEmpty) continue;
       if (rule.replacement == trigger) continue;
       matchedLength = trigger.length;
       matchedReplacement = rule.replacement;

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:quick_write/core/constants/material_icons.dart';
+import 'package:quick_write/core/utils/color_utils.dart';
 import 'package:quick_write/core/services/settings_service.dart';
 import 'package:quick_write/core/utils/ime_cursor_fixer.dart';
 import 'package:quick_write/core/utils/platform_capabilities.dart';
@@ -479,20 +480,34 @@ class OutlineTitleField extends StatelessWidget {
       listenable: SettingsService.instance,
       builder: (context, _) {
         final settings = SettingsService.instance;
+        // 标题样式：字体 / 字号 / 对齐 / 颜色均可独立自定义，未设置时回退到默认表现
+        final String titleFontFamily = settings.outlineTitleFontFamily ?? settings.outlineFontFamily;
+        final double titleFontSize = settings.outlineTitleFontSize > 0
+            ? settings.outlineTitleFontSize
+            : settings.outlineFontSize + _fontSizeOffset;
+        final bool titleLeftAligned = settings.isOutlineTitleLeftAligned;
+        final TextAlign titleAlign = titleLeftAligned ? TextAlign.left : TextAlign.center;
+        final Color titleColor = ColorUtils.getOutlineTitleColorForTheme(context, colorScheme.onSurface);
+        final double titleBottomInset = PlatformCapabilities.isMobile ? 12 : 20;
+        final EdgeInsets titlePadding = EdgeInsets.only(
+          left: titleLeftAligned ? leftPadding : 12,
+          right: titleLeftAligned ? 8 : 12,
+          bottom: titleBottomInset,
+        );
         final TextStyle style = TextStyle(
-          fontFamily: settings.outlineFontFamily,
-          fontSize: settings.outlineFontSize + _fontSizeOffset,
+          fontFamily: titleFontFamily,
+          fontSize: titleFontSize,
           fontWeight: FontWeight.bold,
           height: _lineHeightFactor,
-          color: colorScheme.onSurface,
+          color: titleColor,
         );
 
         return Padding(
           // 右侧留白与节点内容保持一致，底部留白分隔标题与第一个节点
-          padding: EdgeInsets.only(left: leftPadding, right: 8, bottom: PlatformCapabilities.isMobile ? 12 : 20),
+          padding: titlePadding,
           child: readOnly
               // 只读时以静态文本展示，不提供编辑光标与选区交互
-              ? Text(controller.text, style: style, maxLines: 1, overflow: TextOverflow.ellipsis)
+              ? Text(controller.text, style: style, textAlign: titleAlign, maxLines: 1, overflow: TextOverflow.ellipsis)
               : ImeCursorFixerWrapper(
                   controller: controller,
                   focusNode: focusNode,
@@ -501,6 +516,7 @@ class OutlineTitleField extends StatelessWidget {
                     focusNode: focusNode,
                     maxLines: 1,
                     style: style,
+                    textAlign: titleAlign,
                     decoration: const InputDecoration(
                       border: InputBorder.none,
                       focusedBorder: InputBorder.none,
