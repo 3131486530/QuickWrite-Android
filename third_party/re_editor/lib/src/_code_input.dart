@@ -251,6 +251,14 @@ class _CodeInputController extends ChangeNotifier implements DeltaTextInputClien
     } else {
       _controller.edit(newValue);
     }
+    // 自动替换改写后的文本可能与正文完全一致（如替换内容为空，原文本被直接删掉），
+    // 此时控制器没有任何变化、不会发出通知，镜像也不会随之下发，
+    // 输入法侧仍保留着被改写掉的原文本。此后输入法上报的每条增量都以它自己的
+    // 旧文本为基准，与镜像文本对不上而被丢弃，表现为怎么按都输不进字，
+    // 只有退格让输入法重置文本后才恢复。这里主动回推一次镜像打断该失配。
+    if (smartChange) {
+      _updateRemoteEditingValueIfNeeded();
+    }
     notifyListeners();
     // _Trace.end('updateEditingValue all');
   }

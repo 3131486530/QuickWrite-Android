@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:ui' as ui;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -238,8 +239,19 @@ class _QwTextFieldState extends State<QwTextField>
   /// 当前生效的光标模式
   QwCaretMode _caretMode = QwCaretMode.system;
 
-  /// 呼吸动画一次完整起伏的时长
-  static const Duration _breathPeriod = Duration(milliseconds: 1500);
+  /// 呼吸动画一次完整起伏（亮 → 暗 → 亮）的时长
+  ///
+  /// 与正文编辑器（re_editor 的 _CodeCursorBlinkController）呼吸周期一致，
+  /// 两端光标节奏相同才不会出现大纲忽快忽慢的观感。
+  static const int _breathPeriodMs = 1500;
+
+  /// 动画控制器单程时长
+  ///
+  /// [AnimationController.repeat] 开启 reverse 时 duration 只覆盖 0 → 1 的单程，
+  /// 往返一次才是完整的 [_breathPeriodMs]；若把整周期当作单程时长，
+  /// 一次起伏会变成 3000ms，大纲光标因此比正文慢一倍。
+  static const Duration _breathHalfPeriod =
+      Duration(milliseconds: _breathPeriodMs ~/ 2);
 
   /// 呼吸动画最暗时的不透明度
   static const double _breathMinOpacity = 0.15;
@@ -259,7 +271,7 @@ class _QwTextFieldState extends State<QwTextField>
     super.initState();
     _breathController = AnimationController(
       vsync: this,
-      duration: _breathPeriod,
+      duration: _breathHalfPeriod,
     )..addListener(_onBreathTick);
     SettingsService.instance.addListener(_onSettingsChanged);
     _painter = QwTextFieldPainter(
@@ -373,9 +385,11 @@ class _QwTextFieldState extends State<QwTextField>
       widget.cursorColor ?? Theme.of(context).colorScheme.primary;
 
   void _onBreathTick() {
-    final double eased = Curves.easeInOut.transform(_breathController.value);
+    // 余弦映射：value 0 → 最亮、1 → 最暗，往返即完整一个余弦周期，
+    // 与正文编辑器 opacity = min + (1 - min) * (0.5 + 0.5 * cos(2πp)) 同曲线
+    final double wave = 0.5 + 0.5 * math.cos(math.pi * _breathController.value);
     _caretPainter.updateCaret(
-      opacity: _breathMinOpacity + (1 - _breathMinOpacity) * eased,
+      opacity: _breathMinOpacity + (1 - _breathMinOpacity) * wave,
     );
   }
 
