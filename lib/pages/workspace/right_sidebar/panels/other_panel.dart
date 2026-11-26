@@ -313,6 +313,16 @@ class _OtherPanelState extends State<OtherPanel> {
             setState(() {});
           },
         ),
+        // 静态光标开关：开启后正文光标常亮、不做闪烁动画
+        SwitchSettingItem(
+          icon: Icons.border_color_outlined,
+          label: '静态光标',
+          value: SettingsService.instance.staticCursorEnabled,
+          onChanged: (value) {
+            SettingsService.instance.updateStaticCursorEnabled(value);
+            setState(() {});
+          },
+        ),
         // 预览模式开关（移动端不提供预览模式，隐藏此项）
         if (!PlatformCapabilities.isMobile)
           SwitchSettingItem(

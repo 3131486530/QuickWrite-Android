@@ -25,7 +25,36 @@ enum QuickInputAction {
   fullTextSearch('fullTextSearch', Icons.search_rounded, '全文搜索'),
 
   /// 随机取名
-  randomName('randomName', Icons.casino_outlined, '随机取名');
+  randomName('randomName', Icons.casino_outlined, '随机取名'),
+
+  // ===== 以下动作与「编辑 / 工具 / 设置」区域的功能一一对应 =====
+
+  /// 段落整理（合并空行、去首行缩进等）
+  formatParagraph('formatParagraph', Icons.subject_rounded, '段落整理'),
+
+  /// 历史版本
+  history('history', Icons.history_rounded, '历史版本'),
+
+  /// 导出当前章节
+  exportChapter('exportChapter', Icons.ios_share_rounded, '导出本章'),
+
+  /// 写作统计
+  writingStats('writingStats', Icons.bar_chart_rounded, '写作统计'),
+
+  /// 复制当前章节
+  copyChapter('copyChapter', Icons.copy_all_rounded, '复制本章'),
+
+  /// 敏感词检测
+  sensitiveWordCheck('sensitiveWordCheck', Icons.shield_outlined, '敏感词检测'),
+
+  /// 布局设置
+  layout('layout', Icons.dashboard_customize_outlined, '布局设置'),
+
+  /// 排版设置
+  typeset('typeset', Icons.format_line_spacing_rounded, '排版设置'),
+
+  /// 备份与历史
+  backup('backup', Icons.backup_outlined, '备份管理');
 
   /// 持久化到配置文件的标识
   final String id;

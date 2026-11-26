@@ -390,6 +390,11 @@ class SettingsService extends ChangeNotifier {
   
   /// 获取章节标题默认字号（像素）
   double get defaultChapterTitleFontSize => AppSettings.defaults.chapterTitleFontSize;
+
+  /// 获取章节标题字体名称（null 表示系统默认字体）
+  ///
+  /// 章节标题字体独立于正文字体与界面字体，默认使用系统字体
+  String? get chapterTitleFontFamily => _settings.chapterTitleFontFamily;
   
   /// 获取章节标题对齐方式（'center' 居中 / 'left' 向左对齐）
   String get chapterTitleAlignment => _settings.chapterTitleAlignment;
@@ -472,6 +477,12 @@ class SettingsService extends ChangeNotifier {
   Future<bool> updateChapterTitleFontSize(double value, {bool debounce = false}) async {
     final newSettings = _settings.copyWith(chapterTitleFontSize: value);
     return updateSettings(newSettings, debounce: debounce);
+  }
+
+  /// 更新章节标题字体名称（传 null 恢复系统默认字体）
+  Future<bool> updateChapterTitleFontFamily(String? value) async {
+    final newSettings = _settings.copyWith(chapterTitleFontFamily: value);
+    return updateSettings(newSettings);
   }
 
   /// 更新章节标题对齐方式
@@ -679,6 +690,9 @@ class SettingsService extends ChangeNotifier {
 
   /// 获取打开文件时光标定位模式
   String get openChapterCursorMode => _settings.openChapterCursorMode;
+
+  /// 获取静态光标是否启用（true 表示光标不闪烁）
+  bool get staticCursorEnabled => _settings.staticCursorEnabled;
 
   /// 获取预览模式是否启用
   /// 移动端不提供预览模式，始终返回关闭
@@ -934,6 +948,12 @@ class SettingsService extends ChangeNotifier {
     return updateSettings(newSettings);
   }
 
+  /// 更新静态光标开关
+  Future<bool> updateStaticCursorEnabled(bool value) async {
+    final newSettings = _settings.copyWith(staticCursorEnabled: value);
+    return updateSettings(newSettings);
+  }
+
   /// 更新预览模式开关
   Future<bool> updatePreviewModeEnabled(bool value) async {
     final newSettings = _settings.copyWith(previewModeEnabled: value);
@@ -1076,6 +1096,7 @@ class SettingsService extends ChangeNotifier {
   Future<bool> resetChapterTitleFormatSettings() async {
     final newSettings = _settings.copyWith(
       chapterTitleFontSize: AppSettings.defaults.chapterTitleFontSize,
+      chapterTitleFontFamily: AppSettings.defaults.chapterTitleFontFamily,
       chapterTitleAlignment: AppSettings.defaults.chapterTitleAlignment,
       chapterTitleColorLight: AppSettings.defaults.chapterTitleColorLight,
       chapterTitleColorDark: AppSettings.defaults.chapterTitleColorDark,

@@ -92,6 +92,8 @@ class _MobileFormatCardState extends State<MobileFormatCard> {
                       _buildDivider(colorScheme),
                       _buildGroupLabel('标题', colorScheme),
                       const SizedBox(height: 12),
+                      _wrapDisabled(_buildSettingRow(Icons.font_download_rounded, '字体', _buildTitleFontDropdown())),
+                      const SizedBox(height: 10),
                       _wrapDisabled(_buildSettingRow(Icons.format_size_rounded, '字号', _buildTitleFontSizeDropdown())),
                       const SizedBox(height: 10),
                       _wrapDisabled(_buildSettingRow(Icons.format_align_left_rounded, '对齐', _buildTitleAlignmentControl())),
@@ -218,6 +220,46 @@ class _MobileFormatCardState extends State<MobileFormatCard> {
     );
   }
 
+  /// 章节标题字体下拉框中「系统默认」选项的取值
+  static const String _systemFontValue = '__system_font__';
+
+  /// 当前生效的章节标题字体（null 显示为「系统默认」）
+  String get _currentTitleFontFamily =>
+      SettingsService.instance.chapterTitleFontFamily ?? _systemFontValue;
+
+  /// 构建章节标题字体下拉框（系统默认 + 已导入字体 + 选择字体文件）
+  ///
+  /// 标题字体独立于正文字体与界面字体，默认使用系统字体
+  Widget _buildTitleFontDropdown() {
+    return CustomDropdown(
+      // 通过重建标记，使「选择字体文件」后下拉框回退显示当前字体
+      key: ValueKey('mobile-title-font-$_fontDropdownNonce'),
+      width: _dropdownWidth,
+      height: 36,
+      value: _currentTitleFontFamily,
+      items: [
+        const DropdownItem(displayText: '系统默认', value: _systemFontValue),
+        ...FontService().userFonts.map(
+              (font) => DropdownItem(displayText: font.displayName, value: font.fontFamily),
+            ),
+        const DropdownItem(displayText: '选择字体文件…', value: _pickFontValue),
+      ],
+      onChanged: _onTitleFontChanged,
+    );
+  }
+
+  /// 处理章节标题字体选择
+  Future<void> _onTitleFontChanged(String value) async {
+    if (value == _pickFontValue) {
+      await _pickTitleFontFile();
+      return;
+    }
+    // 选择「系统默认」时清空字体，恢复跟随系统
+    await SettingsService.instance.updateChapterTitleFontFamily(
+      value == _systemFontValue ? null : value,
+    );
+  }
+
   /// 构建标题字号下拉框（默认 + 连续字号）
   Widget _buildTitleFontSizeDropdown() {
     return CustomDropdown(
@@ -294,8 +336,10 @@ class _MobileFormatCardState extends State<MobileFormatCard> {
     await settings.updateChapterTitleFontSize(size);
   }
 
-  /// 唤起系统文件选择器导入字体文件并应用到当前编辑器
-  Future<void> _pickFontFile() async {
+  /// 唤起系统文件选择器导入字体文件，返回导入后的字体名称
+  ///
+  /// 用户取消或字体无法解析时返回 null
+  Future<String?> _importFontFile() async {
     // 先重建下拉框，避免其把「选择字体文件」当作已选项停留在触发器上
     setState(() => _fontDropdownNonce++);
 
@@ -307,25 +351,38 @@ class _MobileFormatCardState extends State<MobileFormatCard> {
       );
     } catch (e) {
       if (mounted) SnackBarService.show(context, '无法打开文件选择器');
-      return;
+      return null;
     }
 
     final path = result?.files.single.path;
-    if (path == null) return; // 用户取消了选择
+    if (path == null) return null; // 用户取消了选择
 
     final info = await FontService().importFontFile(path);
-    if (!mounted) return;
+    if (!mounted) return null;
     if (info == null) {
       SnackBarService.show(context, '字体文件无法解析，请更换字体文件');
-      return;
+      return null;
     }
+    return info.fontFamily;
+  }
 
+  /// 唤起系统文件选择器导入字体文件并应用到当前编辑器
+  Future<void> _pickFontFile() async {
+    final family = await _importFontFile();
+    if (family == null) return;
     final settings = SettingsService.instance;
     if (widget.isOutline) {
-      await settings.updateOutlineFontFamily(info.fontFamily);
+      await settings.updateOutlineFontFamily(family);
     } else {
-      await settings.updateFontFamily(info.fontFamily);
+      await settings.updateFontFamily(family);
     }
+  }
+
+  /// 唤起系统文件选择器导入字体文件并应用到章节标题
+  Future<void> _pickTitleFontFile() async {
+    final family = await _importFontFile();
+    if (family == null) return;
+    await SettingsService.instance.updateChapterTitleFontFamily(family);
   }
 
   /// 构建正文样式按钮行（字体颜色、加粗、斜体、下划线）

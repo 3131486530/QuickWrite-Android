@@ -7,6 +7,7 @@ import 'package:quick_write/core/providers/workspace_provider.dart';
 import 'package:quick_write/core/services/settings_service.dart';
 import 'package:quick_write/pages/workspace/editor/novel_editor.dart';
 import 'package:quick_write/pages/workspace/name_gen/name_generator_dialog_mobile.dart';
+import 'package:quick_write/pages/workspace/toolbar/widgets/mobile_tools_card.dart';
 import 'package:quick_write/pages/workspace/widgets/punctuation_key_button.dart';
 import 'package:quick_write/pages/workspace/widgets/quick_phrase_manager_dialog.dart';
 import 'package:quick_write/pages/workspace/widgets/quick_phrase_popup.dart';
@@ -324,7 +325,37 @@ class _MobileQuickInputBarState extends State<MobileQuickInputBar> with WidgetsB
           iconSize: _iconSize,
           onPressed: _togglePhrasePopup,
         );
+      default:
+        // 其余动作对应「编辑 / 工具 / 设置」区域的功能，统一交由工具卡分发
+        return _buildSmallActionButton(
+          action,
+          icon,
+          () => _handleToolActionTap(action),
+        );
     }
+  }
+
+  /// 快捷输入栏图标与工具卡功能项的对应关系
+  static const Map<QuickInputAction, MobileToolAction> _toolActionMap = {
+    QuickInputAction.formatParagraph: MobileToolAction.formatParagraph,
+    QuickInputAction.history: MobileToolAction.history,
+    QuickInputAction.exportChapter: MobileToolAction.exportChapter,
+    QuickInputAction.writingStats: MobileToolAction.writingStats,
+    QuickInputAction.copyChapter: MobileToolAction.copyChapter,
+    QuickInputAction.sensitiveWordCheck: MobileToolAction.sensitiveWordCheck,
+    QuickInputAction.layout: MobileToolAction.layout,
+    QuickInputAction.typeset: MobileToolAction.typeset,
+    QuickInputAction.backup: MobileToolAction.backup,
+  };
+
+  /// 触发「编辑 / 工具 / 设置」区域的功能项
+  ///
+  /// 先收起输入法，避免键盘遮挡随后打开的面板或弹窗
+  void _handleToolActionTap(QuickInputAction action) {
+    final MobileToolAction? toolAction = _toolActionMap[action];
+    if (toolAction == null) return;
+    FocusManager.primaryFocus?.unfocus();
+    handleMobileToolAction(context, toolAction);
   }
 
   /// 构建普通样式的操作按钮

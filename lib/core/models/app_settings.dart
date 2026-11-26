@@ -98,6 +98,11 @@ class AppSettings {
   
   /// 章节标题字体大小（单位：像素）
   final double chapterTitleFontSize;
+
+  /// 章节标题字体名称
+  ///
+  /// null 表示使用系统默认字体；该字体独立于正文字体与界面字体
+  final String? chapterTitleFontFamily;
   
   /// 章节标题对齐方式
   /// 'center' - 居中 / 'left' - 向左对齐
@@ -230,6 +235,11 @@ class AppSettings {
   /// 'lastEdit' - 上一次编辑位置
   final String openChapterCursorMode;
 
+  /// 是否启用静态光标
+  ///
+  /// 开启后正文编辑器的光标不再闪烁，保持常亮显示
+  final bool staticCursorEnabled;
+
   /// 是否启用预览模式
   /// 开启后，单击章节/设定/备份预览以预览模式打开，再次单击其他项时替换当前预览标签页
   /// 关闭后，所有标签页均以固定模式打开
@@ -353,6 +363,7 @@ class AppSettings {
     this.showChapterTitle = true, // 是否显示章节标题
     this.chapterTitleTopMargin = 16.0, // 章节标题顶边距（单位：像素）
     this.chapterTitleFontSize = 24.0, // 章节标题字体大小（单位：像素）
+    this.chapterTitleFontFamily, // 章节标题字体名称（null 表示系统默认字体）
     this.chapterTitleAlignment = chapterTitleAlignCenter, // 章节标题对齐方式
     this.chapterTitleColorLight, // 章节标题颜色（亮色主题，十六进制字符串）
     this.chapterTitleColorDark, // 章节标题颜色（暗色主题，十六进制字符串）
@@ -403,6 +414,7 @@ class AppSettings {
     this.backupInterval = 10, // 备份间隔（单位：分钟）
     this.historyRetentionDays = 30, // 历史记录保存天数
     this.openChapterCursorMode = 'default', // 打开文件时光标定位模式
+    this.staticCursorEnabled = false, // 静态光标（光标不闪烁）
     this.previewModeEnabled = true, // 是否启用预览模式
     this.quickInputBarEnabled = true, // 是否显示快捷输入栏（移动端）
     this.punctuationAutoCompleteEnabled = true, // 是否开启标点符号自动补全（移动端）
@@ -476,6 +488,7 @@ class AppSettings {
       showChapterTitle: chapterTitleJson['show'] as bool? ?? defaults.showChapterTitle,
       chapterTitleTopMargin: (chapterTitleJson['topMargin'] as num?)?.toDouble() ?? defaults.chapterTitleTopMargin,
       chapterTitleFontSize: (chapterTitleJson['fontSize'] as num?)?.toDouble() ?? defaults.chapterTitleFontSize,
+      chapterTitleFontFamily: chapterTitleJson['family'] as String? ?? defaults.chapterTitleFontFamily,
       chapterTitleAlignment: chapterTitleJson['alignment'] as String? ?? defaults.chapterTitleAlignment,
       chapterTitleColorLight: chapterTitleColorJson['light'] as String? ?? defaults.chapterTitleColorLight,
       chapterTitleColorDark: chapterTitleColorJson['dark'] as String? ?? defaults.chapterTitleColorDark,
@@ -532,6 +545,7 @@ class AppSettings {
       backupInterval: autoBackupJson['interval'] as int? ?? defaults.backupInterval,
       historyRetentionDays: autoBackupJson['historyRetentionDays'] as int? ?? defaults.historyRetentionDays,
       openChapterCursorMode: autoBackupJson['openCursorMode'] as String? ?? defaults.openChapterCursorMode,
+      staticCursorEnabled: autoBackupJson['staticCursor'] as bool? ?? defaults.staticCursorEnabled,
       previewModeEnabled: autoBackupJson['previewModeEnabled'] as bool? ?? defaults.previewModeEnabled,
       quickInputBarEnabled: autoBackupJson['quickInputBarEnabled'] as bool? ?? defaults.quickInputBarEnabled,
       punctuationAutoCompleteEnabled: autoBackupJson['punctuationAutoCompleteEnabled'] as bool? ?? defaults.punctuationAutoCompleteEnabled,
@@ -628,6 +642,7 @@ class AppSettings {
             'show': showChapterTitle,
             'topMargin': chapterTitleTopMargin,
             'fontSize': chapterTitleFontSize,
+            'family': chapterTitleFontFamily,
             'alignment': chapterTitleAlignment,
             'color': {
               'light': chapterTitleColorLight,
@@ -682,6 +697,7 @@ class AppSettings {
           'interval': backupInterval,
           'historyRetentionDays': historyRetentionDays,
           'openCursorMode': openChapterCursorMode,
+          'staticCursor': staticCursorEnabled,
           'previewModeEnabled': previewModeEnabled,
           'quickInputBarEnabled': quickInputBarEnabled,
           'punctuationAutoCompleteEnabled': punctuationAutoCompleteEnabled,
@@ -742,6 +758,7 @@ class AppSettings {
     bool? showChapterTitle,
     double? chapterTitleTopMargin,
     double? chapterTitleFontSize,
+    Object? chapterTitleFontFamily = _unset,
     String? chapterTitleAlignment,
     Object? chapterTitleColorLight = _unset,
     Object? chapterTitleColorDark = _unset,
@@ -792,6 +809,7 @@ class AppSettings {
     int? backupInterval,
     int? historyRetentionDays,
     String? openChapterCursorMode,
+    bool? staticCursorEnabled,
     bool? previewModeEnabled,
     bool? quickInputBarEnabled,
     bool? punctuationAutoCompleteEnabled,
@@ -836,6 +854,9 @@ class AppSettings {
       showChapterTitle: showChapterTitle ?? this.showChapterTitle,
       chapterTitleTopMargin: chapterTitleTopMargin ?? this.chapterTitleTopMargin,
       chapterTitleFontSize: chapterTitleFontSize ?? this.chapterTitleFontSize,
+      chapterTitleFontFamily: chapterTitleFontFamily == _unset
+          ? this.chapterTitleFontFamily
+          : chapterTitleFontFamily as String?,
       chapterTitleAlignment: chapterTitleAlignment ?? this.chapterTitleAlignment,
       chapterTitleColorLight: chapterTitleColorLight == _unset ? this.chapterTitleColorLight : chapterTitleColorLight as String?,
       chapterTitleColorDark: chapterTitleColorDark == _unset ? this.chapterTitleColorDark : chapterTitleColorDark as String?,
@@ -886,6 +907,7 @@ class AppSettings {
       backupInterval: backupInterval ?? this.backupInterval,
       historyRetentionDays: historyRetentionDays ?? this.historyRetentionDays,
       openChapterCursorMode: openChapterCursorMode ?? this.openChapterCursorMode,
+      staticCursorEnabled: staticCursorEnabled ?? this.staticCursorEnabled,
       previewModeEnabled: previewModeEnabled ?? this.previewModeEnabled,
       quickInputBarEnabled: quickInputBarEnabled ?? this.quickInputBarEnabled,
       punctuationAutoCompleteEnabled: punctuationAutoCompleteEnabled ?? this.punctuationAutoCompleteEnabled,
@@ -965,6 +987,7 @@ class AppSettings {
            other.showChapterTitle == showChapterTitle &&
            other.chapterTitleTopMargin == chapterTitleTopMargin &&
            other.chapterTitleFontSize == chapterTitleFontSize &&
+           other.chapterTitleFontFamily == chapterTitleFontFamily &&
            other.chapterTitleAlignment == chapterTitleAlignment &&
            other.chapterTitleColorLight == chapterTitleColorLight &&
            other.chapterTitleColorDark == chapterTitleColorDark &&
@@ -1015,6 +1038,7 @@ class AppSettings {
            other.backupInterval == backupInterval &&
            other.historyRetentionDays == historyRetentionDays &&
            other.openChapterCursorMode == openChapterCursorMode &&
+           other.staticCursorEnabled == staticCursorEnabled &&
            other.previewModeEnabled == previewModeEnabled &&
            other.quickInputBarEnabled == quickInputBarEnabled &&
            other.punctuationAutoCompleteEnabled == punctuationAutoCompleteEnabled &&
@@ -1063,6 +1087,7 @@ class AppSettings {
         showChapterTitle,
         chapterTitleTopMargin,
         chapterTitleFontSize,
+        chapterTitleFontFamily,
         chapterTitleAlignment,
         chapterTitleColorLight,
         chapterTitleColorDark,
@@ -1126,6 +1151,7 @@ class AppSettings {
         backupInterval,
         historyRetentionDays,
         openChapterCursorMode,
+        staticCursorEnabled,
         previewModeEnabled,
         quickInputBarEnabled,
         punctuationAutoCompleteEnabled,

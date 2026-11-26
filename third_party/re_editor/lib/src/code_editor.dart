@@ -337,6 +337,7 @@ class CodeEditor extends StatefulWidget {
     this.clipBehavior = Clip.none,
     this.readOnly,
     this.showCursorWhenReadOnly,
+    this.staticCursor = false,
     this.wordWrap,
     this.autocompleteSymbols,
     this.autocompletePairs,
@@ -453,6 +454,11 @@ class CodeEditor extends StatefulWidget {
   ///
   /// The cursor refers to the blinking caret when the editor is focused.
   final bool? showCursorWhenReadOnly;
+
+  /// 静态光标：为 true 时光标保持常亮、不做闪烁动画。
+  ///
+  /// 默认为 false，即沿用 Flutter 默认的闪烁光标。
+  final bool staticCursor;
 
   /// Should wrap the word.
   final bool? wordWrap;
@@ -724,6 +730,7 @@ class _CodeEditorState extends State<CodeEditor> {
       lineSeparator: widget.style?.lineSeparator,
       cursorWidth: widget.style?.cursorWidth ?? _kDefaultCaretWidth,
       showCursorWhenReadOnly: widget.showCursorWhenReadOnly ?? true,
+      staticCursor: widget.staticCursor,
       leadingDivider: widget.leadingDivider,
       border: widget.border,
       borderRadius: widget.borderRadius,

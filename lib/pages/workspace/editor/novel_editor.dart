@@ -1802,8 +1802,9 @@ class NovelEditorState extends State<NovelEditor> with WidgetsBindingObserver {
             contentPadding: EdgeInsets.zero,
           ),
           style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-            // 章节标题与正文保持一致，使用编辑器正文字体，不受界面字体影响
-            fontFamily: settings.fontFamily,
+            // 章节标题使用独立的标题字体设置，默认（null）为系统字体，
+            // 不随正文字体与界面字体变化
+            fontFamily: settings.chapterTitleFontFamily,
             fontSize: settings.chapterTitleFontSize,
             color: ColorUtils.getChapterTitleColorForTheme(context),
           ),
@@ -1955,6 +1956,8 @@ class NovelEditorState extends State<NovelEditor> with WidgetsBindingObserver {
               autofocus: false,
               // 只读预览（如历史版本备份）不显示输入光标
               showCursorWhenReadOnly: false,
+              // 静态光标：开启后光标常亮不闪烁（其他设置中可切换）
+              staticCursor: settings.staticCursorEnabled,
               // 成对符号自动补全仅移动端启用，符号表取自标点符号表；
               // 表中未列出的 ASCII 引号与括号不会被写入正文
               autocompleteSymbols: PlatformCapabilities.isMobile &&

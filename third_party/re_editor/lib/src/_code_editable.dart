@@ -29,6 +29,7 @@ class _CodeEditable extends StatefulWidget {
   final CodeLineSeparatorStyle? lineSeparator;
   final double cursorWidth;
   final bool showCursorWhenReadOnly;
+  final bool staticCursor;
   final EdgeInsetsGeometry padding;
   final EdgeInsetsGeometry margin;
   final Widget? leadingDivider;
@@ -81,6 +82,7 @@ class _CodeEditable extends StatefulWidget {
     this.lineSeparator,
     required this.cursorWidth,
     required this.showCursorWhenReadOnly,
+    this.staticCursor = false,
     required this.padding,
     required this.margin,
     required this.leadingDivider,
@@ -176,6 +178,9 @@ class _CodeEditableState extends State<_CodeEditable> with AutomaticKeepAliveCli
     }
     if (oldWidget.codeTheme != widget.codeTheme) {
       _highlighter.theme = widget.codeTheme;
+    }
+    if (oldWidget.staticCursor != widget.staticCursor) {
+      _updateCursorState();
     }
     super.didUpdateWidget(oldWidget);
   }
@@ -429,6 +434,7 @@ class _CodeEditableState extends State<_CodeEditable> with AutomaticKeepAliveCli
   }
 
   void _updateCursorState() {
+    _cursorController.staticCursor = widget.staticCursor;
     if (widget.focusNode.hasFocus && (!widget.readOnly || widget.showCursorWhenReadOnly)) {
       _cursorController.startBlink();
     } else {
@@ -493,11 +499,27 @@ class _CodeCursorBlinkController extends ValueNotifier<bool> {
 
   Timer? _timer;
 
+  /// 静态光标模式：为 true 时不启动闪烁定时器，光标保持常亮
+  bool staticCursor = false;
+
   _CodeCursorBlinkController() : super(false);
 
   void startBlink() {
     if (_timer != null) {
       _timer!.cancel();
+    }
+    if (staticCursor) {
+      // 静态光标：不做明暗交替，直接常亮
+      _timer = null;
+      if (kIsAndroid || kIsIOS) {
+        // Wait selection position to update
+        Future.delayed(const Duration(milliseconds: 100), () {
+          value = true;
+        });
+      } else {
+        value = true;
+      }
+      return;
     }
     _timer = Timer.periodic(_kCursorBlinkHalfPeriod, _cursorTick);
     if (kIsAndroid || kIsIOS) {
@@ -512,6 +534,10 @@ class _CodeCursorBlinkController extends ValueNotifier<bool> {
 
   void stopBlink() {
     if (_timer == null) {
+      // 无定时器时（静态光标）仍需确保失焦后隐藏光标
+      if (staticCursor) {
+        value = false;
+      }
       return;
     }
     _timer?.cancel();
