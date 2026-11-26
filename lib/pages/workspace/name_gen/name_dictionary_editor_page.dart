@@ -54,11 +54,11 @@ class _NameDictionaryEditorPageState extends State<NameDictionaryEditorPage> {
     _nameFocusNode = FocusNode();
     _editorFocusNode = FocusNode();
 
-    // 旧的多池词典打开时展平为词条列表，保存后即成为章节式词典
+    // 词条以顿号连接成一段连续文本，空词典保持空白
     final List<String> entries = dictionary == null
         ? const <String>[]
         : (dictionary.isEntryList ? dictionary.entries : dictionary.allEntries);
-    _editor = CodeLineEditingController.fromText(entries.join('\n'));
+    _editor = CodeLineEditingController.fromText(entries.join('、'));
   }
 
   @override
@@ -72,7 +72,7 @@ class _NameDictionaryEditorPageState extends State<NameDictionaryEditorPage> {
 
   /// 解析编辑器正文为词条列表
   ///
-  /// 以换行为主，兼容顿号、逗号分隔；去空行并去重，保持原有顺序。
+  /// 以顿号为主，兼容换行、逗号分隔；去空词条并去重，保持原有顺序。
   List<String> _parseEntries(String text) {
     final Set<String> result = <String>{};
     for (final String raw in text.split(RegExp(r'[\r\n、，,]+'))) {
@@ -130,7 +130,7 @@ class _NameDictionaryEditorPageState extends State<NameDictionaryEditorPage> {
     );
   }
 
-  /// 全屏编辑器：正文即词条，回车换行
+  /// 全屏编辑器：正文以顿号分隔词条
   Widget _buildEditor(BuildContext context) {
     final ColorScheme colorScheme = Theme.of(context).colorScheme;
     final bool breathing = PlatformCapabilities.isMobile &&
@@ -140,7 +140,7 @@ class _NameDictionaryEditorPageState extends State<NameDictionaryEditorPage> {
       focusNode: _editorFocusNode,
       autofocus: false,
       wordWrap: true,
-      hint: '一行一个词条',
+      hint: '用「、」分隔词条',
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
       staticCursor: SettingsService.instance.settings.staticCursorEnabled,
       breathingCursor: breathing,

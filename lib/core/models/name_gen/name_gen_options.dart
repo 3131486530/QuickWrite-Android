@@ -38,7 +38,7 @@ class NameGenOptions {
   static const int maxBatchCount = 200;
 
   /// 每次生成数量的默认值
-  static const int defaultBatchCount = 100;
+  static const int defaultBatchCount = 7;
 
   /// 将生成数量限制在允许范围内
   static int clampBatchCount(int count) =>

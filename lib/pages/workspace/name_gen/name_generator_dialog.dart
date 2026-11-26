@@ -32,6 +32,11 @@ Future<void> showNameGeneratorDialog({
 /// 随机取名对话框主体
 ///
 /// 左侧为类别切换与词典管理，右侧为参数配置与生成结果。
+/// 每次生成的名字数量
+///
+/// 结果区一行一个名字，固定生成七条，不再提供自定义数量。
+const int _batchCount = 7;
+
 class _NameGeneratorDialog extends StatefulWidget {
   const _NameGeneratorDialog();
 
@@ -58,17 +63,11 @@ class _NameGeneratorDialogState extends State<_NameGeneratorDialog> {
   /// 自定义后缀输入控制器
   final TextEditingController _suffixController = TextEditingController();
 
-  /// 每次生成数量输入控制器
-  final TextEditingController _countController = TextEditingController();
-
   /// 自定义姓氏输入框焦点节点
   final FocusNode _surnameFocusNode = FocusNode();
 
   /// 自定义后缀输入框焦点节点
   final FocusNode _suffixFocusNode = FocusNode();
-
-  /// 每次生成数量输入框焦点节点
-  final FocusNode _countFocusNode = FocusNode();
 
   /// 当前类别
   // 章节式词典不再区分类别，统一用 other 承载全部自建词典
@@ -98,8 +97,6 @@ class _NameGeneratorDialogState extends State<_NameGeneratorDialog> {
     _options = _cache.getOptions();
     _surnameController.text = _options.customSurname;
     _suffixController.text = _options.customSuffix;
-    _countController.text = '${_options.batchCount}';
-    _countFocusNode.addListener(_onCountFocusChanged);
     _reloadDictionaries();
     _reloadHistory();
     // 打开界面时立即生成一次结果
@@ -116,11 +113,8 @@ class _NameGeneratorDialogState extends State<_NameGeneratorDialog> {
     _syncService.removeListener(_onCloudSyncChanged);
     _surnameController.dispose();
     _suffixController.dispose();
-    _countController.dispose();
     _surnameFocusNode.dispose();
     _suffixFocusNode.dispose();
-    _countFocusNode.removeListener(_onCountFocusChanged);
-    _countFocusNode.dispose();
     super.dispose();
   }
 
@@ -197,14 +191,14 @@ class _NameGeneratorDialogState extends State<_NameGeneratorDialog> {
     if (dictionary.isEntryList) {
       return NameGenerator.pickEntries(
         dictionary,
-        count: _options.batchCount,
+        count: _batchCount,
         random: _random,
       );
     }
     return NameGenerator.generateBatch(
       dictionary,
-      options: _options,
-      count: _options.batchCount,
+      options: _options.copyWith(batchCount: _batchCount),
+      count: _batchCount,
       random: _random,
     );
   }
@@ -326,35 +320,6 @@ class _NameGeneratorDialogState extends State<_NameGeneratorDialog> {
     setState(() => _options = options);
   }
 
-  /// 生成数量输入处理
-  ///
-  /// 输入为空或小于下限时保留上一次的有效数量；超过上限时立即收敛为
-  /// 上限值，使输入框显示的数量与实际生成数量始终一致。
-  void _onCountChanged(String text) {
-    final count = int.tryParse(text);
-    if (count == null || count < NameGenOptions.minBatchCount) return;
-
-    final clamped = NameGenOptions.clampBatchCount(count);
-    if (clamped != count) _setCountInput(clamped);
-    _onOptionsChanged(_options.copyWith(batchCount: clamped));
-  }
-
-  /// 将数量输入框的文字设置为指定数量，并把光标移到末尾
-  void _setCountInput(int count) {
-    final text = '$count';
-    _countController.value = TextEditingValue(
-      text: text,
-      selection: TextSelection.collapsed(offset: text.length),
-    );
-  }
-
-  /// 数量输入框失去焦点时恢复为当前生效的数量
-  void _onCountFocusChanged() {
-    if (!_countFocusNode.hasFocus) {
-      _countController.text = '${_options.batchCount}';
-    }
-  }
-
   // ================= 构建 =================
 
   @override
@@ -402,12 +367,9 @@ class _NameGeneratorDialogState extends State<_NameGeneratorDialog> {
                         options: _options,
                         surnameController: _surnameController,
                         suffixController: _suffixController,
-                        countController: _countController,
                         surnameFocusNode: _surnameFocusNode,
                         suffixFocusNode: _suffixFocusNode,
-                        countFocusNode: _countFocusNode,
                         onChanged: _onOptionsChanged,
-                        onCountChanged: _onCountChanged,
                       ),
                     ),
                     const SizedBox(width: 12),

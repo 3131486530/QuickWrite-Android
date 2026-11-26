@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:quick_write/core/models/name_gen/name_dictionary.dart';
 import 'package:quick_write/core/models/name_gen/name_gen_options.dart';
 import 'package:quick_write/core/utils/ime_cursor_fixer.dart';
@@ -31,23 +30,14 @@ class NameOptionsPanel extends StatelessWidget {
   /// 自定义后缀输入控制器
   final TextEditingController suffixController;
 
-  /// 每次生成数量输入控制器
-  final TextEditingController countController;
-
   /// 自定义姓氏输入框的焦点节点（与输入法光标修复包装器共用）
   final FocusNode surnameFocusNode;
 
   /// 自定义后缀输入框的焦点节点（与输入法光标修复包装器共用）
   final FocusNode suffixFocusNode;
 
-  /// 每次生成数量输入框的焦点节点（与输入法光标修复包装器共用）
-  final FocusNode countFocusNode;
-
   /// 参数变化回调
   final ValueChanged<NameGenOptions> onChanged;
-
-  /// 生成数量输入回调（传入原始文本，由调用方校验并持久化）
-  final ValueChanged<String> onCountChanged;
 
   const NameOptionsPanel({
     super.key,
@@ -56,12 +46,9 @@ class NameOptionsPanel extends StatelessWidget {
     required this.options,
     required this.surnameController,
     required this.suffixController,
-    required this.countController,
     required this.surnameFocusNode,
     required this.suffixFocusNode,
-    required this.countFocusNode,
     required this.onChanged,
-    required this.onCountChanged,
   });
 
   /// 人名的名字长度选项
@@ -173,22 +160,6 @@ class NameOptionsPanel extends StatelessWidget {
             onChanged: (value) => onChanged(options.copyWith(customSuffix: value)),
           ),
         ],
-        _buildTextFieldField(
-          context,
-          label: '数量',
-          controller: countController,
-          focusNode: countFocusNode,
-          hintText: '${options.batchCount}',
-          width: _dropdownWidth,
-          keyboardType: TextInputType.number,
-          inputFormatters: [
-            FilteringTextInputFormatter.digitsOnly,
-            LengthLimitingTextInputFormatter(
-              '${NameGenOptions.maxBatchCount}'.length,
-            ),
-          ],
-          onChanged: onCountChanged,
-        ),
       ],
     );
   }

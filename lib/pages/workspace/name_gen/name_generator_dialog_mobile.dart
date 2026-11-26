@@ -17,20 +17,13 @@ import 'package:quick_write/shared/widgets/qw_text_field.dart';
 /// 结果标签之间的间距
 const double _chipGap = 8;
 
-/// 结果标签的高度
-const double _chipHeight = 40;
-
 /// 结果标签的左右内边距
 const double _chipHorizontalPadding = 8;
 
-/// 结果标签单个项的最小容字数量（以全角字宽计）
-const int _minCharsInChip = 4;
-
-/// 结果标签单个项的最大容字数量（以全角字宽计）
-const int _maxCharsInChip = 7;
-
-/// 移动端每次生成数量的默认值
-const int _mobileDefaultBatchCount = 20;
+/// 每次生成的名字数量
+///
+/// 结果区一行一个名字，固定生成七条，不再提供自定义数量。
+const int _batchCount = 7;
 
 /// 显示移动端随机取名弹窗
 ///
@@ -61,18 +54,6 @@ class _MobileNameGeneratorDialogState extends State<_MobileNameGeneratorDialog> 
   /// 内容区左右留白
   static const double _horizontalPadding = 20;
 
-  /// 参数控件高度
-  static const double _controlHeight = 36;
-
-  /// 参数项左侧标签宽度，保证同一行两个控件的起始位置对齐
-  static const double _labelWidth = 50;
-
-  /// 标签与控件之间的间距
-  static const double _labelGap = 6;
-
-  /// 同一行两个参数项之间的间距
-  static const double _itemGap = 16;
-
   /// 结果区视图切换条的高度
   static const double _resultTabHeight = 36;
 
@@ -95,18 +76,9 @@ class _MobileNameGeneratorDialogState extends State<_MobileNameGeneratorDialog> 
 
   /// 自定义后缀输入控制器
 
-  /// 每次生成数量输入控制器
-  final TextEditingController _countController = TextEditingController();
-
-  /// 每次生成数量输入框焦点节点
-  final FocusNode _countFocusNode = FocusNode();
-
   /// 当前类别
   // 章节式词典不再区分类别，统一用 other 承载全部自建词典
   NameCategory _category = NameCategory.other;
-
-  /// 当前生成参数
-  NameGenOptions _options = const NameGenOptions();
 
   /// 各类别的词典列表
   final Map<NameCategory, List<NameDictionary>> _dictionaries = {};
@@ -126,11 +98,6 @@ class _MobileNameGeneratorDialogState extends State<_MobileNameGeneratorDialog> 
   @override
   void initState() {
     super.initState();
-    // 尚未保存过参数时采用移动端默认生成数量
-    _options = _cache.getSavedOptions() ??
-        const NameGenOptions(batchCount: _mobileDefaultBatchCount);
-    _countController.text = '${_options.batchCount}';
-    _countFocusNode.addListener(_onCountFocusChanged);
     _reloadDictionaries();
     _reloadHistory();
     // 打开弹窗时立即生成一次结果
@@ -145,9 +112,6 @@ class _MobileNameGeneratorDialogState extends State<_MobileNameGeneratorDialog> 
   @override
   void dispose() {
     _syncService.removeListener(_onCloudSyncChanged);
-    _countController.dispose();
-    _countFocusNode.removeListener(_onCountFocusChanged);
-    _countFocusNode.dispose();
     super.dispose();
   }
 
@@ -224,14 +188,14 @@ class _MobileNameGeneratorDialogState extends State<_MobileNameGeneratorDialog> 
     if (dictionary.isEntryList) {
       return NameGenerator.pickEntries(
         dictionary,
-        count: _options.batchCount,
+        count: _batchCount,
         random: _random,
       );
     }
     return NameGenerator.generateBatch(
       dictionary,
-      options: _options,
-      count: _options.batchCount,
+      options: const NameGenOptions(batchCount: _batchCount),
+      count: _batchCount,
       random: _random,
     );
   }
@@ -375,41 +339,6 @@ class _MobileNameGeneratorDialogState extends State<_MobileNameGeneratorDialog> 
   /// 退出输入框焦点
   void _unfocus() => FocusScope.of(context).unfocus();
 
-  /// 参数变化处理
-  void _onOptionsChanged(NameGenOptions options) {
-    _cache.saveOptions(options);
-    setState(() => _options = options);
-  }
-
-  /// 生成数量输入处理
-  ///
-  /// 输入为空或小于下限时保留上一次的有效数量；超过上限时立即收敛为
-  /// 上限值，使输入框显示的数量与实际生成数量始终一致。
-  void _onCountChanged(String text) {
-    final count = int.tryParse(text);
-    if (count == null || count < NameGenOptions.minBatchCount) return;
-
-    final clamped = NameGenOptions.clampBatchCount(count);
-    if (clamped != count) _setCountInput(clamped);
-    _onOptionsChanged(_options.copyWith(batchCount: clamped));
-  }
-
-  /// 将数量输入框的文字设置为指定数量，并把光标移到末尾
-  void _setCountInput(int count) {
-    final text = '$count';
-    _countController.value = TextEditingValue(
-      text: text,
-      selection: TextSelection.collapsed(offset: text.length),
-    );
-  }
-
-  /// 数量输入框失去焦点时恢复为当前生效的数量
-  void _onCountFocusChanged() {
-    if (!_countFocusNode.hasFocus) {
-      _countController.text = '${_options.batchCount}';
-    }
-  }
-
   // ================= 构建 =================
 
   @override
@@ -423,8 +352,6 @@ class _MobileNameGeneratorDialogState extends State<_MobileNameGeneratorDialog> 
             children: [
               _buildDictionarySelector(),
               const SizedBox(height: 16),
-              ..._buildOptions(),
-              const SizedBox(height: 20),
               _buildResultsSection(),
             ],
           ),
@@ -489,107 +416,6 @@ class _MobileNameGeneratorDialogState extends State<_MobileNameGeneratorDialog> 
     );
   }
 
-  /// 构建生成参数
-  ///
-  /// 词条列表词典只需设置生成数量，内容全部来自词条本身。
-  List<Widget> _buildOptions() {
-    return [
-      _buildOptionRow(
-        left: _buildOptionItem(label: '数量', control: _buildCountField()),
-        right: const SizedBox.shrink(),
-      ),
-    ];
-  }
-
-  /// 构建一行两个参数项
-  Widget _buildOptionRow({required Widget left, required Widget right}) {
-    return Row(
-      children: [
-        Expanded(child: left),
-        const SizedBox(width: _itemGap),
-        Expanded(child: right),
-      ],
-    );
-  }
-
-  /// 构建单个参数项（左侧标签 + 右侧控件）
-  Widget _buildOptionItem({required String label, required Widget control}) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return Row(
-      children: [
-        SizedBox(
-          width: _labelWidth,
-          child: Text(
-            label,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: context.bodySmall?.copyWith(color: colorScheme.onSurfaceVariant),
-          ),
-        ),
-        const SizedBox(width: _labelGap),
-        Expanded(child: control),
-      ],
-    );
-  }
-
-  /// 构建生成数量输入框
-  ///
-  /// 仅接受数字，样式与其它参数输入框一致；失去焦点时恢复为当前生效的数量。
-  Widget _buildCountField() {
-    return _buildTextControl(
-      controller: _countController,
-      focusNode: _countFocusNode,
-      hintText: '${_options.batchCount}',
-      keyboardType: TextInputType.number,
-      inputFormatters: [
-        FilteringTextInputFormatter.digitsOnly,
-        LengthLimitingTextInputFormatter(
-          '${NameGenOptions.maxBatchCount}'.length,
-        ),
-      ],
-      onChanged: _onCountChanged,
-    );
-  }
-
-  /// 构建文本参数输入框
-  /// 
-  /// 与左侧标签在同一行内对齐；点击输入框以外的区域时退出焦点。
-  Widget _buildTextControl({
-    required TextEditingController controller,
-    required String hintText,
-    required ValueChanged<String> onChanged,
-    FocusNode? focusNode,
-    TextInputType? keyboardType,
-    List<TextInputFormatter>? inputFormatters,
-  }) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return QwTextField(
-      controller: controller,
-      focusNode: focusNode,
-      keyboardType: keyboardType,
-      inputFormatters: inputFormatters,
-      onChanged: onChanged,
-      onTapOutside: (_) => _unfocus(),
-      maxLines: 1,
-      textAlignVertical: TextAlignVertical.center,
-      style: context.bodySmall,
-      decoration: InputDecoration(
-        hintText: hintText,
-        hintStyle: context.bodySmall?.copyWith(
-          color: colorScheme.onSurfaceVariant.withValues(alpha: 0.7),
-        ),
-        filled: true,
-        fillColor: colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
-        isDense: true,
-        contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 11),
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(6),
-          borderSide: BorderSide.none,
-        ),
-      ),
-    );
-  }
-
   /// 构建结果区
   ///
   /// 顶部为「生成结果 / 历史」切换，下方以标签流展示名字，
@@ -620,62 +446,20 @@ class _MobileNameGeneratorDialogState extends State<_MobileNameGeneratorDialog> 
             ),
           )
         else
-          // 结果标签按整行铺满的方式排布，左右两侧对齐
-          LayoutBuilder(
-            builder: (context, constraints) {
-              final columns = _resolveChipColumns(context, constraints.maxWidth);
-              return GridView.builder(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                padding: EdgeInsets.zero,
-                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: columns,
-                  crossAxisSpacing: _chipGap,
-                  mainAxisSpacing: _chipGap,
-                  mainAxisExtent: _chipHeight,
-                ),
-                itemCount: names.length,
-                itemBuilder: (context, index) => _NameChip(
-                  name: names[index],
-                  onTap: () => _copy(names[index]),
-                ),
-              );
-            },
+          // 结果一行一个，纵向排布
+          ListView.separated(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            padding: EdgeInsets.zero,
+            itemCount: names.length,
+            separatorBuilder: (context, index) => const SizedBox(height: _chipGap),
+            itemBuilder: (context, index) => _NameChip(
+              name: names[index],
+              onTap: () => _copy(names[index]),
+            ),
           ),
       ],
     );
-  }
-
-  /// 计算结果标签的每行数量
-  ///
-  /// 以「[_minCharsInChip] 个字宽」为单项最小宽度、「[_maxCharsInChip] 个字宽」为最大宽度，
-  /// 选出既不低于最小宽度、又不高于最大宽度的最大列数，使标签铺满整行且宽度舒适；
-  /// 可用宽度过窄无法同时满足上下限时退回单列。
-  int _resolveChipColumns(BuildContext context, double availableWidth) {
-    // 以全角字符实测宽度作为字宽基准
-    final charWidth = _measureTextWidth('国', context.bodyMedium);
-    final minChipWidth = charWidth * _minCharsInChip + _chipHorizontalPadding * 2;
-    final maxChipWidth = charWidth * _maxCharsInChip + _chipHorizontalPadding * 2;
-
-    int columns = 1;
-    for (int count = 1; count <= 50; count++) {
-      final itemWidth = (availableWidth - (count - 1) * _chipGap) / count;
-      // 再增加列数会更窄，低于最小宽度，结束查找
-      if (itemWidth < minChipWidth) break;
-      // 宽度落在上下限区间内的最大列数
-      if (itemWidth <= maxChipWidth) columns = count;
-    }
-    return columns;
-  }
-
-  /// 测量文本在指定样式下的宽度
-  double _measureTextWidth(String text, TextStyle? style) {
-    final painter = TextPainter(
-      text: TextSpan(text: text, style: style),
-      textDirection: TextDirection.ltr,
-      maxLines: 1,
-    )..layout();
-    return painter.width;
   }
 
   /// 构建底部操作栏

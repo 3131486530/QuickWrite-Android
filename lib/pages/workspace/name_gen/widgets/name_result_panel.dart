@@ -89,7 +89,7 @@ class NameResultPanel extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 10),
-        // 名字标签流
+        // 名字标签：一行一个，纵向铺满
         Expanded(
           child: names.isEmpty
               ? Center(
@@ -100,12 +100,13 @@ class NameResultPanel extends StatelessWidget {
                   ),
                 )
               : SingleChildScrollView(
-                  child: Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      for (final name in names)
+                      for (final name in names) ...[
                         _NameChip(name: name, onTap: () => onCopy(name)),
+                        const SizedBox(height: 8),
+                      ],
                     ],
                   ),
                 ),
