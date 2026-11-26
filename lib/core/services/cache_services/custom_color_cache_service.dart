@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:quick_write/core/models/cache_models/custom_color_cache.dart';
 import 'package:quick_write/core/services/cache_services/cache_service.dart';
 import 'package:quick_write/core/utils/color_utils.dart';
@@ -14,6 +15,85 @@ class CustomColorCacheService extends CacheService<CustomColorCacheData> {
 
   /// 私有构造函数
   CustomColorCacheService._internal() : super('custom_colors');
+
+  // ================= 云同步支持 =================
+
+  /// 云同步实体的稳定标识
+  static const String syncEntityId = 'custom_colors_store';
+
+  /// 同步时间戳在本地偏好设置中的键名
+  static const String _syncStampKey = 'sync_stamp_custom_colors';
+
+  /// 无同步记录时使用的兜底时间
+  static const String _epochStamp = '1970-01-01T00:00:00.000Z';
+
+  /// 自定义颜色内容的最后修改时间
+  String? _syncStamp;
+
+  /// 供云同步比较使用的修改时间
+  String get syncStamp => _syncStamp ?? _epochStamp;
+
+  /// 读取同步时间戳
+  Future<void> _loadSyncStamp() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _syncStamp = prefs.getString(_syncStampKey);
+    } catch (e) {
+      debugPrint('CustomColorCacheService 读取同步时间戳失败: $e');
+    }
+  }
+
+  /// 写入同步时间戳
+  Future<void> _writeSyncStamp(String stamp) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_syncStampKey, stamp);
+    } catch (e) {
+      debugPrint('CustomColorCacheService 写入同步时间戳失败: $e');
+    }
+  }
+
+  /// 构建云同步实体
+  ///
+  /// 自定义颜色属于用户偏好，随设置一起在多台设备间共用。
+  Map<String, dynamic> buildSyncEntity() {
+    return <String, dynamic>{
+      'uuid': syncEntityId,
+      'updatedAt': syncStamp,
+      'payload': _data.toJson(),
+    };
+  }
+
+  /// 应用云端同步下来的自定义颜色
+  Future<void> applySyncedData(Map<String, dynamic> entity) async {
+    final Object? payload = entity['payload'];
+    if (payload is! Map) return;
+    final CustomColorCacheData remote = CustomColorCacheData.fromJson(
+      Map<String, dynamic>.from(payload),
+    );
+    _data = remote;
+    await super.save(remote);
+    revision.value++;
+    final Object? stamp = entity['updatedAt'];
+    if (stamp is String && stamp.isNotEmpty) {
+      _syncStamp = stamp;
+      await _writeSyncStamp(stamp);
+    }
+    debugPrint('CustomColorCacheService 已应用云端自定义颜色');
+  }
+
+  /// 保存自定义颜色并刷新同步时间戳
+  @override
+  Future<bool> save(CustomColorCacheData data) async {
+    _data = data;
+    final String stamp = DateTime.now().toUtc().toIso8601String();
+    final bool ok = await super.save(data);
+    if (ok) {
+      _syncStamp = stamp;
+      await _writeSyncStamp(stamp);
+    }
+    return ok;
+  }
 
   // ================= 场景键 =================
 
@@ -45,6 +125,7 @@ class CustomColorCacheService extends CacheService<CustomColorCacheData> {
   Future<void> initialize() async {
     try {
       await super.initialize();
+      await _loadSyncStamp();
 
       final loadedData = await load();
 

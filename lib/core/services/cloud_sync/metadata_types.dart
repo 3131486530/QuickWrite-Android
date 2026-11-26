@@ -10,6 +10,7 @@ import 'package:quick_write/core/models/volume.dart';
 import 'package:quick_write/core/models/writing_stat.dart';
 import 'package:quick_write/core/services/app_paths.dart';
 import 'package:quick_write/core/services/settings_service.dart';
+import 'package:quick_write/core/services/cache_services/custom_color_cache_service.dart';
 import 'package:quick_write/core/services/cache_services/misc_cache_service.dart';
 import 'package:quick_write/core/services/cache_services/workspace_session_cache_service.dart';
 import 'package:quick_write/core/services/cloud_sync/sync_models.dart';
@@ -70,6 +71,11 @@ const String kMiscPreferencesCollection = 'miscPreferences';
 /// 承载每本书上次打开的标签页与选中位置，记录只有一条
 const String kWorkspaceSessionCollection = 'workspaceSession';
 
+/// 自定义颜色集合名
+///
+/// 承载自制调色板中的颜色，记录只有一条，换设备后可直接复用
+const String kCustomColorsCollection = 'customColors';
+
 /// 存放于全局元数据文件的集合
 ///
 /// 这些集合不隶属于某本书，改动频率低、数据量小
@@ -81,7 +87,34 @@ const Set<String> kGlobalCollectionNames = {
   kAppSettingsCollection,
   kMiscPreferencesCollection,
   kWorkspaceSessionCollection,
+  kCustomColorsCollection,
 };
+
+/// 读取本机自定义颜色并转换为同步实体
+List<Map<String, dynamic>> _loadCustomColorEntities() {
+  return <Map<String, dynamic>>[
+    CustomColorCacheService.instance.buildSyncEntity(),
+  ];
+}
+
+/// 自定义颜色（正文、标题、大纲等场景中用户自选或自存的颜色）
+final MetadataEntityType _customColorsType = MetadataEntityType(
+  name: kCustomColorsCollection,
+  perBook: false,
+  keyOf: _uuidKeyOf,
+  loadAll: (isar) => _loadCustomColorEntities(),
+  putAll: (isar, entities) async {
+    for (final Map<String, dynamic> entity in entities) {
+      unawaited(
+        Future<void>.delayed(Duration.zero, () async {
+          await CustomColorCacheService.instance.applySyncedData(entity);
+        }),
+      );
+    }
+  },
+  // 云端删除颜色记录时保留本机数据，避免误清用户自制调色板
+  deleteByKeys: (isar, keys) async {},
+);
 
 /// 参与元数据同步的实体类型注册表
 final List<MetadataEntityType> kMetadataEntityTypes = [
@@ -97,6 +130,7 @@ final List<MetadataEntityType> kMetadataEntityTypes = [
   _appSettingsType,
   _miscPreferencesType,
   _workspaceSessionType,
+  _customColorsType,
 ];
 
 /// 参与同步的一种元数据实体类型
