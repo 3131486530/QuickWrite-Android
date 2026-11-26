@@ -20,6 +20,10 @@ class NameGenerator {
     required NameGenOptions options,
     required Random random,
   }) {
+    // 词条列表词典：每条词条就是一个完整结果，直接整条抽取
+    if (dictionary.isEntryList) {
+      return _pickOne(dictionary.entries, random);
+    }
     switch (dictionary.category) {
       case NameCategory.person:
         return generatePerson(dictionary, options: options, random: random);
@@ -28,6 +32,25 @@ class NameGenerator {
       case NameCategory.other:
         return generateOther(dictionary, random: random);
     }
+  }
+
+  /// 从词条列表随机抽取若干不重复词条
+  ///
+  /// 词条数不足 [count] 时按实际词条数返回，不做任何拼接组合。
+  static List<String> pickEntries(
+    NameDictionary dictionary, {
+    required int count,
+    required Random random,
+  }) {
+    final entries = dictionary.entries.where((e) => e.trim().isNotEmpty).toList();
+    if (entries.isEmpty) return const [];
+    if (entries.length <= count) return List<String>.of(entries)..shuffle(random);
+    final picked = <String>[];
+    final pool = List<String>.of(entries);
+    for (int i = 0; i < count && pool.isNotEmpty; i++) {
+      picked.add(pool.removeAt(random.nextInt(pool.length)));
+    }
+    return picked;
   }
 
   /// 批量生成名字

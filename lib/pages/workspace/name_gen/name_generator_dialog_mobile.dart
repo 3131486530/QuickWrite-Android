@@ -92,10 +92,8 @@ class _MobileNameGeneratorDialogState extends State<_MobileNameGeneratorDialog> 
   final Random _random = Random();
 
   /// 自定义姓氏输入控制器
-  final TextEditingController _surnameController = TextEditingController();
 
   /// 自定义后缀输入控制器
-  final TextEditingController _suffixController = TextEditingController();
 
   /// 每次生成数量输入控制器
   final TextEditingController _countController = TextEditingController();
@@ -104,7 +102,8 @@ class _MobileNameGeneratorDialogState extends State<_MobileNameGeneratorDialog> 
   final FocusNode _countFocusNode = FocusNode();
 
   /// 当前类别
-  NameCategory _category = NameCategory.person;
+  // 章节式词典不再区分类别，统一用 other 承载全部自建词典
+  NameCategory _category = NameCategory.other;
 
   /// 当前生成参数
   NameGenOptions _options = const NameGenOptions();
@@ -130,8 +129,6 @@ class _MobileNameGeneratorDialogState extends State<_MobileNameGeneratorDialog> 
     // 尚未保存过参数时采用移动端默认生成数量
     _options = _cache.getSavedOptions() ??
         const NameGenOptions(batchCount: _mobileDefaultBatchCount);
-    _surnameController.text = _options.customSurname;
-    _suffixController.text = _options.customSuffix;
     _countController.text = '${_options.batchCount}';
     _countFocusNode.addListener(_onCountFocusChanged);
     _reloadDictionaries();
@@ -148,8 +145,6 @@ class _MobileNameGeneratorDialogState extends State<_MobileNameGeneratorDialog> 
   @override
   void dispose() {
     _syncService.removeListener(_onCloudSyncChanged);
-    _surnameController.dispose();
-    _suffixController.dispose();
     _countController.dispose();
     _countFocusNode.removeListener(_onCountFocusChanged);
     _countFocusNode.dispose();
@@ -176,12 +171,29 @@ class _MobileNameGeneratorDialogState extends State<_MobileNameGeneratorDialog> 
     setState(_reloadDictionaries);
   }
 
-  /// 重新加载各类别的词典列表与选中项
+  /// 重新加载词典列表与选中项
+  ///
+  /// 章节式词典不区分类别：内置词典不再展示，全部自建词典合并成一个列表。
   void _reloadDictionaries() {
+    final List<NameDictionary> all = <NameDictionary>[];
     for (final category in NameCategory.values) {
-      _dictionaries[category] = _cache.getDictionaries(category);
-      _selectedIds[category] = _cache.getSelectedDictionaryId(category);
+      all.addAll(_cache.getDictionaries(category).where((d) => !d.isBuiltin));
     }
+    _dictionaries[NameCategory.other] = all;
+
+    // 优先沿用 other 的选中项，其次沿用任何类别中仍存在的选中项
+    String selected = _cache.getSelectedDictionaryId(NameCategory.other);
+    if (all.every((d) => d.id != selected)) {
+      selected = '';
+      for (final category in NameCategory.values) {
+        final String id = _cache.getSelectedDictionaryId(category);
+        if (all.any((d) => d.id == id)) {
+          selected = id;
+          break;
+        }
+      }
+    }
+    _selectedIds[NameCategory.other] = selected;
   }
 
   /// 重新加载各类别的生成历史
@@ -208,6 +220,14 @@ class _MobileNameGeneratorDialogState extends State<_MobileNameGeneratorDialog> 
     final dictionary = _currentDictionary;
     if (dictionary == null) return const [];
 
+    // 章节式词典：每条词条即完整结果，直接随机抽取，不做任何组合
+    if (dictionary.isEntryList) {
+      return NameGenerator.pickEntries(
+        dictionary,
+        count: _options.batchCount,
+        random: _random,
+      );
+    }
     return NameGenerator.generateBatch(
       dictionary,
       options: _options,
@@ -268,20 +288,6 @@ class _MobileNameGeneratorDialogState extends State<_MobileNameGeneratorDialog> 
 
   // ================= 词典管理 =================
 
-  /// 切换类别
-  ///
-  /// 切换后立即按新类别的词典生成一次结果。
-  void _switchCategory(NameCategory category) {
-    if (category == _category) return;
-    setState(() {
-      // 先把旧类别的当前结果归档，再切换类别生成新结果
-      _archiveCurrentResults();
-      _category = category;
-      _resultTab = NameResultTab.results;
-      _results = _generateNames();
-    });
-  }
-
   /// 选中词典
   ///
   /// 切换后立即按新词典生成一次结果。
@@ -322,18 +328,15 @@ class _MobileNameGeneratorDialogState extends State<_MobileNameGeneratorDialog> 
 
   /// 新建词典
   Future<void> _createDictionary() async {
-    final result = await showNameDictionaryEditorDialog(
-      context: context,
-      initialCategory: _category,
-    );
+    final result = await showNameDictionaryEditorDialog(context: context);
     if (result == null) return;
     await _cache.saveDictionary(result);
     if (!mounted) return;
     setState(() {
       _archiveCurrentResults();
       _reloadDictionaries();
-      _selectedIds[result.category] = result.id;
-      _category = result.category;
+      _selectedIds[NameCategory.other] = result.id;
+      _category = NameCategory.other;
       _resultTab = NameResultTab.results;
       _results = _generateNames();
     });
@@ -418,8 +421,6 @@ class _MobileNameGeneratorDialogState extends State<_MobileNameGeneratorDialog> 
           child: ListView(
             padding: const EdgeInsets.fromLTRB(_horizontalPadding, 12, _horizontalPadding, 4),
             children: [
-              _buildCategorySelector(),
-              const SizedBox(height: 16),
               _buildDictionarySelector(),
               const SizedBox(height: 16),
               ..._buildOptions(),
@@ -430,16 +431,6 @@ class _MobileNameGeneratorDialogState extends State<_MobileNameGeneratorDialog> 
         ),
         _buildGenerateBar(),
       ],
-    );
-  }
-
-  /// 构建类别切换栏
-  Widget _buildCategorySelector() {
-    return SegmentedControl(
-      labels: NameCategory.values.map((c) => c.label).toList(),
-      selectedIndex: NameCategory.values.indexOf(_category),
-      height: 40,
-      onChanged: (index) => _switchCategory(NameCategory.values[index]),
     );
   }
 
@@ -500,58 +491,14 @@ class _MobileNameGeneratorDialogState extends State<_MobileNameGeneratorDialog> 
 
   /// 构建生成参数
   ///
-  /// 参数按每行两项紧凑排布：人名提供性别、名长、姓氏与数量，
-  /// 地名提供主体字数、后缀与数量，其他类别仅提供数量。
+  /// 词条列表词典只需设置生成数量，内容全部来自词条本身。
   List<Widget> _buildOptions() {
-    switch (_category) {
-      case NameCategory.person:
-        return [
-          _buildOptionRow(
-            left: _buildOptionItem(label: '性别', control: _buildGenderDropdown()),
-            right: _buildOptionItem(label: '名长', control: _buildLengthDropdown()),
-          ),
-          const SizedBox(height: 12),
-          _buildOptionRow(
-            left: _buildOptionItem(
-              label: '姓氏',
-              control: _buildTextControl(
-                controller: _surnameController,
-                hintText: '随机',
-                onChanged: (value) => _onOptionsChanged(_options.copyWith(customSurname: value)),
-              ),
-            ),
-            right: _buildOptionItem(label: '数量', control: _buildCountField()),
-          ),
-        ];
-
-      case NameCategory.place:
-        return [
-          _buildOptionRow(
-            left: _buildOptionItem(label: '主体字数', control: _buildLengthDropdown()),
-            right: _buildOptionItem(
-              label: '后缀',
-              control: _buildTextControl(
-                controller: _suffixController,
-                hintText: '随机',
-                onChanged: (value) => _onOptionsChanged(_options.copyWith(customSuffix: value)),
-              ),
-            ),
-          ),
-          const SizedBox(height: 12),
-          _buildOptionRow(
-            left: _buildOptionItem(label: '数量', control: _buildCountField()),
-            right: const SizedBox.shrink(),
-          ),
-        ];
-
-      case NameCategory.other:
-        return [
-          _buildOptionRow(
-            left: _buildOptionItem(label: '数量', control: _buildCountField()),
-            right: const SizedBox.shrink(),
-          ),
-        ];
-    }
+    return [
+      _buildOptionRow(
+        left: _buildOptionItem(label: '数量', control: _buildCountField()),
+        right: const SizedBox.shrink(),
+      ),
+    ];
   }
 
   /// 构建一行两个参数项
@@ -582,46 +529,6 @@ class _MobileNameGeneratorDialogState extends State<_MobileNameGeneratorDialog> 
         const SizedBox(width: _labelGap),
         Expanded(child: control),
       ],
-    );
-  }
-
-  /// 构建性别下拉框
-  Widget _buildGenderDropdown() {
-    return CustomDropdown(
-      width: double.infinity,
-      height: _controlHeight,
-      value: _options.gender.id,
-      items: PersonGender.values
-          .map((g) => DropdownItem(displayText: g.label, value: g.id))
-          .toList(),
-      onChanged: (value) => _onOptionsChanged(_options.copyWith(gender: PersonGender.fromId(value))),
-    );
-  }
-
-  /// 构建名字字数下拉框
-  ///
-  /// 逐字词典按字数组合，整词词典只能随机取整词。
-  Widget _buildLengthDropdown() {
-    final person = _category == NameCategory.person;
-    final usesCharPool = _currentDictionary?.isCharBased ?? true;
-
-    final items = usesCharPool
-        ? (person ? _personLengthItems : _placeLengthItems)
-        : _wordLengthItems;
-    final value = person ? '${_options.givenLength}' : '${_options.stemLength}';
-    // 词典切换后原有取值可能不在新选项中，此时回退为"随机"
-    final resolved = items.any((item) => item.value == value) ? value : '0';
-
-    return CustomDropdown(
-      width: double.infinity,
-      height: _controlHeight,
-      value: resolved,
-      items: items,
-      onChanged: (value) => _onOptionsChanged(
-        person
-            ? _options.copyWith(givenLength: int.parse(value))
-            : _options.copyWith(stemLength: int.parse(value)),
-      ),
     );
   }
 
@@ -837,30 +744,6 @@ class _MobileNameGeneratorDialogState extends State<_MobileNameGeneratorDialog> 
     }
   }
 
-  /// 人名的名字长度选项
-  ///
-  /// 中文人名由姓氏加一到两个字组成，故只提供一到二字。
-  static const List<DropdownItem> _personLengthItems = [
-    DropdownItem(displayText: '随机', value: '0'),
-    DropdownItem(displayText: '1 字', value: '1'),
-    DropdownItem(displayText: '2 字', value: '2'),
-  ];
-
-  /// 地名的主体词长度选项
-  static const List<DropdownItem> _placeLengthItems = [
-    DropdownItem(displayText: '随机', value: '0'),
-    DropdownItem(displayText: '1 字', value: '1'),
-    DropdownItem(displayText: '2 字', value: '2'),
-    DropdownItem(displayText: '3 字', value: '3'),
-  ];
-
-  /// 整词池的长度选项
-  ///
-  /// 整词池的词条本身即完整的名字或地名，不存在按字数组合的概念，
-  /// 因此只提供"随机"。
-  static const List<DropdownItem> _wordLengthItems = [
-    DropdownItem(displayText: '随机', value: '0'),
-  ];
 }
 
 /// 单个名字标签

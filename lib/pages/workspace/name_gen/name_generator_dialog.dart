@@ -8,7 +8,6 @@ import 'package:quick_write/core/services/cache_services/name_gen_cache_service.
 import 'package:quick_write/core/services/cloud_sync/cloud_sync_service.dart';
 import 'package:quick_write/core/services/name_gen/name_generator.dart';
 import 'package:quick_write/shared/widgets/qw_dialogs.dart';
-import 'package:quick_write/shared/widgets/qw_dropdown.dart';
 import 'package:quick_write/shared/widgets/qw_snackbar.dart';
 import 'package:quick_write/pages/workspace/name_gen/widgets/name_dictionary_editor_dialog.dart';
 import 'package:quick_write/pages/workspace/name_gen/widgets/name_dictionary_panel.dart';
@@ -22,7 +21,7 @@ Future<void> showNameGeneratorDialog({
   return showDialogBase(
     context: context,
     title: '随机取名',
-    subtitle: '按类别与词典随机组合名字',
+    subtitle: '从词典词条中随机抽取名字',
     titleIcon: Icons.casino_outlined,
     width: 880,
     height: 600,
@@ -72,7 +71,8 @@ class _NameGeneratorDialogState extends State<_NameGeneratorDialog> {
   final FocusNode _countFocusNode = FocusNode();
 
   /// 当前类别
-  NameCategory _category = NameCategory.person;
+  // 章节式词典不再区分类别，统一用 other 承载全部自建词典
+  NameCategory _category = NameCategory.other;
 
   /// 当前生成参数
   NameGenOptions _options = const NameGenOptions();
@@ -144,12 +144,29 @@ class _NameGeneratorDialogState extends State<_NameGeneratorDialog> {
     setState(_reloadDictionaries);
   }
 
-  /// 重新加载各类别的词典列表与选中项
+  /// 重新加载词典列表与选中项
+  ///
+  /// 章节式词典不区分类别：内置词典不再展示，全部自建词典合并成一个列表。
   void _reloadDictionaries() {
+    final List<NameDictionary> all = <NameDictionary>[];
     for (final category in NameCategory.values) {
-      _dictionaries[category] = _cache.getDictionaries(category);
-      _selectedIds[category] = _cache.getSelectedDictionaryId(category);
+      all.addAll(_cache.getDictionaries(category).where((d) => !d.isBuiltin));
     }
+    _dictionaries[NameCategory.other] = all;
+
+    // 优先沿用 other 的选中项，其次沿用任何类别中仍存在的选中项
+    String selected = _cache.getSelectedDictionaryId(NameCategory.other);
+    if (all.every((d) => d.id != selected)) {
+      selected = '';
+      for (final category in NameCategory.values) {
+        final String id = _cache.getSelectedDictionaryId(category);
+        if (all.any((d) => d.id == id)) {
+          selected = id;
+          break;
+        }
+      }
+    }
+    _selectedIds[NameCategory.other] = selected;
   }
 
   /// 重新加载各类别的生成历史
@@ -176,6 +193,14 @@ class _NameGeneratorDialogState extends State<_NameGeneratorDialog> {
     final dictionary = _currentDictionary;
     if (dictionary == null) return const [];
 
+    // 章节式词典：每条词条即完整结果，直接随机抽取，不做任何组合
+    if (dictionary.isEntryList) {
+      return NameGenerator.pickEntries(
+        dictionary,
+        count: _options.batchCount,
+        random: _random,
+      );
+    }
     return NameGenerator.generateBatch(
       dictionary,
       options: _options,
@@ -236,20 +261,6 @@ class _NameGeneratorDialogState extends State<_NameGeneratorDialog> {
 
   // ================= 词典管理 =================
 
-  /// 切换类别
-  ///
-  /// 切换后立即按新类别的词典生成一次结果。
-  void _switchCategory(NameCategory category) {
-    if (category == _category) return;
-    setState(() {
-      // 先把旧类别的当前结果归档，再切换类别生成新结果
-      _archiveCurrentResults();
-      _category = category;
-      _resultTab = NameResultTab.results;
-      _results = _generateNames();
-    });
-  }
-
   /// 选中词典
   ///
   /// 切换后立即按新词典生成一次结果。
@@ -265,18 +276,15 @@ class _NameGeneratorDialogState extends State<_NameGeneratorDialog> {
 
   /// 新建词典
   Future<void> _createDictionary() async {
-    final result = await showNameDictionaryEditorDialog(
-      context: context,
-      initialCategory: _category,
-    );
+    final result = await showNameDictionaryEditorDialog(context: context);
     if (result == null) return;
     await _cache.saveDictionary(result);
     if (!mounted) return;
     setState(() {
       _archiveCurrentResults();
       _reloadDictionaries();
-      _selectedIds[result.category] = result.id;
-      _category = result.category;
+      _selectedIds[NameCategory.other] = result.id;
+      _category = NameCategory.other;
       _resultTab = NameResultTab.results;
       _results = _generateNames();
     });
@@ -360,17 +368,7 @@ class _NameGeneratorDialogState extends State<_NameGeneratorDialog> {
           width: 244,
           child: Column(
             children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(12, 16, 12, 10),
-                child: CustomDropdown(
-                  width: double.infinity,
-                  value: _category.id,
-                  items: NameCategory.values
-                      .map((c) => DropdownItem(displayText: c.label, value: c.id))
-                      .toList(),
-                  onChanged: (value) => _switchCategory(NameCategory.fromId(value)),
-                ),
-              ),
+              const SizedBox(height: 16),
               Expanded(
                 child: NameDictionaryPanel(
                   dictionaries: _dictionaries[_category] ?? const [],

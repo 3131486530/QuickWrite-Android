@@ -47,6 +47,9 @@ class NamePoolKeys {
   /// 地名：后缀
   static const String suffix = 'suffix';
 
+  /// 词条列表池：章节式词典把全部词条放在这一个池里，随机时整条抽取
+  static const String entries = 'entries';
+
   /// 其他类别：词组池分组键的前缀
   static const String partPrefix = 'part';
 
@@ -233,6 +236,50 @@ class NameDictionary {
 
   /// 读取指定分组的词条（分组不存在时返回空列表）
   List<String> pool(String key) => pools[key] ?? const [];
+
+  /// 是否为词条列表词典（章节式）
+  ///
+  /// 词条列表词典只有一个 [NamePoolKeys.entries] 池，每条词条本身就是
+  /// 一个完整结果，随机时直接整条抽取，不做任何拼接组合。
+  bool get isEntryList =>
+      pools.length == 1 && pools.containsKey(NamePoolKeys.entries);
+
+  /// 词条列表词典的全部词条
+  List<String> get entries => pool(NamePoolKeys.entries);
+
+  /// 全部分组的词条按池顺序合并去重
+  ///
+  /// 供旧的多池词典转成词条列表时使用。
+  List<String> get allEntries {
+    final Set<String> result = <String>{};
+    for (final List<String> values in pools.values) {
+      for (final String value in values) {
+        final String trimmed = value.trim();
+        if (trimmed.isNotEmpty) result.add(trimmed);
+      }
+    }
+    return result.toList();
+  }
+
+  /// 以词条列表形态创建词典（章节式：名字即词典名，词条列表即正文）
+  factory NameDictionary.entryList({
+    required String id,
+    required String name,
+    required List<String> entries,
+    bool isBuiltin = false,
+    int orderIndex = customOrderStart,
+  }) {
+    return NameDictionary(
+      id: id,
+      name: name,
+      category: NameCategory.other,
+      isBuiltin: isBuiltin,
+      orderIndex: orderIndex,
+      pools: <String, List<String>>{
+        NamePoolKeys.entries: List<String>.unmodifiable(entries),
+      },
+    );
+  }
 
   /// 其他类别：按组合顺序排列的词组池分组键
   List<String> get partKeys {
