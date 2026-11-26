@@ -20,6 +20,7 @@ import 'package:quick_write/core/utils/code_line_selection_utils.dart';
 import 'package:quick_write/core/utils/color_utils.dart';
 import 'package:quick_write/core/utils/find_match_highlighter.dart';
 import 'package:quick_write/core/utils/editor_scroll_helper.dart';
+import 'package:quick_write/core/utils/editor_focus_keep.dart';
 import 'package:quick_write/core/utils/ime_cursor_fixer.dart';
 import 'package:quick_write/core/utils/persistent_selection.dart';
 import 'package:quick_write/core/utils/platform_capabilities.dart';
@@ -375,6 +376,8 @@ class NovelEditorState extends State<NovelEditor> with WidgetsBindingObserver {
         : _EditorToolbarController(onShowMenu: _showContextMenuAt);
     widget.controller.addListener(_onControllerChanged);
     _focusNode.addListener(_onFocusChanged);
+    // 登记输入节点：顶部快捷键、左右抽屉等操作让编辑器失焦后，仍需把光标还回原位
+    EditorFocusKeep.track(_focusNode);
     _lastCodeLines = widget.controller.value.codeLines;
     _previousTextLength = widget.controller.text.length;
 

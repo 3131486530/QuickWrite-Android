@@ -5,6 +5,7 @@ import 'package:isar/isar.dart';
 import 'package:re_editor/re_editor.dart';
 import 'package:quick_write/core/constants/constants.dart';
 import 'package:quick_write/core/services/settings_service.dart';
+import 'package:quick_write/core/utils/editor_focus_keep.dart';
 import 'package:quick_write/core/utils/platform_capabilities.dart';
 import 'package:uuid/uuid.dart';
 import 'package:window_manager/window_manager.dart';

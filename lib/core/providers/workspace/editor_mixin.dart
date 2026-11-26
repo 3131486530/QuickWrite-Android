@@ -181,6 +181,24 @@ mixin EditorMixin on WorkspaceStateBase, BookDataMixin {
     return false;
   }
 
+  /// 把输入焦点还给当前编辑器
+  ///
+  /// 用于顶部快捷键、左右抽屉等操作结束后恢复光标：
+  /// 优先按最近一次聚焦的输入节点归还，节点已卸载时退回编辑器自身的焦点入口。
+  bool restoreEditorFocus() {
+    if (EditorFocusKeep.restoreLastEditorFocus()) return true;
+    final state = currentTab?.editorKey.currentState;
+    if (state is NovelEditorState) {
+      state.requestEditorFocus();
+      return true;
+    }
+    if (state is OutlineEditorState) {
+      state.requestEditorFocus();
+      return true;
+    }
+    return false;
+  }
+
   /// 把文本插入当前编辑器并恢复编辑器光标
   ///
   /// 用于弹窗关闭后回插正文：先写入文本再请求编辑器焦点，

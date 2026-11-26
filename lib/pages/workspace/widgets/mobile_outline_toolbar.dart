@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:quick_write/core/constants/material_icons.dart';
+import 'package:quick_write/core/constants/quick_input_action.dart';
 import 'package:quick_write/core/models/outline_table.dart';
 import 'package:quick_write/core/providers/workspace_provider.dart';
 import 'package:quick_write/core/services/cache_services/custom_color_cache_service.dart';
@@ -10,8 +11,12 @@ import 'package:quick_write/core/utils/text_style_range.dart';
 import 'package:quick_write/pages/workspace/editor/outline_editor.dart';
 import 'package:quick_write/pages/workspace/editor/widgets/outline_color_palette.dart';
 import 'package:quick_write/pages/workspace/editor/widgets/outline_color_swatch_menu.dart';
+import 'package:quick_write/pages/workspace/name_gen/name_generator_dialog_mobile.dart';
+import 'package:quick_write/pages/workspace/toolbar/widgets/mobile_tools_card.dart';
 import 'package:quick_write/pages/workspace/widgets/mobile_table_toolbar_binding.dart';
 import 'package:quick_write/pages/workspace/widgets/punctuation_key_button.dart';
+import 'package:quick_write/pages/workspace/widgets/quick_phrase_manager_dialog.dart';
+import 'package:quick_write/pages/workspace/widgets/quick_phrase_popup.dart';
 import 'package:quick_write/shared/widgets/widgets.dart';
 
 /// 键盘工具栏与二级面板的高度
@@ -76,6 +81,12 @@ class _MobileOutlineToolbarState extends State<MobileOutlineToolbar> with Widget
   /// 软键盘高度，大于 0 表示键盘正在显示
   double _keyboardHeight = 0;
 
+  /// 快捷短语入口图标的锚点，浮层据此定位到图标上方
+  final GlobalKey _phraseButtonKey = GlobalKey();
+
+  /// 快捷短语浮层的 Overlay 条目，为空表示浮层未打开
+  OverlayEntry? _phrasePopupEntry;
+
   /// 软键盘是否正在收起
   ///
   /// 键盘收起时高度逐帧减小，若继续按「高度大于 0」显示，工具栏会跟随键盘
@@ -110,6 +121,7 @@ class _MobileOutlineToolbarState extends State<MobileOutlineToolbar> with Widget
 
   @override
   void dispose() {
+    _removePhrasePopup();
     WidgetsBinding.instance.removeObserver(this);
     FocusManager.instance.removeListener(_onFocusChanged);
     super.dispose();
@@ -643,23 +655,216 @@ class _MobileOutlineToolbarState extends State<MobileOutlineToolbar> with Widget
   Widget _buildQuickInputPanel(BuildContext context, OutlineEditorState state) {
     // 读取当前生效的符号表，用户修改后展开面板即按新列表显示
     final symbols = SettingsService.instance.quickInputSymbols;
+    final actions = _quickInputActions();
+    final colorScheme = Theme.of(context).colorScheme;
 
     return _buildPanelContainer(
       context,
-      ListView.builder(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.only(left: _iconListLeftPadding, right: 4),
-        itemCount: symbols.length,
-        itemBuilder: (context, index) {
-          final symbol = symbols[index];
-          return PunctuationKeyButton(
-            symbol: symbol,
-            onTap: () => _runAction(() => state.insertQuickSymbol(symbol)),
-          );
-        },
+      Row(
+        children: [
+          Expanded(
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.only(left: _iconListLeftPadding, right: 4),
+              itemCount: symbols.length,
+              itemBuilder: (context, index) {
+                final symbol = symbols[index];
+                return PunctuationKeyButton(
+                  symbol: symbol,
+                  onTap: () => _runAction(() => state.insertQuickSymbol(symbol)),
+                );
+              },
+            ),
+          ),
+          // 右侧快捷输入区：与章节编辑器底部符号栏保持一致的自定义快捷入口
+          if (actions.isNotEmpty) ...[
+            Container(
+              width: 1,
+              height: _barHeight * 0.5,
+              margin: const EdgeInsets.only(right: 4),
+              color: colorScheme.outlineVariant,
+            ),
+            ...actions.map((action) => _buildQuickInputActionButton(context, state, action)),
+            const SizedBox(width: 4),
+          ],
+        ],
       ),
     );
   }
+
+  /// 快捷输入右侧操作区配置的可见动作
+  ///
+  /// 与章节编辑器底部符号栏读取同一份设置（自定义快捷输入），
+  /// 「无」不占位、不渲染。
+  List<QuickInputAction> _quickInputActions() {
+    final settings = SettingsService.instance;
+    return [
+      settings.quickInputBarLeftAction,
+      settings.quickInputBarRightAction,
+    ].where((action) => !action.isNone).toList(growable: false);
+  }
+
+  /// 构建单个快捷输入动作按钮
+  ///
+  /// 关键词高亮是大纲节点专属能力，此处不提供；
+  /// 其余动作与章节编辑器共用同一套入口语义：设置与全文搜索打开右侧面板，
+  /// 查找替换、随机取名、快捷短语就地生效，工具类动作交给工具卡分发。
+  Widget _buildQuickInputActionButton(
+    BuildContext context,
+    OutlineEditorState state,
+    QuickInputAction action,
+  ) {
+    final IconData? icon = action.icon;
+    if (icon == null) return const SizedBox.shrink();
+
+    switch (action) {
+      case QuickInputAction.none:
+        return const SizedBox.shrink();
+      case QuickInputAction.keywordToggle:
+        return const SizedBox.shrink();
+      case QuickInputAction.settings:
+        return _buildActionButton(
+          icon: icon,
+          tooltip: action.label,
+          enabled: true,
+          onPressed: () {
+            FocusManager.instance.primaryFocus?.unfocus();
+            context.read<WorkspaceProvider>().openRightSidebar(RightSidebarType.other);
+          },
+        );
+      case QuickInputAction.findReplace:
+        return _buildActionButton(
+          icon: icon,
+          tooltip: action.label,
+          enabled: true,
+          onPressed: () => context.read<WorkspaceProvider>().toggleFindReplace(),
+        );
+      case QuickInputAction.fullTextSearch:
+        return _buildActionButton(
+          icon: icon,
+          tooltip: action.label,
+          enabled: true,
+          onPressed: () {
+            FocusManager.instance.primaryFocus?.unfocus();
+            context.read<WorkspaceProvider>().openRightSidebar(RightSidebarType.search);
+          },
+        );
+      case QuickInputAction.randomName:
+        return _buildActionButton(
+          icon: icon,
+          tooltip: action.label,
+          enabled: true,
+          onPressed: () => _handleRandomNameTap(context, state),
+        );
+      case QuickInputAction.quickPhrase:
+        return PressScaleIconButton(
+          key: _phraseButtonKey,
+          icon: icon,
+          tooltip: action.label,
+          isSelected: _phrasePopupEntry != null,
+          size: _buttonSize,
+          iconSize: _iconSize,
+          onPressed: () => _togglePhrasePopup(context, state),
+        );
+      default:
+        return _buildActionButton(
+          icon: icon,
+          tooltip: action.label,
+          enabled: true,
+          onPressed: () => handleMobileToolAction(context, _toolActionOf(action)),
+        );
+    }
+  }
+
+  /// 快捷输入动作对应的工具卡动作
+  MobileToolAction _toolActionOf(QuickInputAction action) {
+    switch (action) {
+      case QuickInputAction.formatParagraph:
+        return MobileToolAction.formatParagraph;
+      case QuickInputAction.history:
+        return MobileToolAction.history;
+      case QuickInputAction.exportChapter:
+        return MobileToolAction.exportChapter;
+      case QuickInputAction.writingStats:
+        return MobileToolAction.writingStats;
+      case QuickInputAction.copyChapter:
+        return MobileToolAction.copyChapter;
+      case QuickInputAction.sensitiveWordCheck:
+        return MobileToolAction.sensitiveWordCheck;
+      case QuickInputAction.layout:
+        return MobileToolAction.layout;
+      case QuickInputAction.typeset:
+        return MobileToolAction.typeset;
+      case QuickInputAction.backup:
+        return MobileToolAction.backup;
+      default:
+        return MobileToolAction.layout;
+    }
+  }
+
+  /// 随机取名：把选中的名字插入当前大纲节点光标处
+  Future<void> _handleRandomNameTap(BuildContext context, OutlineEditorState state) async {
+    final String? name = await showMobileNameGeneratorDialog(context: context);
+    if (!mounted || name == null || name.isEmpty) return;
+    // 面板关闭后先把光标交还节点，再插入文字，保证落点是原来的编辑位置
+    state.requestEditorFocus();
+    _runAction(() => state.insertPlainText(name));
+  }
+
+  /// 切换快捷短语浮层
+  void _togglePhrasePopup(BuildContext context, OutlineEditorState state) {
+    if (_phrasePopupEntry != null) {
+      _closePhrasePopup();
+      return;
+    }
+    _openPhrasePopup(context, state);
+  }
+
+  /// 以图标为锚点向上弹出快捷短语浮层
+  void _openPhrasePopup(BuildContext context, OutlineEditorState state) {
+    final RenderBox? box = _phraseButtonKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null) return;
+    final OverlayState? overlay = Overlay.maybeOf(context);
+    if (overlay == null) return;
+
+    final Rect anchorRect = box.localToGlobal(Offset.zero) & box.size;
+    setState(() {
+      _phrasePopupEntry = OverlayEntry(
+        builder: (overlayContext) => QuickPhrasePopup(
+          anchorRect: anchorRect,
+          phrases: SettingsService.instance.quickPhrases,
+          onSelect: (phrase) {
+            _closePhrasePopup();
+            // 浮层点击会让节点失焦，先归还光标再插入短语
+            state.requestEditorFocus();
+            _runAction(() => state.insertPlainText(phrase.content));
+          },
+          onEdit: () {
+            _closePhrasePopup();
+            FocusManager.instance.primaryFocus?.unfocus();
+            showQuickPhraseManagerDialog(context: context);
+          },
+          onDismiss: _closePhrasePopup,
+        ),
+      );
+    });
+    overlay.insert(_phrasePopupEntry!);
+  }
+
+  /// 关闭快捷短语浮层
+  void _closePhrasePopup() {
+    if (_phrasePopupEntry == null) return;
+    _removePhrasePopup();
+    if (mounted) setState(() {});
+  }
+
+  /// 移除快捷短语浮层条目
+  void _removePhrasePopup() {
+    _phrasePopupEntry?.remove();
+    _phrasePopupEntry = null;
+  }
+
+
 
   /// 构建文字格式面板
   ///

@@ -112,12 +112,22 @@ class _MobileWorkspaceAppBarState extends State<MobileWorkspaceAppBar> {
                 _BarIconButton(
                   icon: MaterialIcons.undo,
                   tooltip: '撤销',
-                  onPressed: widget.canUndo ? widget.onUndo : null,
+                  onPressed: widget.canUndo
+                      ? () {
+                          widget.onUndo();
+                          _restoreEditorFocus();
+                        }
+                      : null,
                 ),
                 _BarIconButton(
                   icon: MaterialIcons.redo,
                   tooltip: '恢复',
-                  onPressed: widget.canRedo ? widget.onRedo : null,
+                  onPressed: widget.canRedo
+                      ? () {
+                          widget.onRedo();
+                          _restoreEditorFocus();
+                        }
+                      : null,
                 ),
                 _BarIconButton(
                   icon: Icons.article_outlined,
@@ -137,6 +147,15 @@ class _MobileWorkspaceAppBarState extends State<MobileWorkspaceAppBar> {
         ),
       ),
     );
+  }
+
+  /// 顶部快捷键操作结束后把光标还给编辑器
+  ///
+  /// 撤销、恢复、格式卡片关闭等操作会因点击按钮而使编辑器失焦，
+  /// 这里统一按最近一次聚焦的编辑位置恢复，键盘随之重新弹出。
+  void _restoreEditorFocus() {
+    if (!mounted) return;
+    context.read<WorkspaceProvider>().restoreEditorFocus();
   }
 
   /// 计算卡片在顶部操作栏下方的弹出位置与可用高度
@@ -202,6 +221,8 @@ class _MobileWorkspaceAppBarState extends State<MobileWorkspaceAppBar> {
     );
     if (!mounted) return;
     setState(() => _isFormatCardOpen = false);
+    // 卡片收起后把光标还给编辑器，避免点过顶部快捷键就无法继续输入
+    _restoreEditorFocus();
   }
 
   /// 在顶部操作栏下方弹出工具卡片
@@ -245,7 +266,11 @@ class _MobileWorkspaceAppBarState extends State<MobileWorkspaceAppBar> {
     if (!mounted) return;
     setState(() => _isToolsCardOpen = false);
 
-    if (action == null || !context.mounted) return;
+    // 点遮罩仅关闭卡片：光标归位；选中动作则由动作自身决定焦点去向
+    if (action == null || !context.mounted) {
+      _restoreEditorFocus();
+      return;
+    }
     await handleMobileToolAction(context, action);
   }
 }

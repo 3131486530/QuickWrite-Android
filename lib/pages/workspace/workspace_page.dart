@@ -445,6 +445,8 @@ class _WorkspaceContentState extends State<_WorkspaceContent> with WidgetsBindin
         onDrawerChanged: (isOpen) {
           if (_isMobileContentsDrawerOpen == isOpen) return;
           setState(() => _isMobileContentsDrawerOpen = isOpen);
+          // 抽屉收起后把光标还给编辑器：翻开目录/面板会打断输入，关闭后应能直接继续写
+          if (!isOpen) context.read<WorkspaceProvider>().restoreEditorFocus();
         },
         // 抽屉开合的唯一事实来源：滑动开合与面板内的关闭按钮都回写到右侧面板状态
         onEndDrawerChanged: (isOpen) {
@@ -454,6 +456,8 @@ class _WorkspaceContentState extends State<_WorkspaceContent> with WidgetsBindin
             provider.openRightSidebar(provider.rightSidebarType);
           } else {
             provider.closeRightSidebar();
+            // 右侧面板收起后同样归还焦点，避免光标丢失
+            provider.restoreEditorFocus();
           }
         },
         // 常规状态下应用界面延伸到系统状态栏后方，由顶部操作栏自行避让系统状态栏；

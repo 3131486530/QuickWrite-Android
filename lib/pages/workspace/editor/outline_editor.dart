@@ -25,6 +25,7 @@ import 'package:quick_write/core/utils/batch_selection_controller.dart';
 import 'package:quick_write/core/utils/clean_scroll.dart';
 import 'package:quick_write/core/utils/clipboard_state_cache.dart';
 import 'package:quick_write/core/utils/color_utils.dart';
+import 'package:quick_write/core/utils/editor_focus_keep.dart';
 import 'package:quick_write/core/utils/editor_scroll_helper.dart';
 import 'package:quick_write/core/utils/find_replace_target.dart';
 import 'package:quick_write/core/utils/outline_html_codec.dart';
@@ -1027,6 +1028,8 @@ class OutlineEditorState extends State<OutlineEditor>
         }
       });
       _focusNodes[node.id] = focusNode;
+      // 登记输入节点：顶部快捷键、左右抽屉等操作让节点失焦后，仍需把光标还回原位
+      EditorFocusKeep.track(focusNode);
     }
     // 预创建全局键，使未构建的节点也能被定位滚动
     if (!_nodeTileKeys.containsKey(node.id)) {
@@ -5396,6 +5399,17 @@ class OutlineEditorState extends State<OutlineEditor>
       if (focusNode.hasFocus) return true;
     }
     return false;
+  }
+
+  /// 请求活动节点重新获取输入焦点
+  ///
+  /// 供外部在顶部快捷键、抽屉等操作结束后把光标还给编辑器；
+  /// 无活动节点（从未编辑过任何节点）时不做处理。
+  void requestEditorFocus() {
+    final nodeId = _activeNodeId;
+    final focusNode = nodeId == null ? null : _focusNodes[nodeId];
+    if (focusNode == null || focusNode.context == null) return;
+    if (!focusNode.hasFocus) focusNode.requestFocus();
   }
 
   /// 当前活动节点 ID

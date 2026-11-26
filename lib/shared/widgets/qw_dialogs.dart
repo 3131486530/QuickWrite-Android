@@ -87,6 +87,34 @@ Future<T?> showDialogBase<T>({
 
   // 弹层弹出会接管焦点，记录当前焦点（通常是编辑器光标）以便关闭后恢复
   final FocusNode? previousFocus = EditorFocusKeep.capture();
+
+  // 移动端统一改为底部操作面板：从屏幕底部滑出，单手可达，关闭后光标归位
+  if (PlatformCapabilities.isMobile) {
+    final T? sheetResult = await showModalBottomSheet<T>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      barrierDismissible: barrierDismissible,
+      backgroundColor: Colors.transparent,
+      barrierColor: Colors.black.withValues(alpha: 0.5),
+      builder: (sheetContext) => _MobileDialogSheet(
+        title: title,
+        content: content,
+        titleIcon: titleIcon,
+        titleAction: titleAction,
+        subtitle: subtitle,
+        height: height,
+        showCloseButton: showCloseButton,
+        adaptiveHeight: adaptiveHeight,
+        borderRadius: borderRadius,
+        titleFontSize: titleFontSize,
+        dialogInteractiveNotifier: dialogInteractiveNotifier,
+      ),
+    );
+    _restoreFocusAfterDialog(previousFocus);
+    return sheetResult;
+  }
+
   final T? result = await showDialog<T>(
     context: context,
     barrierDismissible: barrierDismissible,
@@ -113,6 +141,184 @@ Future<T?> showDialogBase<T>({
   );
   EditorFocusKeep.restore(previousFocus);
   return result;
+}
+
+/// 弹层关闭后恢复编辑器焦点
+///
+/// 优先把焦点还给打开弹层前的节点；该节点已卸载或本就非编辑器节点时，
+/// 退回到最近一次聚焦的编辑器输入节点，避免关闭面板后光标与输入法一并丢失。
+void _restoreFocusAfterDialog(FocusNode? previousFocus) {
+  EditorFocusKeep.restore(previousFocus);
+  if (previousFocus == null || !previousFocus.hasFocus) {
+    EditorFocusKeep.restoreLastEditorFocus();
+  }
+}
+
+/// 移动端底部操作面板外壳
+///
+/// 由 [showDialogBase] 在移动端使用：从屏幕底部滑出、顶部圆角、带拖拽指示条，
+/// 标题栏与桌面端弹窗保持一致（标题、图标、副标题、右侧操作与关闭按钮），
+/// 内容区按 [adaptiveHeight] 决定自适应高度还是填满面板高度。
+class _MobileDialogSheet extends StatelessWidget {
+  final String title;
+  final Widget content;
+  final IconData? titleIcon;
+  final Widget? titleAction;
+  final String? subtitle;
+  final double height;
+  final bool showCloseButton;
+  final bool adaptiveHeight;
+  final double borderRadius;
+  final double titleFontSize;
+  final ValueListenable<bool>? dialogInteractiveNotifier;
+
+  const _MobileDialogSheet({
+    required this.title,
+    required this.content,
+    this.titleIcon,
+    this.titleAction,
+    this.subtitle,
+    required this.height,
+    required this.showCloseButton,
+    required this.adaptiveHeight,
+    required this.borderRadius,
+    required this.titleFontSize,
+    this.dialogInteractiveNotifier,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme colorScheme = Theme.of(context).colorScheme;
+    final Size screenSize = MediaQuery.sizeOf(context);
+    final double keyboardInset = MediaQuery.viewInsetsOf(context).bottom;
+    final double panelRadius = borderRadius < 16 ? 16 : borderRadius;
+
+    // 面板最高不超过屏幕的 88%，键盘弹起时再让出键盘高度，保证内容与按钮可见
+    final double maxHeight = math.max(120, screenSize.height * 0.88 - keyboardInset);
+    final double panelHeight = math.min(height, maxHeight);
+    /// 按交互状态组装面板：生成中禁用关闭，避免中途关掉面板
+    Widget buildShell(bool interactive) {
+      return Container(
+        width: double.infinity,
+        constraints: BoxConstraints(maxHeight: maxHeight),
+        height: adaptiveHeight ? null : panelHeight,
+        decoration: BoxDecoration(
+          color: colorScheme.surface,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(panelRadius)),
+        ),
+        child: Column(
+          mainAxisSize: adaptiveHeight ? MainAxisSize.min : MainAxisSize.max,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const _SheetDragHandle(),
+            _buildTitleBar(context, colorScheme, interactive),
+            Flexible(
+              child: adaptiveHeight
+                  ? SingleChildScrollView(child: content)
+                  : Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: content,
+                    ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final ValueListenable<bool>? interactiveNotifier = dialogInteractiveNotifier;
+    final Widget body = interactiveNotifier == null
+        ? buildShell(true)
+        : ValueListenableBuilder<bool>(
+            valueListenable: interactiveNotifier,
+            builder: (builderContext, value, _) => buildShell(value),
+          );
+
+    return Padding(
+      padding: EdgeInsets.only(bottom: keyboardInset),
+      child: SafeArea(top: false, child: body),
+    );
+  }
+
+  /// 标题栏
+  ///
+  /// 无标题时仅保留关闭按钮，避免出现空白横条
+  Widget _buildTitleBar(BuildContext context, ColorScheme colorScheme, bool interactive) {
+    final bool hasTitleArea = title.isNotEmpty || titleIcon != null || subtitle != null;
+    final VoidCallback? closeAction = showCloseButton && interactive
+        ? () => Navigator.of(context).maybePop()
+        : null;
+
+    if (!hasTitleArea) {
+      if (!showCloseButton) return const SizedBox(height: 4);
+      return Align(
+        alignment: Alignment.centerRight,
+        child: Padding(
+          padding: const EdgeInsets.only(right: 8),
+          child: DialogCloseButton(onPressed: closeAction),
+        ),
+      );
+    }
+
+    final Widget titleText = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          title,
+          style: TextStyle(
+            fontSize: titleFontSize,
+            fontWeight: FontWeight.w600,
+            color: colorScheme.onSurface,
+          ),
+        ),
+        if (subtitle != null && subtitle!.isNotEmpty) ...[
+          const SizedBox(height: 4),
+          Text(
+            subtitle!,
+            style: TextStyle(fontSize: titleFontSize - 4, color: colorScheme.onSurfaceVariant),
+          ),
+        ],
+      ],
+    );
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 0, 8, 12),
+      child: Row(
+        children: [
+          if (titleIcon != null) ...[
+            Icon(titleIcon, size: 20, color: colorScheme.primary),
+            const SizedBox(width: 8),
+          ],
+          Expanded(child: titleText),
+          if (titleAction != null) titleAction!,
+          if (showCloseButton) DialogCloseButton(onPressed: closeAction, large: subtitle != null),
+        ],
+      ),
+    );
+  }
+}
+
+/// 底部面板顶部的拖拽指示条
+class _SheetDragHandle extends StatelessWidget {
+  const _SheetDragHandle();
+
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme colorScheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(top: 8, bottom: 8),
+      child: Center(
+        child: Container(
+          width: 36,
+          height: 4,
+          decoration: BoxDecoration(
+            color: colorScheme.onSurfaceVariant.withValues(alpha: 0.3),
+            borderRadius: BorderRadius.circular(2),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 /// 弹窗标题栏关闭按钮
