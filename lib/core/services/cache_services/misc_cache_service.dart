@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:quick_write/core/models/cache_models/misc_cache.dart';
 import 'package:quick_write/core/services/cache_services/cache_service.dart';
 
@@ -23,6 +24,20 @@ class MiscCacheService extends CacheService<MiscCacheData> {
   /// 私有构造函数
   MiscCacheService._internal() : super('misc');
 
+  // ================= 云同步常量 =================
+
+  /// 同步实体的稳定标识
+  static const String syncEntityId = 'miscPreferences';
+
+  /// SharedPreferences 中记录同步时间戳的键
+  static const String _syncStampKey = 'sync_stamp_misc';
+
+  /// 最早时间戳
+  static const String _epochStamp = '1970-01-01T00:00:00.000Z';
+
+  /// 最近一次修改时间（UTC，ISO8601）
+  String? _syncStamp;
+
   // ================= 状态属性 =================
 
   /// 当前缓存数据（内存中的副本）
@@ -45,6 +60,14 @@ class MiscCacheService extends CacheService<MiscCacheData> {
         debugPrint('MiscCacheService: 已从缓存文件加载数据');
       } else {
         debugPrint('MiscCacheService: 使用空数据（缓存文件不存在或为空）');
+      }
+
+      // 读取同步时间戳，用于与其它设备比较新旧
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        _syncStamp = prefs.getString(_syncStampKey);
+      } catch (e) {
+        debugPrint('MiscCacheService 读取同步时间戳失败: $e');
       }
     } catch (e, stackTrace) {
       debugPrint('MiscCacheService 初始化失败: $e');
@@ -215,6 +238,63 @@ class MiscCacheService extends CacheService<MiscCacheData> {
   Future<bool> saveSensitiveWordHighlightEnabled(bool enabled) async {
     _data = _data.copyWith(sensitiveWordHighlightEnabled: enabled);
     return await save(_data);
+  }
+
+  // ================= 云同步支持 =================
+
+  /// 保存数据时同步刷新修改时间，使其它设备能判定这是较新的操作记忆
+  @override
+  Future<bool> save(MiscCacheData data) async {
+    final saved = await super.save(data);
+    if (saved) {
+      await _writeSyncStamp(DateTime.now().toUtc().toIso8601String());
+    }
+    return saved;
+  }
+
+  /// 写入同步时间戳
+  Future<void> _writeSyncStamp(String stamp) async {
+    _syncStamp = stamp;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_syncStampKey, stamp);
+    } catch (e) {
+      debugPrint('MiscCacheService 写入同步时间戳失败: $e');
+    }
+  }
+
+  /// 构建参与云同步的缓存实体
+  ///
+  /// 缓存内容都是点击出来的操作记忆：书架分组选择、列表排序、
+  /// 工具面板顺序、折叠状态与正文标红开关，换设备后无需重新操作
+  Map<String, dynamic> buildSyncEntity() {
+    return {
+      'uuid': syncEntityId,
+      'updatedAt': _syncStamp ?? _epochStamp,
+      'payload': _data.toJson(),
+    };
+  }
+
+  /// 应用云端同步下来的缓存
+  Future<void> applySyncedData(Map<String, dynamic> entity) async {
+    final payload = entity['payload'];
+    if (payload is! Map) return;
+
+    final MiscCacheData remote;
+    try {
+      remote = MiscCacheData.fromJson(Map<String, dynamic>.from(payload));
+    } catch (e) {
+      debugPrint('MiscCacheService 解析云端缓存失败: $e');
+      return;
+    }
+
+    final stamp = entity['updatedAt'] as String? ?? _epochStamp;
+    _data = remote;
+    // 直接调用基类保存，避免把远端时间戳又覆盖为当前时间
+    await super.save(remote);
+    await _writeSyncStamp(stamp);
+
+    debugPrint('MiscCacheService 已应用云端缓存');
   }
 
   // ================= 通用方法 =================

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:isar/isar.dart';
 import 'package:quick_write/core/models/book.dart';
@@ -8,6 +9,9 @@ import 'package:quick_write/core/models/setting_item.dart';
 import 'package:quick_write/core/models/volume.dart';
 import 'package:quick_write/core/models/writing_stat.dart';
 import 'package:quick_write/core/services/app_paths.dart';
+import 'package:quick_write/core/services/settings_service.dart';
+import 'package:quick_write/core/services/cache_services/misc_cache_service.dart';
+import 'package:quick_write/core/services/cache_services/workspace_session_cache_service.dart';
 import 'package:quick_write/core/services/cloud_sync/sync_models.dart';
 
 /// 书籍信息集合名
@@ -49,6 +53,23 @@ const String kDictsCollection = 'dicts';
 /// 借助元数据的删除记录在各设备间传播；主题内容由文件同步按普通文件传输
 const String kThemesCollection = 'themes';
 
+/// 应用设置集合名
+///
+/// 只承载一条记录，内容为除字体家族以外的全部设置项，
+/// 使换设备后无需重新配置字号、布局、开关与自定义项
+const String kAppSettingsCollection = 'appSettings';
+
+/// 杂项操作记忆集合名
+///
+/// 承载书架分组选择、列表排序、工具面板顺序、折叠状态与正文标红开关等
+/// 点击出来的偏好，记录只有一条
+const String kMiscPreferencesCollection = 'miscPreferences';
+
+/// 工作台会话集合名
+///
+/// 承载每本书上次打开的标签页与选中位置，记录只有一条
+const String kWorkspaceSessionCollection = 'workspaceSession';
+
 /// 存放于全局元数据文件的集合
 ///
 /// 这些集合不隶属于某本书，改动频率低、数据量小
@@ -57,6 +78,9 @@ const Set<String> kGlobalCollectionNames = {
   kStatsCollection,
   kDictsCollection,
   kThemesCollection,
+  kAppSettingsCollection,
+  kMiscPreferencesCollection,
+  kWorkspaceSessionCollection,
 };
 
 /// 参与元数据同步的实体类型注册表
@@ -70,6 +94,9 @@ final List<MetadataEntityType> kMetadataEntityTypes = [
   _statsType,
   _dictsType,
   _themesType,
+  _appSettingsType,
+  _miscPreferencesType,
+  _workspaceSessionType,
 ];
 
 /// 参与同步的一种元数据实体类型
@@ -552,6 +579,84 @@ final MetadataEntityType _themesType = MetadataEntityType(
     if (keys.isEmpty) return;
     await _deleteThemeFiles(keys);
   },
+);
+
+// ================= 应用设置 =================
+
+/// 读取本机设置并转换为同步实体
+///
+/// 设置保存在配置文件中，实体只有一条，稳定标识固定，
+/// 修改时间用于与其它设备上的设置比较新旧
+Future<List<Map<String, dynamic>>> _loadAppSettingsEntities() async {
+  return [SettingsService.instance.buildSyncEntity()];
+}
+
+final MetadataEntityType _appSettingsType = MetadataEntityType(
+  name: kAppSettingsCollection,
+  perBook: false,
+  keyOf: _uuidKeyOf,
+  loadAll: (isar) => _loadAppSettingsEntities(),
+  putAll: (isar, entities) async {
+    if (entities.isEmpty) return;
+    final entity = entities.first;
+    // 设置落盘与界面刷新涉及文件 IO，放到数据库事务之外执行，
+    // 避免长时间占用 Isar 事务
+    unawaited(
+      Future<void>.delayed(Duration.zero, () async {
+        await SettingsService.instance.applySyncedSettings(entity);
+      }),
+    );
+  },
+  // 设置始终存在，不参与删除传播
+  deleteByKeys: (isar, keys) async {},
+);
+
+// ================= 杂项操作记忆 / 工作台会话 =================
+
+/// 读取本机杂项操作记忆
+Future<List<Map<String, dynamic>>> _loadMiscPreferenceEntities() async {
+  return [MiscCacheService.instance.buildSyncEntity()];
+}
+
+final MetadataEntityType _miscPreferencesType = MetadataEntityType(
+  name: kMiscPreferencesCollection,
+  perBook: false,
+  keyOf: _uuidKeyOf,
+  loadAll: (isar) => _loadMiscPreferenceEntities(),
+  putAll: (isar, entities) async {
+    if (entities.isEmpty) return;
+    final entity = entities.first;
+    // 缓存落盘涉及文件 IO，放到数据库事务之外执行
+    unawaited(
+      Future<void>.delayed(Duration.zero, () async {
+        await MiscCacheService.instance.applySyncedData(entity);
+      }),
+    );
+  },
+  // 缓存始终存在，不参与删除传播
+  deleteByKeys: (isar, keys) async {},
+);
+
+/// 读取本机工作台会话
+Future<List<Map<String, dynamic>>> _loadWorkspaceSessionEntities() async {
+  return [WorkspaceSessionCacheService.instance.buildSyncEntity()];
+}
+
+final MetadataEntityType _workspaceSessionType = MetadataEntityType(
+  name: kWorkspaceSessionCollection,
+  perBook: false,
+  keyOf: _uuidKeyOf,
+  loadAll: (isar) => _loadWorkspaceSessionEntities(),
+  putAll: (isar, entities) async {
+    if (entities.isEmpty) return;
+    final entity = entities.first;
+    unawaited(
+      Future<void>.delayed(Duration.zero, () async {
+        await WorkspaceSessionCacheService.instance.applySyncedData(entity);
+      }),
+    );
+  },
+  deleteByKeys: (isar, keys) async {},
 );
 
 /// 读取实体的最后修改时间

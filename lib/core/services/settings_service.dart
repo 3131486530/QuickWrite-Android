@@ -45,6 +45,17 @@ class SettingsService extends ChangeNotifier {
   /// SharedPreferences 中存储配置文件路径的 key
   static const String _configPathKey = 'config_file_path';
 
+  /// 配置文件内记录设置最后修改时间的键名
+  static const String _syncStampKey = 'settingsUpdatedAt';
+
+  /// 最早时间戳
+  ///
+  /// 首次启动生成的默认配置取该时间，使云端已有的设置能够覆盖它
+  static const String _epochStamp = '1970-01-01T00:00:00.000Z';
+
+  /// 设置同步实体的稳定标识
+  static const String syncEntityId = 'appSettings';
+
   // ================= 状态属性 =================
   
   /// 当前设置
@@ -77,6 +88,12 @@ class SettingsService extends ChangeNotifier {
   /// 是否已初始化
   bool _isInitialized = false;
   bool get isInitialized => _isInitialized;
+
+  /// 设置内容的最后修改时间（UTC，ISO8601）
+  ///
+  /// 参与云同步的版本判定：与其它设备上的设置取较新者，
+  /// 换设备后可直接恢复上次的配置，无需重新设置
+  String? _settingsSyncStamp;
 
   /// 是否首次启动（配置文件是否是新创建的）
   bool _isFirstLaunch = false;
@@ -169,6 +186,16 @@ class SettingsService extends ChangeNotifier {
         final content = await configFile.readAsString();
         final jsonMap = json.decode(content) as Map<String, dynamic>;
         _settings = AppSettings.fromJson(jsonMap);
+        _settingsSyncStamp = jsonMap[_syncStampKey] as String?;
+        if (_settingsSyncStamp == null) {
+          // 旧版本配置没有时间戳，用文件修改时间兜底，避免被误判为刚改过
+          try {
+            _settingsSyncStamp =
+                (await configFile.stat()).modified.toUtc().toIso8601String();
+          } catch (e) {
+            _settingsSyncStamp = _epochStamp;
+          }
+        }
         _isFirstLaunch = false; // 配置文件存在，不是首次启动
         debugPrint('已加载配置文件: $_settings');
       } catch (e) {
@@ -184,12 +211,12 @@ class SettingsService extends ChangeNotifier {
       final defaultFont = _getSystemDefaultFontFamily();
       _settings = _platformDefaults.copyWith(fontFamily: defaultFont);
       _isFirstLaunch = true; // 配置文件不存在，是首次启动
-      await _saveSettings();
+      await _saveSettings(stamp: _epochStamp);
     }
   }
   
   /// 保存设置到配置文件
-  Future<bool> _saveSettings() async {
+  Future<bool> _saveSettings({String? stamp}) async {
     if (_configFilePath == null) {
       debugPrint('配置文件路径为空，无法保存');
       return false;
@@ -197,8 +224,12 @@ class SettingsService extends ChangeNotifier {
     
     try {
       final configFile = File(_configFilePath!);
-      final jsonContent = const JsonEncoder.withIndent('  ').convert(_settings.toJson());
+      final resolvedStamp = stamp ?? DateTime.now().toUtc().toIso8601String();
+      final jsonMap = Map<String, dynamic>.from(_settings.toJson())
+        ..[_syncStampKey] = resolvedStamp;
+      final jsonContent = const JsonEncoder.withIndent('  ').convert(jsonMap);
       await configFile.writeAsString(jsonContent);
+      _settingsSyncStamp = resolvedStamp;
       debugPrint('配置已保存: $_settings');
       return true;
     } catch (e) {
@@ -210,6 +241,86 @@ class SettingsService extends ChangeNotifier {
   /// 根据当前设置重新解析快捷输入栏符号列表
   void _syncQuickInputSymbols() {
     _quickInputSymbols = PunctuationSymbols.parseSymbolList(_settings.quickInputSymbolsText);
+  }
+
+  // ================= 云同步支持 =================
+
+  /// 构建参与云同步的设置实体
+  ///
+  /// 除字体家族以外的全部设置项都会进入实体：字体文件本身不参与云同步，
+  /// 字体家族若跨设备搬运会指向本机不存在的字体，因此保留本机取值
+  Map<String, dynamic> buildSyncEntity() {
+    return {
+      'uuid': syncEntityId,
+      'updatedAt': _settingsSyncStamp ?? _epochStamp,
+      'payload': _settingsPayloadForSync(),
+    };
+  }
+
+  /// 生成同步用设置 JSON，剔除字体家族字段
+  Map<String, dynamic> _settingsPayloadForSync() {
+    final jsonMap = Map<String, dynamic>.from(_settings.toJson());
+
+    final global = jsonMap['global'];
+    if (global is Map) {
+      global.remove('appFontFamily');
+    }
+
+    final editor = jsonMap['editor'];
+    if (editor is Map) {
+      final font = editor['font'];
+      if (font is Map) {
+        font.remove('family');
+        font.remove('outlineFamily');
+        font.remove('outlineTitleFamily');
+      }
+
+      final layout = editor['layout'];
+      if (layout is Map) {
+        final chapterTitle = layout['chapterTitle'];
+        if (chapterTitle is Map) {
+          chapterTitle.remove('family');
+        }
+      }
+    }
+
+    return jsonMap;
+  }
+
+  /// 应用云端同步下来的设置
+  ///
+  /// 字体家族保留本机取值，其余设置全部按远端内容生效并立即通知界面刷新；
+  /// 时间戳沿用远端时间，避免刚恢复的设置被再次判定为新改动而回传
+  Future<void> applySyncedSettings(Map<String, dynamic> entity) async {
+    final payload = entity['payload'];
+    if (payload is! Map) return;
+
+    final AppSettings remote;
+    try {
+      remote = AppSettings.fromJson(Map<String, dynamic>.from(payload));
+    } catch (e) {
+      debugPrint('解析云端设置失败: $e');
+      return;
+    }
+
+    final merged = remote.copyWith(
+      appFontFamily: _settings.appFontFamily,
+      fontFamily: _settings.fontFamily,
+      outlineFontFamily: _settings.outlineFontFamily,
+      outlineTitleFontFamily: _settings.outlineTitleFontFamily,
+      chapterTitleFontFamily: _settings.chapterTitleFontFamily,
+    );
+
+    final stamp = entity['updatedAt'] as String? ?? _epochStamp;
+    if (merged == _settings && stamp == _settingsSyncStamp) return;
+
+    _cancelDebouncedSave();
+    _settings = merged;
+    _syncQuickInputSymbols();
+    final success = await _saveSettings(stamp: stamp);
+    notifyListeners();
+
+    debugPrint('已应用云端设置: $success');
   }
 
   // ================= 主题设置相关 =================
