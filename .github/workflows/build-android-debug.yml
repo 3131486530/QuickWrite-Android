@@ -88,6 +88,26 @@ jobs:
           EOF
           cat android/key.properties
 
+      - name: Cache Gradle and pub
+        # 缓存命中时依赖不再走网络，既提速也避开 Maven Central 的 429 限流
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.pub-cache
+          key: gradle-${{ runner.os }}-${{ hashFiles('pubspec.lock', 'android/**/*.gradle*', 'android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      - name: Install Gradle mirror init script
+        # Maven Central 会针对共享出口 IP 返回 429，把镜像前置后再走依赖解析
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.gradle/init.d
+          cp android/ci/gradle-mirror-init.gradle ~/.gradle/init.d/ci-mirror.gradle
+          cat ~/.gradle/init.d/ci-mirror.gradle | head -5
+
       - name: Fetch packages
         run: flutter pub get
 
@@ -96,7 +116,8 @@ jobs:
         # 保证每次递增，能直接覆盖安装上一次的测试包。
         env:
           # 依赖下载失败时由 Gradle 自身重试，缓解仓库限流导致的偶发失败
-          GRADLE_OPTS: "-Dorg.gradle.internal.repository.max.retries=5 -Dorg.gradle.internal.repository.initial.backoff=2000"
+          # max.tentatives 控制单次请求的尝试次数，initial.backoff 为首次退避毫秒数（指数增长）
+          GRADLE_OPTS: "-Dorg.gradle.internal.repository.max.tentatives=10 -Dorg.gradle.internal.repository.initial.backoff=3000 -Dorg.gradle.internal.http.connectionTimeout=60000 -Dorg.gradle.internal.http.socketTimeout=120000"
         run: |
           set -euo pipefail
           FULL_VERSION="$(awk '/^version:/ {print $2; exit}' pubspec.yaml | tr -d '"')"
@@ -121,8 +142,13 @@ jobs:
               echo "::error::连续 3 次构建失败"
               exit 1
             fi
-            echo "第 ${attempt} 次失败，60s 后重试"
-            sleep 60
+            if [ "$attempt" -eq 1 ]; then
+              echo "第 1 次失败，120s 后重试"
+              sleep 120
+            else
+              echo "第 2 次失败，240s 后重试"
+              sleep 240
+            fi
           done
 
       - name: Rename artifact
