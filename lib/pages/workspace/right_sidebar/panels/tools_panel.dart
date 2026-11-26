@@ -148,7 +148,7 @@ class _ToolsPanelState extends State<ToolsPanel> {
         return _buildToolButton(
           context,
           icon: Icons.gpp_bad_outlined,
-          title: '敏感词',
+          title: '敏感词检测',
           description: '扫描全书并定位敏感词',
           onTap: _openSensitiveWordCheck,
         );

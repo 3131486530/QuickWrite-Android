@@ -21,7 +21,7 @@ enum ToolsSection {
   nameGen('nameGen', '随机取名', Icons.casino_rounded, ToolsSectionGroup.function),
 
   /// 敏感词
-  sensitiveWord('sensitiveWord', '敏感词', Icons.gpp_bad_outlined, ToolsSectionGroup.function),
+  sensitiveWord('sensitiveWord', '敏感词检测', Icons.gpp_bad_outlined, ToolsSectionGroup.function),
 
   /// 书籍信息
   bookInfo('bookInfo', '书籍信息', Icons.menu_book_rounded, ToolsSectionGroup.section),

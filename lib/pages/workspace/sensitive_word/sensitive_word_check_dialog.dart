@@ -17,7 +17,7 @@ Future<void> showSensitiveWordCheckDialog({
 }) {
   return showDialogBase(
     context: context,
-    title: '敏感词',
+    title: '敏感词检测',
     subtitle: '扫描全部章节并定位敏感词',
     titleIcon: Icons.gpp_bad_outlined,
     width: 780,
@@ -35,7 +35,7 @@ Future<void> showMobileSensitiveWordCheckDialog({
 }) {
   return showDialogBase(
     context: context,
-    title: '敏感词',
+    title: '敏感词检测',
     subtitle: '扫描全部章节并定位敏感词',
     titleIcon: Icons.gpp_bad_outlined,
     width: 460,
@@ -143,7 +143,7 @@ class _SensitiveWordCheckDialogState extends State<_SensitiveWordCheckDialog> {
     );
   }
 
-  /// 顶部操作栏：标红开关 + 编辑词库 + 重新扫描
+  /// 顶部操作栏：启用开关 + 编辑词库 + 重新扫描
   Widget _buildToolbar(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final enabled = widget.provider.sensitiveWordService.highlightEnabled;
@@ -153,7 +153,7 @@ class _SensitiveWordCheckDialogState extends State<_SensitiveWordCheckDialog> {
       child: Row(
         children: [
           Tooltip(
-            message: '开启后正文中的敏感词会实时标红',
+            message: '开启后正文中的敏感词会实时标红，可在设置中调整',
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -164,7 +164,7 @@ class _SensitiveWordCheckDialogState extends State<_SensitiveWordCheckDialog> {
                 ),
                 const SizedBox(width: 6),
                 Text(
-                  '标红',
+                  '启用',
                   style: context.bodySmall?.copyWith(
                     color: colorScheme.onSurfaceVariant,
                   ),
