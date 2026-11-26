@@ -264,6 +264,19 @@ class AppSettings {
   /// 与 [staticCursorEnabled] 互斥，同时只会有一种光标动画生效。
   final bool breathingCursorEnabled;
 
+  /// 光标颜色（亮色主题，十六进制字符串）
+  ///
+  /// null 表示跟随主题主色
+  final String? cursorColorLight;
+
+  /// 光标颜色（暗色主题，十六进制字符串）
+  ///
+  /// null 表示跟随主题主色
+  final String? cursorColorDark;
+
+  /// 是否显示底部信息栏（章节与大纲编辑器底部的状态栏）
+  final bool bottomStatusBarEnabled;
+
   /// 是否启用预览模式
   /// 开启后，单击章节/设定/备份预览以预览模式打开，再次单击其他项时替换当前预览标签页
   /// 关闭后，所有标签页均以固定模式打开
@@ -316,6 +329,9 @@ class AppSettings {
 
   /// 字数浮窗是否额外显示码字速度
   final bool wordCountFloatingSpeedEnabled;
+
+  /// 字数浮窗是否显示本章字数
+  final bool wordCountFloatingWordCountEnabled;
 
   /// 字数浮窗显示样式（标准、精简、极简）
   final WordCountFloatingMode wordCountFloatingMode;
@@ -451,6 +467,9 @@ class AppSettings {
     this.openChapterCursorMode = 'default', // 打开文件时光标定位模式
     this.staticCursorEnabled = false, // 静态光标（光标不闪烁）
     this.breathingCursorEnabled = false, // 呼吸式顺滑光标（淡入淡出呼吸动画）
+    this.cursorColorLight, // 光标颜色（亮色主题，null 跟随主题主色）
+    this.cursorColorDark, // 光标颜色（暗色主题，null 跟随主题主色）
+    this.bottomStatusBarEnabled = true, // 是否显示底部信息栏
     this.previewModeEnabled = true, // 是否启用预览模式
     this.quickInputBarEnabled = true, // 是否显示快捷输入栏（移动端）
     this.punctuationAutoCompleteEnabled = true, // 是否开启标点符号自动补全（移动端）
@@ -464,6 +483,7 @@ class AppSettings {
     this.wordCountFloatingEnabled = false, // 是否启用字数浮窗
     this.wordCountFloatingPosition = 'topRight', // 字数浮窗显示位置（默认右上）
     this.wordCountFloatingSpeedEnabled = false, // 字数浮窗是否显示码字速度
+    this.wordCountFloatingWordCountEnabled = true, // 字数浮窗是否显示本章字数
     this.wordCountFloatingMode = WordCountFloatingMode.defaultMode, // 字数浮窗显示样式
     // 码字统计设置
     this.statsIncludePasteWords = false, // 码字统计是否包含粘贴字数
@@ -593,6 +613,10 @@ class AppSettings {
       openChapterCursorMode: autoBackupJson['openCursorMode'] as String? ?? defaults.openChapterCursorMode,
       staticCursorEnabled: autoBackupJson['staticCursor'] as bool? ?? defaults.staticCursorEnabled,
       breathingCursorEnabled: autoBackupJson['breathingCursor'] as bool? ?? defaults.breathingCursorEnabled,
+      cursorColorLight: autoBackupJson['cursorColorLight'] as String? ?? defaults.cursorColorLight,
+      cursorColorDark: autoBackupJson['cursorColorDark'] as String? ?? defaults.cursorColorDark,
+      bottomStatusBarEnabled:
+          autoBackupJson['bottomStatusBar'] as bool? ?? defaults.bottomStatusBarEnabled,
       previewModeEnabled: autoBackupJson['previewModeEnabled'] as bool? ?? defaults.previewModeEnabled,
       quickInputBarEnabled: autoBackupJson['quickInputBarEnabled'] as bool? ?? defaults.quickInputBarEnabled,
       punctuationAutoCompleteEnabled: autoBackupJson['punctuationAutoCompleteEnabled'] as bool? ?? defaults.punctuationAutoCompleteEnabled,
@@ -609,6 +633,8 @@ class AppSettings {
       wordCountFloatingEnabled: wordCountFloatingJson['enabled'] as bool? ?? defaults.wordCountFloatingEnabled,
       wordCountFloatingPosition: wordCountFloatingJson['position'] as String? ?? defaults.wordCountFloatingPosition,
       wordCountFloatingSpeedEnabled: wordCountFloatingJson['speedEnabled'] as bool? ?? defaults.wordCountFloatingSpeedEnabled,
+      wordCountFloatingWordCountEnabled:
+          wordCountFloatingJson['wordCountEnabled'] as bool? ?? defaults.wordCountFloatingWordCountEnabled,
       wordCountFloatingMode: WordCountFloatingMode.fromId(wordCountFloatingJson['mode'] as String?),
 
       // 码字统计设置（编辑器）
@@ -751,6 +777,9 @@ class AppSettings {
           'openCursorMode': openChapterCursorMode,
           'staticCursor': staticCursorEnabled,
           'breathingCursor': breathingCursorEnabled,
+          'cursorColorLight': cursorColorLight,
+          'cursorColorDark': cursorColorDark,
+          'bottomStatusBar': bottomStatusBarEnabled,
           'previewModeEnabled': previewModeEnabled,
           'quickInputBarEnabled': quickInputBarEnabled,
           'punctuationAutoCompleteEnabled': punctuationAutoCompleteEnabled,
@@ -765,6 +794,7 @@ class AppSettings {
           'enabled': wordCountFloatingEnabled,
           'position': wordCountFloatingPosition,
           'speedEnabled': wordCountFloatingSpeedEnabled,
+          'wordCountEnabled': wordCountFloatingWordCountEnabled,
           'mode': wordCountFloatingMode.id,
         },
         // 正文自动替换规则
@@ -869,6 +899,9 @@ class AppSettings {
     String? openChapterCursorMode,
     bool? staticCursorEnabled,
     bool? breathingCursorEnabled,
+    Object? cursorColorLight = _unset,
+    Object? cursorColorDark = _unset,
+    bool? bottomStatusBarEnabled,
     bool? previewModeEnabled,
     bool? quickInputBarEnabled,
     bool? punctuationAutoCompleteEnabled,
@@ -886,6 +919,7 @@ class AppSettings {
     bool? wordCountFloatingEnabled,
     String? wordCountFloatingPosition,
     bool? wordCountFloatingSpeedEnabled,
+    bool? wordCountFloatingWordCountEnabled,
     WordCountFloatingMode? wordCountFloatingMode,
     // 码字统计设置
     bool? statsIncludePasteWords,
@@ -979,6 +1013,11 @@ class AppSettings {
       openChapterCursorMode: openChapterCursorMode ?? this.openChapterCursorMode,
       staticCursorEnabled: staticCursorEnabled ?? this.staticCursorEnabled,
       breathingCursorEnabled: breathingCursorEnabled ?? this.breathingCursorEnabled,
+      cursorColorLight:
+          cursorColorLight == _unset ? this.cursorColorLight : cursorColorLight as String?,
+      cursorColorDark:
+          cursorColorDark == _unset ? this.cursorColorDark : cursorColorDark as String?,
+      bottomStatusBarEnabled: bottomStatusBarEnabled ?? this.bottomStatusBarEnabled,
       previewModeEnabled: previewModeEnabled ?? this.previewModeEnabled,
       quickInputBarEnabled: quickInputBarEnabled ?? this.quickInputBarEnabled,
       punctuationAutoCompleteEnabled: punctuationAutoCompleteEnabled ?? this.punctuationAutoCompleteEnabled,
@@ -996,6 +1035,8 @@ class AppSettings {
       wordCountFloatingEnabled: wordCountFloatingEnabled ?? this.wordCountFloatingEnabled,
       wordCountFloatingPosition: wordCountFloatingPosition ?? this.wordCountFloatingPosition,
       wordCountFloatingSpeedEnabled: wordCountFloatingSpeedEnabled ?? this.wordCountFloatingSpeedEnabled,
+      wordCountFloatingWordCountEnabled:
+          wordCountFloatingWordCountEnabled ?? this.wordCountFloatingWordCountEnabled,
       wordCountFloatingMode: wordCountFloatingMode ?? this.wordCountFloatingMode,
       // 码字统计设置
       statsIncludePasteWords: statsIncludePasteWords ?? this.statsIncludePasteWords,
@@ -1116,6 +1157,9 @@ class AppSettings {
            other.openChapterCursorMode == openChapterCursorMode &&
            other.staticCursorEnabled == staticCursorEnabled &&
            other.breathingCursorEnabled == breathingCursorEnabled &&
+           other.cursorColorLight == cursorColorLight &&
+           other.cursorColorDark == cursorColorDark &&
+           other.bottomStatusBarEnabled == bottomStatusBarEnabled &&
            other.previewModeEnabled == previewModeEnabled &&
            other.quickInputBarEnabled == quickInputBarEnabled &&
            other.punctuationAutoCompleteEnabled == punctuationAutoCompleteEnabled &&
@@ -1132,6 +1176,7 @@ class AppSettings {
            other.wordCountFloatingEnabled == wordCountFloatingEnabled &&
            other.wordCountFloatingPosition == wordCountFloatingPosition &&
            other.wordCountFloatingSpeedEnabled == wordCountFloatingSpeedEnabled &&
+           other.wordCountFloatingWordCountEnabled == wordCountFloatingWordCountEnabled &&
            other.wordCountFloatingMode == wordCountFloatingMode &&
            // 码字统计设置
            other.statsIncludePasteWords == statsIncludePasteWords &&
@@ -1235,6 +1280,9 @@ class AppSettings {
         openChapterCursorMode,
         staticCursorEnabled,
         breathingCursorEnabled,
+        cursorColorLight,
+        cursorColorDark,
+        bottomStatusBarEnabled,
         previewModeEnabled,
         quickInputBarEnabled,
         punctuationAutoCompleteEnabled,
@@ -1247,6 +1295,7 @@ class AppSettings {
         wordCountFloatingEnabled,
         wordCountFloatingPosition,
         wordCountFloatingSpeedEnabled,
+        wordCountFloatingWordCountEnabled,
         wordCountFloatingMode,
       ),
       // 码字统计设置

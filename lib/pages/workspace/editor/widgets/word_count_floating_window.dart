@@ -10,7 +10,8 @@ import 'package:quick_write/core/utils/typography_extension.dart';
 ///
 /// 移动端叠加在编辑区上的一层半透明浮窗，实时显示当前标签页字数；
 /// 开启码字速度后额外显示一行码字速度。显示位置由设置决定，
-/// 位于底部时随编辑区一同被键盘上推。浮窗不参与点击，不影响正文操作。
+/// 位于底部时随编辑区一同被键盘上推。
+/// 点击浮窗会从底部弹出快捷面板，可直接切换字数统计与码字统计的显示。
 class WordCountFloatingWindow extends StatefulWidget {
   const WordCountFloatingWindow({super.key});
 
@@ -24,6 +25,11 @@ class _WordCountFloatingWindowState extends State<WordCountFloatingWindow> {
 
   /// 浮窗背景不透明度（半透明效果）
   static const double _backgroundOpacity = 0.72;
+
+  /// 字号整体较早期版本缩小约三分之一
+  static const double _labelFontSize = 10;
+  static const double _valueFontSize = 11;
+  static const double _iconSize = 10;
 
   @override
   void initState() {
@@ -47,6 +53,62 @@ class _WordCountFloatingWindowState extends State<WordCountFloatingWindow> {
     }
   }
 
+  /// 点击浮窗后弹出的快捷设置面板
+  Future<void> _showQuickSettings(BuildContext context) async {
+    final settings = SettingsService.instance;
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (sheetContext, setSheetState) {
+            void apply(Future<bool> future) {
+              future.then((_) {
+                if (!sheetContext.mounted) return;
+                setSheetState(() {});
+                setState(() {});
+              });
+            }
+
+            return SafeArea(
+              top: false,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+                    child: Text(
+                      '字数浮窗',
+                      style: Theme.of(sheetContext).textTheme.titleMedium,
+                    ),
+                  ),
+                  SwitchListTile(
+                    value: settings.wordCountFloatingWordCountEnabled,
+                    title: const Text('字数统计'),
+                    subtitle: const Text('在浮窗中显示当前章节字数'),
+                    onChanged: (value) => apply(
+                      settings.updateWordCountFloatingWordCountEnabled(value),
+                    ),
+                  ),
+                  SwitchListTile(
+                    value: settings.wordCountFloatingSpeedEnabled,
+                    title: const Text('码字统计'),
+                    subtitle: const Text('在浮窗中显示每分钟码字速度'),
+                    onChanged: (value) => apply(
+                      settings.updateWordCountFloatingSpeedEnabled(value),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     // 移动端专属功能，桌面端不显示
@@ -65,6 +127,9 @@ class _WordCountFloatingWindowState extends State<WordCountFloatingWindow> {
     final Listenable listenable = speedEnabled && tracker != null
         ? Listenable.merge([provider.wordCountNotifier, tracker])
         : provider.wordCountNotifier;
+    // 两项都关闭时仍保留字数，避免浮窗变为空白
+    final bool showWordCount =
+        SettingsService.instance.wordCountFloatingWordCountEnabled || !speedEnabled;
 
     // 计算浮窗贴靠的四角位置
     final position = SettingsService.instance.wordCountFloatingPosition;
@@ -78,14 +143,17 @@ class _WordCountFloatingWindowState extends State<WordCountFloatingWindow> {
       bottom: alignTop ? null : _edgeMargin,
       left: alignLeft ? _edgeMargin : null,
       right: alignLeft ? null : _edgeMargin,
-      child: IgnorePointer(
-        child: ListenableBuilder(
-          listenable: listenable,
-          builder: (context, _) => _buildWindow(
+      child: ListenableBuilder(
+        listenable: listenable,
+        builder: (context, _) => GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: () => _showQuickSettings(context),
+          child: _buildWindow(
             context,
             tab.wordCount,
             speedEnabled ? (tracker?.writingSpeed ?? 0) : null,
             mode,
+            showWordCount,
           ),
         ),
       ),
@@ -96,21 +164,28 @@ class _WordCountFloatingWindowState extends State<WordCountFloatingWindow> {
   ///
   /// [writingSpeed] 非空时额外渲染一行码字速度
   /// [mode] 决定每一行展示图标、标签与数值的组合
-  Widget _buildWindow(BuildContext context, int wordCount, int? writingSpeed, WordCountFloatingMode mode) {
+  /// [showWordCount] 控制是否渲染本章字数行
+  Widget _buildWindow(
+    BuildContext context,
+    int wordCount,
+    int? writingSpeed,
+    WordCountFloatingMode mode,
+    bool showWordCount,
+  ) {
     final colorScheme = Theme.of(context).colorScheme;
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
       decoration: BoxDecoration(
         // 半透明底色，保留正文可见
         color: colorScheme.surface.withValues(alpha: _backgroundOpacity),
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(6),
         border: Border.all(color: colorScheme.outlineVariant.withValues(alpha: 0.6)),
         boxShadow: [
           BoxShadow(
             color: Colors.black.withValues(alpha: 0.08),
-            blurRadius: 12,
-            offset: const Offset(0, 2),
+            blurRadius: 8,
+            offset: const Offset(0, 1.5),
           ),
         ],
       ),
@@ -119,16 +194,17 @@ class _WordCountFloatingWindowState extends State<WordCountFloatingWindow> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           // 本章字数
-          _buildRow(
-            context,
-            icon: Icons.text_fields_rounded,
-            label: '字数',
-            value: '$wordCount 字',
-            mode: mode,
-          ),
+          if (showWordCount)
+            _buildRow(
+              context,
+              icon: Icons.text_fields_rounded,
+              label: '字数',
+              value: '$wordCount 字',
+              mode: mode,
+            ),
           if (writingSpeed != null) ...[
-            const SizedBox(height: 4),
             // 码字速度
+            if (showWordCount) const SizedBox(height: 2),
             _buildRow(
               context,
               icon: Icons.speed_rounded,
@@ -158,16 +234,26 @@ class _WordCountFloatingWindowState extends State<WordCountFloatingWindow> {
       mainAxisSize: MainAxisSize.min,
       children: [
         if (mode.showIcon) ...[
-          Icon(icon, size: 14, color: colorScheme.primary),
-          const SizedBox(width: 6),
+          Icon(icon, size: _iconSize, color: colorScheme.primary),
+          const SizedBox(width: 4),
         ],
         if (mode.showLabel) ...[
-          Text(label, style: context.bodySmall?.copyWith(color: colorScheme.onSurfaceVariant)),
-          const SizedBox(width: 8),
+          Text(
+            label,
+            style: context.bodySmall?.copyWith(
+              fontSize: _labelFontSize,
+              color: colorScheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(width: 5),
         ],
         Text(
           value,
-          style: context.bodyMedium?.copyWith(color: colorScheme.onSurface, fontWeight: FontWeight.w600),
+          style: context.bodyMedium?.copyWith(
+            fontSize: _valueFontSize,
+            color: colorScheme.onSurface,
+            fontWeight: FontWeight.w600,
+          ),
         ),
       ],
     );

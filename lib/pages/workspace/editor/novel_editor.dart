@@ -1934,7 +1934,7 @@ class NovelEditorState extends State<NovelEditor> with WidgetsBindingObserver {
                 letterSpacing: settings.letterSpacing,
                 textColor: ColorUtils.getFontColorForTheme(context),
                 backgroundColor: Colors.transparent,
-                cursorColor: colorScheme.primary,
+                cursorColor: ColorUtils.getCursorColorForTheme(context, colorScheme.primary),
                 cursorWidth: _cursorWidth,
                 selectionColor: _focusNode.hasFocus
                     ? focusedSelectionColor

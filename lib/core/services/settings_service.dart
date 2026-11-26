@@ -716,6 +716,18 @@ class SettingsService extends ChangeNotifier {
   /// 获取呼吸式顺滑光标是否启用（true 表示光标做淡入淡出的呼吸动画）
   bool get breathingCursorEnabled => _settings.breathingCursorEnabled;
 
+  /// 获取字数浮窗是否显示本章字数
+  bool get wordCountFloatingWordCountEnabled => _settings.wordCountFloatingWordCountEnabled;
+
+  /// 获取光标颜色（亮色主题，null 表示跟随主题主色）
+  String? get cursorColorLight => _settings.cursorColorLight;
+
+  /// 获取光标颜色（暗色主题，null 表示跟随主题主色）
+  String? get cursorColorDark => _settings.cursorColorDark;
+
+  /// 获取底部信息栏是否显示
+  bool get bottomStatusBarEnabled => _settings.bottomStatusBarEnabled;
+
   /// 获取预览模式是否启用
   /// 移动端不提供预览模式，始终返回关闭
   bool get previewModeEnabled => PlatformCapabilities.isMobile ? false : _settings.previewModeEnabled;
@@ -1023,6 +1035,34 @@ class SettingsService extends ChangeNotifier {
       breathingCursorEnabled: value,
       staticCursorEnabled: value ? false : _settings.staticCursorEnabled,
     );
+    return updateSettings(newSettings);
+  }
+
+  /// 更新字数浮窗的本章字数显示开关
+  Future<bool> updateWordCountFloatingWordCountEnabled(bool value) async {
+    final newSettings = _settings.copyWith(wordCountFloatingWordCountEnabled: value);
+    return updateSettings(newSettings);
+  }
+
+  /// 更新光标颜色（亮色主题）
+  ///
+  /// [colorHex] 为 null 表示恢复跟随主题主色
+  Future<bool> updateCursorColorLight(String? colorHex) async {
+    final newSettings = _settings.copyWith(cursorColorLight: colorHex);
+    return updateSettings(newSettings);
+  }
+
+  /// 更新光标颜色（暗色主题）
+  ///
+  /// [colorHex] 为 null 表示恢复跟随主题主色
+  Future<bool> updateCursorColorDark(String? colorHex) async {
+    final newSettings = _settings.copyWith(cursorColorDark: colorHex);
+    return updateSettings(newSettings);
+  }
+
+  /// 更新底部信息栏开关
+  Future<bool> updateBottomStatusBarEnabled(bool value) async {
+    final newSettings = _settings.copyWith(bottomStatusBarEnabled: value);
     return updateSettings(newSettings);
   }
 

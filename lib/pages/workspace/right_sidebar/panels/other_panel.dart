@@ -4,7 +4,9 @@ import 'package:quick_write/core/constants/quick_input_action.dart';
 import 'package:quick_write/core/constants/word_count_floating_mode.dart';
 import 'package:quick_write/core/services/backup_service.dart';
 import 'package:quick_write/core/services/settings_service.dart';
+import 'package:quick_write/core/utils/color_utils.dart';
 import 'package:quick_write/core/utils/platform_capabilities.dart';
+import 'package:quick_write/shared/dialogs/color_picker_dialog.dart';
 import 'package:quick_write/shared/widgets/qw_dropdown.dart';
 import '../widgets/right_sidebar_widgets.dart';
 import '../widgets/auto_replace_dialog.dart';
@@ -85,6 +87,8 @@ class _OtherPanelState extends State<OtherPanel> {
     final wordCountFloatingPosition = settingsService.wordCountFloatingPosition;
     final wordCountFloatingSpeedEnabled = settingsService.wordCountFloatingSpeedEnabled;
     final wordCountFloatingMode = settingsService.wordCountFloatingMode;
+    final wordCountFloatingWordCountEnabled = settingsService.wordCountFloatingWordCountEnabled;
+    final bottomStatusBarEnabled = settingsService.bottomStatusBarEnabled;
     
     // 使用 Column 布局，确保内容区域自适应填充剩余空间
     return Container(
@@ -117,6 +121,12 @@ class _OtherPanelState extends State<OtherPanel> {
                   if (widget.scope != OtherPanelScope.backup)
                     _buildEditorBehaviorSection(context, openChapterCursorMode, previewModeEnabled),
 
+                  // 界面显示设置区块（「备份设置」入口下隐藏）
+                  if (widget.scope != OtherPanelScope.backup) ...[
+                    const SizedBox(height: 20),
+                    _buildInterfaceSection(context, bottomStatusBarEnabled),
+                  ],
+
                   // 输入习惯设置区块（桌面端专属，「备份设置」入口下隐藏）
                   if (!PlatformCapabilities.isMobile && widget.scope != OtherPanelScope.backup) ...[
                     const SizedBox(height: 20),
@@ -139,7 +149,14 @@ class _OtherPanelState extends State<OtherPanel> {
                   // 字数浮窗设置区块（移动端专属，「备份设置」入口下隐藏）
                   if (PlatformCapabilities.isMobile && widget.scope != OtherPanelScope.backup) ...[
                     const SizedBox(height: 20),
-                    _buildWordCountFloatingSection(context, wordCountFloatingEnabled, wordCountFloatingPosition, wordCountFloatingSpeedEnabled, wordCountFloatingMode),
+                    _buildWordCountFloatingSection(
+                      context,
+                      wordCountFloatingEnabled,
+                      wordCountFloatingPosition,
+                      wordCountFloatingSpeedEnabled,
+                      wordCountFloatingWordCountEnabled,
+                      wordCountFloatingMode,
+                    ),
                   ],
 
                   // 快捷键设置区块（移动端没有物理键盘，不适用）
@@ -313,6 +330,8 @@ class _OtherPanelState extends State<OtherPanel> {
             setState(() {});
           },
         ),
+        // 光标颜色：默认跟随主题主色，可自定义
+        _buildCursorColorItem(context),
         // 静态光标开关：开启后正文光标常亮、不做闪烁动画
         SwitchSettingItem(
           icon: Icons.border_color_outlined,
@@ -560,6 +579,7 @@ class _OtherPanelState extends State<OtherPanel> {
     bool enabled,
     String position,
     bool speedEnabled,
+    bool wordCountEnabled,
     WordCountFloatingMode mode,
   ) {
     // 浮窗显示位置选项
@@ -608,6 +628,15 @@ class _OtherPanelState extends State<OtherPanel> {
             },
           ),
           SwitchSettingItem(
+            icon: Icons.text_fields_outlined,
+            label: '字数统计',
+            value: wordCountEnabled,
+            onChanged: (value) {
+              SettingsService.instance.updateWordCountFloatingWordCountEnabled(value);
+              setState(() {});
+            },
+          ),
+          SwitchSettingItem(
             icon: Icons.speed_outlined,
             label: '码字速度',
             value: speedEnabled,
@@ -618,6 +647,118 @@ class _OtherPanelState extends State<OtherPanel> {
           ),
         ],
       ],
+    );
+  }
+
+  /// 构建界面显示设置区块
+  ///
+  /// 控制编辑器底部信息栏的显隐，章节编辑器与大纲编辑器同时生效
+  Widget _buildInterfaceSection(BuildContext context, bool bottomStatusBarEnabled) {
+    return SettingsSection(
+      title: '界面显示',
+      icon: Icons.dashboard_customize_outlined,
+      children: [
+        SwitchSettingItem(
+          icon: Icons.view_agenda_outlined,
+          label: '底部信息栏',
+          value: bottomStatusBarEnabled,
+          onChanged: (value) {
+            SettingsService.instance.updateBottomStatusBarEnabled(value);
+            setState(() {});
+          },
+        ),
+      ],
+    );
+  }
+
+  /// 构建光标颜色设置项
+  ///
+  /// 未自定义时跟随主题主色；点击后可选择跟随主题或自定义颜色
+  Widget _buildCursorColorItem(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final String? hex = ColorUtils.getCursorColorHexForTheme(context);
+    final Color previewColor = ColorUtils.getCursorColorForTheme(context, colorScheme.primary);
+    final bool isCustom = hex != null && hex.isNotEmpty;
+
+    return InkWellSettingItem(
+      icon: Icons.colorize_outlined,
+      label: '光标颜色',
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 15),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 18,
+            height: 18,
+            decoration: BoxDecoration(
+              color: previewColor,
+              shape: BoxShape.circle,
+              border: Border.all(color: colorScheme.outlineVariant),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            isCustom ? hex.toUpperCase() : '跟随主题',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: colorScheme.onSurfaceVariant,
+                ),
+          ),
+          const SizedBox(width: 4),
+          Icon(Icons.chevron_right_rounded, size: 18, color: colorScheme.onSurfaceVariant),
+        ],
+      ),
+      onTap: () => _showCursorColorSheet(context, previewColor, isCustom),
+    );
+  }
+
+  /// 弹出光标颜色的选择面板
+  ///
+  /// 提供「跟随主题」与「自定义颜色」两个入口，自定义走调色板对话框
+  Future<void> _showCursorColorSheet(BuildContext context, Color previewColor, bool isCustom) async {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) {
+        return SafeArea(
+          top: false,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: Icon(Icons.palette_outlined, color: colorScheme.onSurfaceVariant),
+                title: const Text('跟随主题'),
+                subtitle: const Text('使用当前主题的主色作为光标颜色'),
+                trailing: isCustom ? null : const Icon(Icons.check_rounded, size: 20),
+                onTap: () async {
+                  Navigator.of(sheetContext).pop();
+                  await ColorUtils.updateCursorColorForTheme(context, null);
+                  if (mounted) setState(() {});
+                },
+              ),
+              ListTile(
+                leading: Icon(Icons.colorize_outlined, color: colorScheme.onSurfaceVariant),
+                title: const Text('自定义颜色'),
+                subtitle: const Text('从调色板中选择光标颜色'),
+                onTap: () async {
+                  Navigator.of(sheetContext).pop();
+                  await ColorPickerDialog.show(
+                    context: context,
+                    title: '光标颜色',
+                    initialColorHex: ColorUtils.getCursorColorHexForTheme(context),
+                    onColorSelected: (colorHex) async {
+                      await ColorUtils.updateCursorColorForTheme(context, colorHex);
+                      if (mounted) setState(() {});
+                    },
+                  );
+                },
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
     );
   }
 

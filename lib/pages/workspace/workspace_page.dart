@@ -7,6 +7,7 @@ import 'package:quick_write/core/providers/workspace_provider.dart';
 import 'package:quick_write/core/providers/window_provider.dart';
 import 'package:quick_write/core/services/cache_services/window_cache_service.dart';
 import 'package:quick_write/core/services/multi_window_service.dart';
+import 'package:quick_write/core/services/settings_service.dart';
 import 'package:quick_write/core/services/tray_service.dart';
 import 'package:quick_write/core/utils/platform_capabilities.dart';
 import 'package:quick_write/core/utils/tab_close_guard.dart';
@@ -115,6 +116,8 @@ class _WorkspaceContentState extends State<_WorkspaceContent> with WidgetsBindin
     super.initState();
     // 监听窗口度量变化，仅用于跟踪软键盘的显示状态
     WidgetsBinding.instance.addObserver(this);
+    // 底部信息栏的显示开关变化需要即时应用于布局
+    SettingsService.instance.addListener(_onSettingsChanged);
     // 全屏模式下的退出按键需在焦点分发前拦截
     // 编辑器内部绑定了 ESC 快捷键并在获取焦点时消费该按键，
     // 只有在分发前处理，才能保证正文或大纲编辑器聚焦时 ESC 依然有效
@@ -228,6 +231,7 @@ class _WorkspaceContentState extends State<_WorkspaceContent> with WidgetsBindin
 
   @override
   void dispose() {
+    SettingsService.instance.removeListener(_onSettingsChanged);
     WidgetsBinding.instance.removeObserver(this);
     FocusManager.instance.removeEarlyKeyEventHandler(_earlyKeyHandler);
     // 使用 initState 中保存的引用清空回调，避免在 dispose 中使用已失效的 context
@@ -241,6 +245,11 @@ class _WorkspaceContentState extends State<_WorkspaceContent> with WidgetsBindin
     // 清空菜单栏入口的确认回调，避免持有失效 context
     TrayService.instance.onLeaveWorkspaceBeforeNavigate = null;
     super.dispose();
+  }
+
+  /// 设置变化后重建，用于即时应用底部信息栏的显示开关
+  void _onSettingsChanged() {
+    if (mounted) setState(() {});
   }
 
   @override
@@ -382,8 +391,9 @@ class _WorkspaceContentState extends State<_WorkspaceContent> with WidgetsBindin
             ),
           ),
 
-          // 底部状态栏（紧凑卡片样式）
-          Offstage(offstage: isEditorFullscreen, child: _buildBottomStatusBar(context)),
+          // 底部状态栏（紧凑卡片样式，可在「其他设置」中关闭）
+          if (SettingsService.instance.bottomStatusBarEnabled)
+            Offstage(offstage: isEditorFullscreen, child: _buildBottomStatusBar(context)),
         ],
       ),
     );
@@ -524,10 +534,13 @@ class _WorkspaceContentState extends State<_WorkspaceContent> with WidgetsBindin
 
         // 底部状态栏（精简信息，仅保留保存状态与字数）
         // 固定在屏幕底部，键盘弹出时由输入法直接覆盖，不随输入法上移
-        bottomNavigationBar: SafeArea(
-          top: false,
-          child: _buildMobileBottomStatusBar(context),
-        ),
+        // 底部信息栏可在「其他设置」中关闭
+        bottomNavigationBar: SettingsService.instance.bottomStatusBarEnabled
+            ? SafeArea(
+                top: false,
+                child: _buildMobileBottomStatusBar(context),
+              )
+            : null,
       ),
     );
   }

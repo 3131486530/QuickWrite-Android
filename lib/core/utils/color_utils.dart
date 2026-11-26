@@ -177,6 +177,37 @@ class ColorUtils {
     }
   }
 
+  // ================= 光标颜色 =================
+
+  /// 获取当前主题亮度下光标颜色的原始 HEX 字符串
+  ///
+  /// 返回 null 表示跟随主题主色
+  static String? getCursorColorHexForTheme(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return isDark
+        ? SettingsService.instance.cursorColorDark
+        : SettingsService.instance.cursorColorLight;
+  }
+
+  /// 根据当前主题亮度获取光标颜色（未自定义时使用 [fallback]）
+  static Color getCursorColorForTheme(BuildContext context, Color fallback) {
+    final String? hex = getCursorColorHexForTheme(context);
+    if (hex == null || hex.isEmpty) return fallback;
+    return tryParseHex(hex) ?? fallback;
+  }
+
+  /// 更新当前主题亮度下的光标颜色
+  ///
+  /// [colorHex] 为 null 表示恢复跟随主题主色
+  static Future<void> updateCursorColorForTheme(BuildContext context, String? colorHex) async {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    if (isDark) {
+      await SettingsService.instance.updateCursorColorDark(colorHex);
+    } else {
+      await SettingsService.instance.updateCursorColorLight(colorHex);
+    }
+  }
+
   // ================= 编辑器背景色 =================
 
   /// 纸张背景淡化时，纸张外背景相对纸张颜色的调整强度

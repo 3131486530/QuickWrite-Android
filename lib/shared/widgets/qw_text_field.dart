@@ -4,6 +4,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:quick_write/core/services/settings_service.dart';
+import 'package:quick_write/core/utils/color_utils.dart';
 import 'package:quick_write/core/utils/find_match_highlighter.dart';
 import 'package:quick_write/core/utils/persistent_selection.dart';
 import 'package:quick_write/core/utils/platform_capabilities.dart';
@@ -381,8 +382,18 @@ class _QwTextFieldState extends State<QwTextField>
   }
 
   /// 自定义光标颜色，与内置光标默认取色保持一致
+  ///
+  /// 优先取组件入参，其次取设置中的自定义光标颜色，最后回退主题主色
   Color _caretColor(BuildContext context) =>
-      widget.cursorColor ?? Theme.of(context).colorScheme.primary;
+      widget.cursorColor ??
+      ColorUtils.getCursorColorForTheme(context, Theme.of(context).colorScheme.primary);
+
+  /// 设置中自定义的光标颜色（未自定义时返回 null，由主题决定）
+  Color? _customCursorColor(BuildContext context) {
+    final String? hex = ColorUtils.getCursorColorHexForTheme(context);
+    if (hex == null || hex.isEmpty) return null;
+    return ColorUtils.tryParseHex(hex);
+  }
 
   void _onBreathTick() {
     // 余弦映射：value 0 → 最亮、1 → 最暗，往返即完整一个余弦周期，
@@ -471,7 +482,7 @@ class _QwTextFieldState extends State<QwTextField>
           cursorRadius: widget.cursorRadius,
           cursorOpacityAnimates: widget.cursorOpacityAnimates,
           cursorColor: _caretMode == QwCaretMode.system
-              ? widget.cursorColor
+              ? (widget.cursorColor ?? _customCursorColor(context))
               : Colors.transparent,
           cursorErrorColor: widget.cursorErrorColor,
           selectionHeightStyle: widget.selectionHeightStyle,
