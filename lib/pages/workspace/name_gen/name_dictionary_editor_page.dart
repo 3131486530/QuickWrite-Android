@@ -59,7 +59,7 @@ class NameDictionaryEditorPage extends StatefulWidget {
   State<NameDictionaryEditorPage> createState() => _NameDictionaryEditorPageState();
 }
 
-class _NameDictionaryEditorPageState extends State<NameDictionaryEditorPage> {
+class _NameDictionaryEditorPageState extends State<NameDictionaryEditorPage> with WidgetsBindingObserver {
   /// 词条计数刷新延迟，避免每次按键都重建界面
   static const Duration _countDebounce = Duration(milliseconds: 200);
 
@@ -83,6 +83,25 @@ class _NameDictionaryEditorPageState extends State<NameDictionaryEditorPage> {
   Timer? _countTimer;
   int _activeCount = 0;
 
+  /// 全词典词条数缓存
+  ///
+  /// 只在内容变化、切换池、改池数量时重算，避免每帧 build 都全量解析
+  int _totalCountCache = 0;
+
+  /// 词条编辑区是否处于输入状态
+  ///
+  /// 仅在编辑区获得焦点时收起顶部设置区；不能用键盘高度判断，
+  /// 键盘高度变化会逐帧重建整棵树，把输入框和编辑器连根拔掉导致输入法秒关。
+  bool _editorFocused = false;
+
+  /// 键盘是否可见（仅在变化时更新，用于编辑结束收起键盘后恢复设置区）
+  bool _keyboardVisible = false;
+
+  /// 是否进入紧凑模式：编辑区持有焦点且键盘可见
+  ///
+  /// 此时收起顶部设置区与底部统计栏，把竖向空间让给编辑区
+  bool get _compactMode => _editorFocused && _keyboardVisible;
+
   /// 是否编辑既有词典（编辑时类别与池数量锁定，避免词条分组错位）
   bool get _isEditing => widget.dictionary != null;
 
@@ -104,12 +123,17 @@ class _NameDictionaryEditorPageState extends State<NameDictionaryEditorPage> {
     _activeCount = _parsePool(_drafts[_activeKey] ?? '').length;
     _editor = CodeLineEditingController.fromText(_drafts[_activeKey]);
     _editor.addListener(_onEditorChanged);
+    _totalCountCache = _sumPools();
+    _editorFocusNode.addListener(_handleEditorFocusChanged);
+    WidgetsBinding.instance.addObserver(this);
   }
 
   @override
   void dispose() {
     _countTimer?.cancel();
     _editor.removeListener(_onEditorChanged);
+    _editorFocusNode.removeListener(_handleEditorFocusChanged);
+    WidgetsBinding.instance.removeObserver(this);
     _editor.dispose();
     _nameController.dispose();
     _nameFocusNode.dispose();
@@ -132,14 +156,21 @@ class _NameDictionaryEditorPageState extends State<NameDictionaryEditorPage> {
   /// 词条之间以顿号分隔，同时兼容换行、空格、逗号（含全角），
   /// 粘贴进来的一整段也能正确拆开，自动去空与去重。
   List<String> _parsePool(String raw) {
-    final List<String> result = <String>[];
+    final Set<String> result = <String>{};
     for (final String token in raw.split(RegExp(r'[\s,，、]+'))) {
       final String value = token.trim();
-      if (value.isNotEmpty && !result.contains(value)) {
-        result.add(value);
-      }
+      if (value.isNotEmpty) result.add(value);
     }
-    return result;
+    return result.toList();
+  }
+
+  /// 汇总全部池的词条总数
+  int _sumPools() {
+    int total = 0;
+    for (final String key in _poolKeys) {
+      total += _parsePool(_drafts[key] ?? '').length;
+    }
+    return total;
   }
 
   /// 编辑器内容变化时刷新词条计数
@@ -147,9 +178,14 @@ class _NameDictionaryEditorPageState extends State<NameDictionaryEditorPage> {
     _countTimer?.cancel();
     _countTimer = Timer(_countDebounce, () {
       if (!mounted) return;
+      _drafts[_activeKey] = _editor.text;
       final int count = _parsePool(_editor.text).length;
-      if (count == _activeCount) return;
-      setState(() => _activeCount = count);
+      final int total = _sumPools();
+      if (count == _activeCount && total == _totalCountCache) return;
+      setState(() {
+        _activeCount = count;
+        _totalCountCache = total;
+      });
     });
   }
 
@@ -168,6 +204,7 @@ class _NameDictionaryEditorPageState extends State<NameDictionaryEditorPage> {
     setState(() {
       _activeKey = key;
       _activeCount = _parsePool(_drafts[key] ?? '').length;
+      _totalCountCache = _sumPools();
     });
     _editor.codeLines = CodeLines.fromText(_drafts[key] ?? '');
     _editor.selection = const CodeLineSelection.collapsed(index: 0, offset: 0);
@@ -187,6 +224,7 @@ class _NameDictionaryEditorPageState extends State<NameDictionaryEditorPage> {
         ..addEntries(_poolKeys.map((key) => MapEntry<String, String>(key, '')));
       _activeKey = _poolKeys.first;
       _activeCount = 0;
+      _totalCountCache = 0;
     });
     _editor.codeLines = CodeLines.empty();
   }
@@ -209,6 +247,7 @@ class _NameDictionaryEditorPageState extends State<NameDictionaryEditorPage> {
         _activeKey = keys.first;
       }
       _activeCount = _parsePool(_drafts[_activeKey] ?? '').length;
+      _totalCountCache = _sumPools();
     });
     _editor.codeLines = CodeLines.fromText(_drafts[_activeKey] ?? '');
     _editor.selection = const CodeLineSelection.collapsed(index: 0, offset: 0);
@@ -241,20 +280,30 @@ class _NameDictionaryEditorPageState extends State<NameDictionaryEditorPage> {
     Navigator.of(context).pop(dictionary);
   }
 
-  int get _totalCount {
-    _drafts[_activeKey] = _editor.text;
-    int total = 0;
-    for (final String key in _poolKeys) {
-      total += _parsePool(_drafts[key] ?? '').length;
-    }
-    return total;
+  /// 词条编辑区焦点变化
+  ///
+  /// 焦点只在整个编辑过程中变化数次，用它驱动顶部设置区收起，
+  /// 相比监听键盘高度（弹起动画期逐帧变化）不会拖垮整棵组件树。
+  void _handleEditorFocusChanged() {
+    final bool focused = _editorFocusNode.hasFocus;
+    if (focused == _editorFocused) return;
+    setState(() => _editorFocused = focused);
+  }
+
+  @override
+  void didChangeMetrics() {
+    if (!mounted) return;
+    final bool visible = View.of(context).viewInsets.bottom > 0;
+    if (visible == _keyboardVisible) return;
+    setState(() => _keyboardVisible = visible);
   }
 
   @override
   Widget build(BuildContext context) {
-    // 键盘弹起时收起顶部设置区，把竖向空间全部让给词条编辑区，
-    // 避免输入法把可编辑区域压到只剩几行
-    final bool keyboardVisible = MediaQuery.viewInsetsOf(context).bottom > 0;
+    // 编辑词条时收起顶部设置区与底部统计栏，把竖向空间让给编辑区，
+    // 避免输入法把可编辑区域压到只剩几行。
+    // 注意必须用 Offstage 而非条件删除：删除会让 Column 子节点位移、
+    // 输入框与编辑器被重建，焦点丢失导致输入法弹出即关闭。
     return Scaffold(
       appBar: AppBar(
         title: Text(_isEditing ? '编辑词典' : '新建词典'),
@@ -270,10 +319,10 @@ class _NameDictionaryEditorPageState extends State<NameDictionaryEditorPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: <Widget>[
-            if (!keyboardVisible) _buildHeader(context),
+            Offstage(offstage: _compactMode, child: _buildHeader(context)),
             _buildPoolTabs(context),
-            Expanded(child: _buildEditor(context, keyboardVisible: keyboardVisible)),
-            if (!keyboardVisible) _buildStatusBar(context),
+            Expanded(child: _buildEditor(context, editorFocused: _compactMode)),
+            Offstage(offstage: _compactMode, child: _buildStatusBar(context)),
           ],
         ),
       ),
@@ -420,12 +469,12 @@ class _NameDictionaryEditorPageState extends State<NameDictionaryEditorPage> {
   ///
   /// 光标样式与正文保持一致：静态光标常亮，呼吸光标按同一余弦曲线起伏，
   /// 两者都需显式传参，否则编辑器只走默认闪烁。
-  Widget _buildEditor(BuildContext context, {required bool keyboardVisible}) {
+  Widget _buildEditor(BuildContext context, {required bool editorFocused}) {
     final ColorScheme colorScheme = Theme.of(context).colorScheme;
     final bool breathing = PlatformCapabilities.isMobile &&
         SettingsService.instance.settings.breathingCursorEnabled;
     return Container(
-      margin: EdgeInsets.fromLTRB(16, keyboardVisible ? 6 : 10, 16, 0),
+      margin: EdgeInsets.fromLTRB(16, editorFocused ? 6 : 10, 16, 0),
       clipBehavior: Clip.antiAlias,
       decoration: BoxDecoration(
         color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.35),
@@ -462,7 +511,7 @@ class _NameDictionaryEditorPageState extends State<NameDictionaryEditorPage> {
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 10),
       child: Text(
-        '当前池 $_activeCount 条 · 全词典 $_totalCount 条',
+        '当前池 $_activeCount 条 · 全词典 $_totalCountCache 条',
         style: context.bodySmall?.copyWith(color: colorScheme.onSurfaceVariant),
       ),
     );
