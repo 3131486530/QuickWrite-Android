@@ -1292,11 +1292,13 @@ class AppSettings {
         quickInputSymbolsText,
         Object.hashAll(quickPhrases),
         Object.hashAll(textReplacementRules),
-        wordCountFloatingEnabled,
-        wordCountFloatingPosition,
-        wordCountFloatingSpeedEnabled,
-        wordCountFloatingWordCountEnabled,
-        wordCountFloatingMode,
+        Object.hash(
+          wordCountFloatingEnabled,
+          wordCountFloatingPosition,
+          wordCountFloatingSpeedEnabled,
+          wordCountFloatingWordCountEnabled,
+          wordCountFloatingMode,
+        ),
       ),
       // 码字统计设置
       Object.hash(
