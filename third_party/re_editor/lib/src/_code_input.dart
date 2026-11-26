@@ -565,6 +565,7 @@ class _CodeInputController extends ChangeNotifier implements DeltaTextInputClien
     _pendingImeResync = false;
     final TextEditingValue? remoteValue = _remoteEditingValue;
     if (deltas.isEmpty || remoteValue == null) {
+      _imeResyncAttempts = 0;
       return;
     }
     if (deltas.first.oldText == remoteValue.text) {
@@ -572,27 +573,26 @@ class _CodeInputController extends ChangeNotifier implements DeltaTextInputClien
       return;
     }
     _updateRemoteEditingValueIfNeeded();
+    // 连续重建仍失配时不再反复重建，避免输出每一键都关闭重开输入法
+    if (_imeResyncAttempts >= 2) {
+      return;
+    }
     _imeResyncAttempts += 1;
-    // 第一次只重启输入法，仍失配时直接重建输入连接，确保输入法丢弃旧文本
-    _restartImeInput(rebuildConnection: _imeResyncAttempts > 1);
+    _restartImeInput();
   }
 
   /// 重建输入法的输入会话
   ///
-  /// 仅重发镜像文本时输入法自身维护的文本不会被改写，restartInput 会重建
-  /// 输入连接，使输入法重新从当前镜像读取文本并丢弃旧缓冲；
-  /// 部分输入法对此无响应时改为关闭并重新建立连接。
-  void _restartImeInput({bool rebuildConnection = false}) {
+  /// 仅重发镜像文本时输入法自身维护的文本不会被改写；关闭并重新建立输入连接
+  /// 会重建输入法侧缓冲，使其重新从当前镜像读取文本，与退格键让输入法
+  /// 重置文本后恢复输入的效果一致。
+  void _restartImeInput() {
     _pendingImeResync = true;
     if (!_hasInputConnection) {
       return;
     }
-    if (rebuildConnection) {
-      _closeInputConnectionIfNeeded();
-      _openInputConnection();
-      return;
-    }
-    TextInput.restartInput(this);
+    _closeInputConnectionIfNeeded();
+    _openInputConnection();
   }
 
   void _updateRemoteEditingValueIfNeeded() {
