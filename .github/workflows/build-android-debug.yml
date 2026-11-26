@@ -85,10 +85,27 @@ jobs:
           BASE_CODE="${FULL_VERSION##*+}"
           CODE=$((BASE_CODE + GITHUB_RUN_NUMBER))
           echo "构建 ${APP_VERSION}+${CODE}"
-          flutter build apk --release \
-            --target-platform android-arm64 \
-            --build-name "${APP_VERSION}" \
-            --build-number "${CODE}"
+
+          # gradlePluginPortal 对共享出口 IP 偶发 429 限流，失败后等待重试，
+          # 最多 3 次，避免一次网络抖动就让整轮构建作废。
+          for attempt in 1 2 3; do
+            echo "::group::构建尝试 ${attempt}"
+            if flutter build apk --release \
+                 --stacktrace \
+                 --target-platform android-arm64 \
+                 --build-name "${APP_VERSION}" \
+                 --build-number "${CODE}"; then
+              echo "::endgroup::"
+              exit 0
+            fi
+            echo "::endgroup::"
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::连续 3 次构建失败"
+              exit 1
+            fi
+            echo "第 ${attempt} 次失败，60s 后重试"
+            sleep 60
+          done
 
       - name: Rename artifact
         run: |
