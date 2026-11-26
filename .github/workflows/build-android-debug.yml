@@ -1,0 +1,124 @@
+name: Build Android debug
+
+# 零 Secrets 出包：仓库里不配置任何签名材料，build.gradle.kts 会自动回退到
+# key.properties 指向的调试签名。本工作流自己生成一把固定的测试用密钥，
+# 保证每次构建签名一致（可以直接覆盖安装），产物仅用于自测，不能上架、
+# 也不能覆盖已安装的正式签名版本。
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'lib/**'
+      - 'android/**'
+      - 'assets/**'
+      - 'pubspec.yaml'
+      - 'pubspec.lock'
+      - '.github/workflows/build-android-debug.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-debug-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.41.2'
+          channel: stable
+          cache: true
+
+      - name: Generate fixed test signing key
+        # 公开仓库里的测试密钥，口令固定，只用于 CI 出的自测包，
+        # 与正式发布用的 keystore 无关，不要混淆。
+        run: |
+          set -euo pipefail
+          keytool -genkeypair -v \
+            -keystore android/app/quickwrite-test.jks \
+            -storetype JKS \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -alias quickwrite-test \
+            -storepass quickwrite2014 \
+            -keypass quickwrite2014 \
+            -dname "CN=QuickWrite CI Test,O=QuickWrite,C=CN"
+
+          cat > android/key.properties <<'EOF'
+          storeFile=quickwrite-test.jks
+          storePassword=quickwrite2014
+          keyAlias=quickwrite-test
+          keyPassword=quickwrite2014
+          EOF
+
+      - name: Fetch packages
+        run: flutter pub get
+
+      - name: Build release APK (debug signed)
+        # 只打 arm64，与正式包保持一致；versionCode 用 pubspec 基数 + 运行号，
+        # 保证每次递增，能直接覆盖安装上一次的测试包。
+        run: |
+          set -euo pipefail
+          FULL_VERSION="$(awk '/^version:/ {print $2; exit}' pubspec.yaml | tr -d '"')"
+          APP_VERSION="${FULL_VERSION%%+*}"
+          BASE_CODE="${FULL_VERSION##*+}"
+          CODE=$((BASE_CODE + GITHUB_RUN_NUMBER))
+          echo "构建 ${APP_VERSION}+${CODE}"
+          flutter build apk --release \
+            --target-platform android-arm64 \
+            --build-name "${APP_VERSION}" \
+            --build-number "${CODE}"
+
+      - name: Rename artifact
+        run: |
+          set -euo pipefail
+          APK="build/app/outputs/flutter-apk/app-release.apk"
+          test -f "$APK"
+          FULL_VERSION="$(awk '/^version:/ {print $2; exit}' pubspec.yaml | tr -d '"')"
+          APP_VERSION="${FULL_VERSION%%+*}"
+          cp "$APK" "quick-write-${APP_VERSION}-android-debug.apk"
+          ls -lh quick-write-*-android-debug.apk
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: quick-write-android-debug
+          path: quick-write-*-android-debug.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish to debug release
+        # 固定 tag，手机端打开 releases 页就能直接下载 apk，不必登录下 artifact。
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="android-debug"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --title "安卓自测包（自动构建）" \
+              --notes "由 GitHub Actions 自动构建，测试签名，可直接安装；装过正式版需先卸载。"
+          fi
+          gh release upload "$TAG" quick-write-*-android-debug.apk --clobber
+          gh release edit "$TAG" --notes "最近一次构建：$(date -u +%Y-%m-%dT%H:%M:%SZ)，commit ${GITHUB_SHA:0:7}"
