@@ -22,6 +22,12 @@ class _CodeInputController extends ChangeNotifier implements DeltaTextInputClien
   TextInputConnection? _textInputConnection;
   TextEditingValue? _remoteEditingValue;
 
+  /// 改写发生后输入法可能仍持有改写前的文本，标记下一次增量是否需要校验失配并重建输入会话
+  bool _pendingImeResync = false;
+
+  /// 连续重建输入会话的次数，用于逐级加重重建手段
+  int _imeResyncAttempts = 0;
+
   final _CodeFloatingCursorController _floatingCursorController;
   Timer? _floatingCursorScrollTimer;
 
@@ -190,6 +196,8 @@ class _CodeInputController extends ChangeNotifier implements DeltaTextInputClien
       return;
     }
 
+    _resyncImeIfDesynced(textEditingDeltas);
+
     if (textEditingDeltas.any((delta) => delta is TextEditingDeltaInsertion && delta.textInserted == '\n')) {
       TextEditingValue newValue = _remoteEditingValue!;
       for (final TextEditingDelta delta in textEditingDeltas) {
@@ -217,7 +225,9 @@ class _CodeInputController extends ChangeNotifier implements DeltaTextInputClien
     final TextEditingValue appliedValue = newValue;
     // 输入内容以规则原文本结尾时改写为替换文本，与本次输入合并为一次编辑
     final TextEditingValue replacedValue = _applyTextReplacements(newValue);
-    if (replacedValue != newValue) {
+    // 自动替换是否真正改写了本次输入
+    final bool replaced = replacedValue != newValue;
+    if (replaced) {
       newValue = replacedValue;
       smartChange = true;
     }
@@ -261,6 +271,12 @@ class _CodeInputController extends ChangeNotifier implements DeltaTextInputClien
     // 只有退格让输入法重置文本后才恢复。这里主动回推一次镜像打断该失配。
     if (smartChange) {
       _updateRemoteEditingValueIfNeeded();
+    }
+    // 只下发镜像不足以让输入法丢弃它自己维护的文本：部分输入法（如豆包）
+    // 仍按旧文本提交增量，框架侧为保护正文只能丢弃这些增量，依然输不进字。
+    // 重建一次输入会话，强制输入法按当前镜像重新同步。
+    if (replaced) {
+      _restartImeInput();
     }
     notifyListeners();
     // _Trace.end('updateEditingValue all');
@@ -535,6 +551,48 @@ class _CodeInputController extends ChangeNotifier implements DeltaTextInputClien
   void _onCodeEditingChanged() {
     _updateRemoteEditingValueIfNeeded();
     _updateRemoteComposingIfNeeded();
+  }
+
+  /// 校验改写后输入法是否仍按旧文本提交增量
+  ///
+  /// 增量以输入法侧文本为基准，与镜像文本对不上说明输入法没有接受改写结果，
+  /// 此后每条增量都会被当作失配丢弃。这里再重建一次输入会话，
+  /// 让输入法放弃旧文本，避免输入永久失效。
+  void _resyncImeIfDesynced(List<TextEditingDelta> deltas) {
+    if (!_pendingImeResync) {
+      return;
+    }
+    _pendingImeResync = false;
+    final TextEditingValue? remoteValue = _remoteEditingValue;
+    if (deltas.isEmpty || remoteValue == null) {
+      return;
+    }
+    if (deltas.first.oldText == remoteValue.text) {
+      _imeResyncAttempts = 0;
+      return;
+    }
+    _updateRemoteEditingValueIfNeeded();
+    _imeResyncAttempts += 1;
+    // 第一次只重启输入法，仍失配时直接重建输入连接，确保输入法丢弃旧文本
+    _restartImeInput(rebuildConnection: _imeResyncAttempts > 1);
+  }
+
+  /// 重建输入法的输入会话
+  ///
+  /// 仅重发镜像文本时输入法自身维护的文本不会被改写，restartInput 会重建
+  /// 输入连接，使输入法重新从当前镜像读取文本并丢弃旧缓冲；
+  /// 部分输入法对此无响应时改为关闭并重新建立连接。
+  void _restartImeInput({bool rebuildConnection = false}) {
+    _pendingImeResync = true;
+    if (!_hasInputConnection) {
+      return;
+    }
+    if (rebuildConnection) {
+      _closeInputConnectionIfNeeded();
+      _openInputConnection();
+      return;
+    }
+    TextInput.restartInput(this);
   }
 
   void _updateRemoteEditingValueIfNeeded() {
