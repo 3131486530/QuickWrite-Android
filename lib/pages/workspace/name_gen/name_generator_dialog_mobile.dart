@@ -8,12 +8,11 @@ import 'package:quick_write/core/services/cache_services/name_gen_cache_service.
 import 'package:quick_write/core/services/cloud_sync/cloud_sync_service.dart';
 import 'package:quick_write/core/services/name_gen/name_generator.dart';
 import 'package:quick_write/core/services/settings_service.dart';
+import 'package:quick_write/core/utils/editor_focus_keep.dart';
 import 'package:quick_write/core/utils/typography_extension.dart';
 import 'package:quick_write/pages/workspace/name_gen/widgets/name_dictionary_editor_dialog.dart';
 import 'package:quick_write/pages/workspace/name_gen/widgets/name_dictionary_sheet.dart';
-import 'package:quick_write/pages/workspace/name_gen/widgets/name_result_panel.dart';
 import 'package:quick_write/shared/widgets/widgets.dart';
-import 'package:quick_write/shared/widgets/qw_text_field.dart';
 
 /// 结果标签之间的间距
 const double _chipGap = 8;
@@ -26,24 +25,27 @@ const double _chipHorizontalPadding = 8;
 /// 结果区一行一个名字，固定生成七条，不再提供自定义数量。
 const int _batchCount = 7;
 
-/// 显示移动端随机取名弹窗
+/// 显示移动端随机取名面板
 ///
-/// 以卡片式弹窗承载随机取名功能：弹窗内自上而下为类别切换、词典入口、
-/// 生成参数、结果区与生成按钮，四周保留留白。词典的选中、新建、
-/// 编辑与删除通过底部弹窗完成。
+/// 以底部操作面板（Bottom Sheet）承载随机取名：面板自底部滑出并覆盖屏幕
+/// 一部分，不再使用居中弹窗，标题栏一并去掉，内容区只保留词典入口、
+/// 结果区与生成按钮。词典的选中、新建、编辑与删除同样在底部面板中完成。
 ///
-/// 点击任意名字即复制到剪贴板并关闭弹窗，被点击的名字作为返回值返回；
-/// 弹窗被取消时返回 null，由调用方决定是否插入编辑器。
-Future<String?> showMobileNameGeneratorDialog({required BuildContext context}) {
-  return showDialogBase<String>(
+/// 点击任意名字即复制到剪贴板并关闭面板，被点击的名字作为返回值返回；
+/// 面板被取消时返回 null，由调用方决定是否插入编辑器。
+Future<String?> showMobileNameGeneratorDialog({required BuildContext context}) async {
+  // 面板打开会接管焦点，先记录编辑器光标，关闭后恢复以便继续输入
+  final FocusNode? previousFocus = EditorFocusKeep.capture();
+  final String? result = await showModalBottomSheet<String>(
     context: context,
-    title: '随机取名',
-    subtitle: '点击名字即复制并关闭，光标在正文时直接插入',
-    titleIcon: Icons.casino_outlined,
-    width: 420,
-    height: 620,
-    content: const _MobileNameGeneratorDialog(),
+    isScrollControlled: true,
+    useSafeArea: true,
+    showDragHandle: true,
+    backgroundColor: Theme.of(context).colorScheme.surface,
+    builder: (context) => const _MobileNameGeneratorDialog(),
   );
+  EditorFocusKeep.restore(previousFocus);
+  return result;
 }
 
 /// 移动端随机取名弹窗内容
@@ -280,7 +282,11 @@ class _MobileNameGeneratorDialogState extends State<_MobileNameGeneratorDialog> 
     if (result == null) return;
     await _cache.saveDictionary(result);
     if (!mounted) return;
-    setState(_reloadDictionaries);
+    // 词条可能已变化，按新内容重新生成一批结果
+    setState(() {
+      _reloadDictionaries();
+      _results = _generateNames();
+    });
   }
 
   /// 删除词典
@@ -296,33 +302,47 @@ class _MobileNameGeneratorDialogState extends State<_MobileNameGeneratorDialog> 
     if (!confirmed) return;
     await _cache.deleteDictionary(dictionary.id);
     if (!mounted) return;
-    setState(_reloadDictionaries);
+    // 选中的词典可能已被删除，重新生成避免展示旧词典内容
+    setState(() {
+      _reloadDictionaries();
+      _results = _generateNames();
+    });
   }
 
   // ================= 参数变化 =================
-
-  /// 退出输入框焦点
-  void _unfocus() => FocusScope.of(context).unfocus();
 
   // ================= 构建 =================
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: [
-        // 主内容区可滚动；生成按钮固定于底部，便于随时触发生成
-        Expanded(
-          child: ListView(
-            padding: const EdgeInsets.fromLTRB(_horizontalPadding, 12, _horizontalPadding, 4),
-            children: [
-              _buildDictionarySelector(),
-              const SizedBox(height: 16),
-              _buildResultsSection(),
-            ],
-          ),
+    // 面板最高占屏幕的 85%，内容较少时按内容高度收缩
+    final double maxHeight = MediaQuery.sizeOf(context).height * 0.85;
+    // 键盘弹起时底部留白避让，保证生成按钮始终可点
+    final double keyboardInset = MediaQuery.viewInsetsOf(context).bottom;
+
+    return Padding(
+      padding: EdgeInsets.only(bottom: keyboardInset),
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxHeight: maxHeight),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // 主内容区可滚动；生成按钮固定于底部，便于随时触发生成
+            Flexible(
+              child: ListView(
+                shrinkWrap: true,
+                padding: const EdgeInsets.fromLTRB(_horizontalPadding, 4, _horizontalPadding, 4),
+                children: [
+                  _buildDictionarySelector(),
+                  const SizedBox(height: 16),
+                  _buildResultsSection(),
+                ],
+              ),
+            ),
+            _buildGenerateBar(),
+          ],
         ),
-        _buildGenerateBar(),
-      ],
+      ),
     );
   }
 
@@ -415,12 +435,8 @@ class _MobileNameGeneratorDialogState extends State<_MobileNameGeneratorDialog> 
 
   /// 构建底部操作栏
   ///
-  /// 左侧为生成按钮，右侧为清空结果的按钮，两者等高；
-  /// 没有结果时清空按钮不可用。
+  /// 只保留生成按钮，结果清空入口已移除，面板底部为单一主操作。
   Widget _buildGenerateBar() {
-    final colorScheme = Theme.of(context).colorScheme;
-    final hasNames = _results.isNotEmpty;
-
     return Padding(
       padding: const EdgeInsets.fromLTRB(_horizontalPadding, 8, _horizontalPadding, 12),
       child: Row(
@@ -433,24 +449,6 @@ class _MobileNameGeneratorDialogState extends State<_MobileNameGeneratorDialog> 
                 icon: const Icon(Icons.casino_rounded, size: 20),
                 label: const Text('生成'),
                 style: FilledButton.styleFrom(padding: EdgeInsets.zero),
-              ),
-            ),
-          ),
-          const SizedBox(width: 10),
-          SizedBox(
-            width: _primaryButtonHeight,
-            height: _primaryButtonHeight,
-            child: Tooltip(
-              message: '清空结果',
-              child: PressScale(
-                onTap: hasNames ? _clearResults : null,
-                child: Center(
-                  child: Icon(
-                    Icons.delete_sweep_outlined,
-                    size: 24,
-                    color: colorScheme.onSurfaceVariant.withValues(alpha: hasNames ? 1 : 0.3),
-                  ),
-                ),
               ),
             ),
           ),

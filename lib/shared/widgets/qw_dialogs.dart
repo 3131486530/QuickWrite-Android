@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:quick_write/core/utils/editor_focus_keep.dart';
 import 'package:quick_write/core/utils/ime_cursor_fixer.dart';
 import 'package:quick_write/core/utils/platform_capabilities.dart';
 import 'package:quick_write/core/utils/typography_extension.dart';
@@ -73,7 +74,7 @@ Future<T?> showDialogBase<T>({
   bool barrierDismissible = true,
   bool draggable = true,
   ValueListenable<bool>? dialogInteractiveNotifier,
-}) {
+}) async {
   // 移动端屏幕较窄：收窄弹窗宽度，避免左右两侧贴边；同时关闭拖拽，
   // 防止触摸操作下弹窗被误拖走
   double effectiveWidth = width;
@@ -84,7 +85,9 @@ Future<T?> showDialogBase<T>({
     effectiveDraggable = false;
   }
 
-  return showDialog<T>(
+  // 弹层弹出会接管焦点，记录当前焦点（通常是编辑器光标）以便关闭后恢复
+  final FocusNode? previousFocus = EditorFocusKeep.capture();
+  final T? result = await showDialog<T>(
     context: context,
     barrierDismissible: barrierDismissible,
     barrierColor: Colors.black.withValues(alpha: 0.5),
@@ -108,6 +111,8 @@ Future<T?> showDialogBase<T>({
       dialogInteractiveNotifier: dialogInteractiveNotifier,
     ),
   );
+  EditorFocusKeep.restore(previousFocus);
+  return result;
 }
 
 /// 弹窗标题栏关闭按钮

@@ -7,15 +7,13 @@ import 'package:quick_write/shared/widgets/qw_tooltip.dart';
 ///
 /// 随机取名弹窗下方的结果区；名字以紧凑标签纵向排布，一行一个，
 /// 字号跟随章节正文字体设置，点击任意名字即复制并关闭弹窗。
+/// 结果区不再提供清空按钮，避免误触把已经生成的名字清掉。
 class NameResultPanel extends StatelessWidget {
   /// 展示的名字列表
   final List<String> names;
 
   /// 点击名字回调
   final Future<void> Function(String name) onSelect;
-
-  /// 清空结果回调
-  final VoidCallback? onClear;
 
   /// 空列表时的提示文字
   final String emptyHint;
@@ -25,7 +23,6 @@ class NameResultPanel extends StatelessWidget {
     required this.names,
     required this.onSelect,
     required this.emptyHint,
-    this.onClear,
   });
 
   @override
@@ -35,7 +32,7 @@ class NameResultPanel extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // 数量 + 清空
+        // 生成结果标题 + 数量
         Row(
           children: [
             Text(
@@ -52,17 +49,6 @@ class NameResultPanel extends StatelessWidget {
                 style: context.bodySmall?.copyWith(color: colorScheme.onSurfaceVariant),
               ),
             ],
-            const Spacer(),
-            if (onClear != null && names.isNotEmpty)
-              CursorTooltipTarget(
-                tooltipContent: const Text('清空结果'),
-                child: IconButton(
-                  onPressed: onClear,
-                  icon: const Icon(Icons.delete_sweep_outlined),
-                  iconSize: 18,
-                  visualDensity: VisualDensity.compact,
-                ),
-              ),
           ],
         ),
         const SizedBox(height: 10),

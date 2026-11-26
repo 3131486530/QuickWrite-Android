@@ -219,8 +219,6 @@ class _NameGeneratorDialogState extends State<_NameGeneratorDialog> {
   }
 
   /// 清空生成结果
-  void _clearResults() => setState(() => _results = const []);
-
   // ================= 词典管理 =================
 
   /// 选中词典
@@ -380,7 +378,6 @@ class _NameGeneratorDialogState extends State<_NameGeneratorDialog> {
                   child: NameResultPanel(
                     names: _results,
                     onSelect: _selectName,
-                    onClear: _clearResults,
                     emptyHint: '点击"生成"按钮开始取名，点击名字即可复制并关闭',
                   ),
                 ),
