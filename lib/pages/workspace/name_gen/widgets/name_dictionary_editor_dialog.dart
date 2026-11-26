@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:uuid/uuid.dart';
 import 'package:quick_write/core/models/name_gen/name_dictionary.dart';
 import 'package:quick_write/core/utils/ime_cursor_fixer.dart';
+import 'package:quick_write/core/utils/platform_capabilities.dart';
 import 'package:quick_write/core/utils/typography_extension.dart';
+import 'package:quick_write/pages/workspace/name_gen/name_dictionary_editor_page.dart';
 import 'package:quick_write/shared/widgets/qw_dialogs.dart';
 import 'package:quick_write/shared/widgets/qw_dropdown.dart';
 import 'package:quick_write/shared/widgets/qw_switch.dart';
@@ -18,6 +20,16 @@ Future<NameDictionary?> showNameDictionaryEditorDialog({
   NameDictionary? dictionary,
   NameCategory initialCategory = NameCategory.person,
 }) {
+  // 移动端改用整页编辑器：单池词条可达上千条，弹窗内逐池堆叠输入框
+  // 需要同时构建多个文本控件、滚动层级也更深，改由 re_editor 内核承载更顺畅
+  if (PlatformCapabilities.isMobile) {
+    return pushNameDictionaryEditorPage(
+      context: context,
+      dictionary: dictionary,
+      initialCategory: initialCategory,
+    );
+  }
+
   final isEditing = dictionary != null;
   return showDialogBase<NameDictionary>(
     context: context,

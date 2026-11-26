@@ -91,7 +91,7 @@ const Set<String> kGlobalCollectionNames = {
 };
 
 /// 读取本机自定义颜色并转换为同步实体
-List<Map<String, dynamic>> _loadCustomColorEntities() {
+Future<List<Map<String, dynamic>>> _loadCustomColorEntities() async {
   return <Map<String, dynamic>>[
     CustomColorCacheService.instance.buildSyncEntity(),
   ];
