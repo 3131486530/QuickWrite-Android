@@ -343,7 +343,9 @@ class _NameDictionaryEditorPageState extends State<NameDictionaryEditorPage> wit
             child: QwTextField(
               controller: _nameController,
               focusNode: _nameFocusNode,
-              onTapOutside: (_) => FocusScope.of(context).unfocus(),
+              // 只让名称输入框自身失焦：整域 unfocus 会把词条编辑区的焦点
+              // 一起清掉，键盘随之收起，表现为输入法弹起即关闭
+              onTapOutside: (_) => _nameFocusNode.unfocus(),
               style: context.bodyMedium,
               maxLines: 1,
               decoration: InputDecoration(
