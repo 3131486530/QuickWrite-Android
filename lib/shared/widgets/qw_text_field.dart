@@ -407,6 +407,8 @@ class _QwTextFieldState extends State<QwTextField>
   void _onSettingsChanged() {
     if (!mounted) return;
     _applyCaretMode(_resolveCaretMode());
+    // 自定义光标颜色可能已改变，重建输入框让内置光标同步取到新颜色
+    setState(() {});
   }
 
   @override
