@@ -21,13 +21,14 @@ class AboutPage extends StatelessWidget {
   static const String _licenseName = 'GPL-3.0';
 
   /// 源码仓库地址
-  static const String _githubUrl = 'https://github.com/yic77455/QuickWrite';
+  static const String _githubUrl = 'https://github.com/3131486530/QuickWrite-Android';
 
   /// 问题反馈地址（Issue）
-  static const String _issuesUrl = 'https://github.com/yic77455/QuickWrite/issues';
+  static const String _issuesUrl = 'https://github.com/3131486530/QuickWrite-Android/issues';
 
   /// 版本发布记录地址（Releases）
-  static const String _releasesUrl = 'https://github.com/yic77455/QuickWrite/releases';
+  static const String _releasesUrl =
+      'https://github.com/3131486530/QuickWrite-Android/releases/tag/android-debug';
 
 /// 标识区右侧插图
   static const String _heroImage = 'assets/image/about01.png';

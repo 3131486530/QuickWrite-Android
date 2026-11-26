@@ -108,28 +108,25 @@ class UpdateService {
   UpdateService._();
 
   /// 仓库所有者
-  static const String _owner = 'yic77455';
-
-  /// Gitee 仓库名称
-  static const String _giteeRepo = 'quick-write';
+  static const String _owner = '3131486530';
 
   /// GitHub 仓库名称
-  static const String _githubRepo = 'QuickWrite';
+  static const String _githubRepo = 'QuickWrite-Android';
+
+  /// 构建发布使用的 tag
+  static const String _releaseTag = 'android-debug';
 
   /// 版本发布页地址
-  static const String releasesPageUrl = 'https://github.com/$_owner/$_githubRepo/releases';
+  static const String releasesPageUrl =
+      'https://github.com/$_owner/$_githubRepo/releases/tag/$_releaseTag';
 
   /// 更新源列表
   ///
-  /// 按优先级排序：优先 Gitee，无法连接时自动切换到 GitHub 兜底
+  /// 只保留自建安卓构建仓库的固定 tag，避免误报上游版本
   static const List<_UpdateSource> _sources = [
     _UpdateSource(
-      name: 'Gitee',
-      latestApi: 'https://gitee.com/api/v5/repos/$_owner/$_giteeRepo/releases/latest',
-    ),
-    _UpdateSource(
       name: 'GitHub',
-      latestApi: 'https://api.github.com/repos/$_owner/$_githubRepo/releases/latest',
+      latestApi: 'https://api.github.com/repos/$_owner/$_githubRepo/releases/tags/$_releaseTag',
       headers: {'Accept': 'application/vnd.github+json'},
     ),
   ];
@@ -175,7 +172,17 @@ class UpdateService {
     final tag = (data['tag_name'] as String?)?.trim() ?? '';
     if (tag.isEmpty) throw const UpdateException('未获取到版本号');
 
-    final latestVersion = _normalizeVersion(tag);
+    var latestVersion = _normalizeVersion(tag);
+    // 固定构建 tag（android-debug）不含版本号时，退回到安装包文件名，
+    // 形如 quick-write-5.2.0-android-debug.apk
+    if (!RegExp(r'^\d').hasMatch(latestVersion)) {
+      final String names = ((data['assets'] as List?) ?? const [])
+          .whereType<Map>()
+          .map((asset) => (asset['name'] as String?) ?? '')
+          .join(' ');
+      final Match? versionMatch = RegExp(r'(\d+\.\d+\.\d+)').firstMatch(names);
+      if (versionMatch != null) latestVersion = versionMatch.group(1)!;
+    }
 
     return UpdateCheckResult(
       hasUpdate: compareVersion(latestVersion, currentVersion) > 0,

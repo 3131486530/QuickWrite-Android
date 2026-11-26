@@ -880,6 +880,9 @@ class SettingsService extends ChangeNotifier {
   /// 获取正文自动替换规则
   List<TextReplacementRule> get textReplacementRules => _settings.textReplacementRules;
 
+  /// 正文自动替换总开关（默认关闭）
+  bool get autoReplaceEnabled => _settings.autoReplaceEnabled;
+
   /// 获取快捷输入栏符号列表的可编辑文本
   /// 用户未自定义时返回内置默认列表格式化后的文本
   String get quickInputSymbolsText =>
@@ -1219,6 +1222,12 @@ class SettingsService extends ChangeNotifier {
     return updateSettings(newSettings);
   }
 
+  /// 更新正文自动替换总开关
+  Future<bool> updateAutoReplaceEnabled(bool value) async {
+    final newSettings = _settings.copyWith(autoReplaceEnabled: value);
+    return updateSettings(newSettings);
+  }
+
   /// 更新快捷输入栏右侧操作区左右两个图标的动作
   Future<bool> updateQuickInputBarActions(QuickInputAction left, QuickInputAction right) async {
     final newSettings = _settings.copyWith(
@@ -1381,6 +1390,7 @@ class SettingsService extends ChangeNotifier {
       quickInputSymbolsText: AppSettings.defaults.quickInputSymbolsText,
       quickPhrases: AppSettings.defaults.quickPhrases,
       textReplacementRules: AppSettings.defaults.textReplacementRules,
+      autoReplaceEnabled: AppSettings.defaults.autoReplaceEnabled,
       wordCountFloatingEnabled: AppSettings.defaults.wordCountFloatingEnabled,
       wordCountFloatingPosition: AppSettings.defaults.wordCountFloatingPosition,
       wordCountFloatingSpeedEnabled: AppSettings.defaults.wordCountFloatingSpeedEnabled,

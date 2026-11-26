@@ -5,7 +5,7 @@ import 'package:quick_write/shared/widgets/widgets.dart';
 /// 工具面板可配置显示项的分组
 ///
 /// 不同分组的显示项各自维护显示顺序，互不影响：
-/// - [function]：功能区（随机取名、敏感词检测）
+/// - [function]：功能区（随机取名、敏感词）
 /// - [section]：信息区块（书籍信息、码字统计）
 enum ToolsSectionGroup {
   /// 功能区
@@ -20,8 +20,8 @@ enum ToolsSection {
   /// 随机取名
   nameGen('nameGen', '随机取名', Icons.casino_rounded, ToolsSectionGroup.function),
 
-  /// 敏感词检测
-  sensitiveWord('sensitiveWord', '敏感词检测', Icons.gpp_bad_outlined, ToolsSectionGroup.function),
+  /// 敏感词
+  sensitiveWord('sensitiveWord', '敏感词', Icons.gpp_bad_outlined, ToolsSectionGroup.function),
 
   /// 书籍信息
   bookInfo('bookInfo', '书籍信息', Icons.menu_book_rounded, ToolsSectionGroup.section),
@@ -55,7 +55,7 @@ enum ToolsSection {
 /// 工具面板显示设置面板
 ///
 /// 作为工具面板标题栏"显示设置"按钮的下拉菜单内容，
-/// 用于配置功能区（随机取名、敏感词检测）与信息区块（书籍信息、码字统计）的
+/// 用于配置功能区（随机取名、敏感词）与信息区块（书籍信息、码字统计）的
 /// 显示开关与显示顺序。两个区域相互独立，可见项只能在各自区域内拖拽排序，
 /// 隐藏项排在可见项下方且不参与拖拽。
 /// [functionOrder]、[sectionOrder] 分别为两个区域当前可见项的 ID 顺序列表，

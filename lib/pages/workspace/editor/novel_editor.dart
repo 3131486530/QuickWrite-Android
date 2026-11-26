@@ -118,11 +118,15 @@ class NovelEditorState extends State<NovelEditor> with WidgetsBindingObserver {
   /// 编辑器当前生效的自动替换规则
   ///
   /// 由设置中的规则列表推导，规则增删改或开关切换后随设置监听重建即时生效。
-  static List<CodeTextReplacement> get _textReplacements => [
-        for (final rule in SettingsService.instance.textReplacementRules)
-          if (rule.enabled && rule.trigger.isNotEmpty)
-            CodeTextReplacement(rule.trigger, rule.replacement),
-      ];
+  static List<CodeTextReplacement> get _textReplacements {
+    // 总开关关闭时不向编辑器注册任何替换，键盘输入保持原样
+    if (!SettingsService.instance.autoReplaceEnabled) return const [];
+    return [
+      for (final rule in SettingsService.instance.textReplacementRules)
+        if (rule.enabled && rule.trigger.isNotEmpty)
+          CodeTextReplacement(rule.trigger, rule.replacement),
+    ];
+  }
 
   /// 程序化文本改写的抑制深度
   ///

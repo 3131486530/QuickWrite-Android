@@ -11,7 +11,7 @@ import 'package:quick_write/shared/widgets/qw_snackbar.dart';
 
 /// 工具面板
 ///
-/// 右侧边栏的工具面板，上方为功能区（随机取名、敏感词检测），下方为按配置顺序
+/// 右侧边栏的工具面板，上方为功能区（随机取名、敏感词），下方为按配置顺序
 /// 展示的可见区块（书籍信息、码字统计）。两个区域的显示开关与区域内顺序由标题栏的
 /// "显示设置"配置，配置状态由父级 [RightSidebar] 持有并通过参数传入。
 class ToolsPanel extends StatefulWidget {
@@ -148,7 +148,7 @@ class _ToolsPanelState extends State<ToolsPanel> {
         return _buildToolButton(
           context,
           icon: Icons.gpp_bad_outlined,
-          title: '敏感词检测',
+          title: '敏感词',
           description: '扫描全书并定位敏感词',
           onTap: _openSensitiveWordCheck,
         );
@@ -172,7 +172,7 @@ class _ToolsPanelState extends State<ToolsPanel> {
     SnackBarService.show(context, '已复制：$name');
   }
 
-  /// 打开敏感词检测弹窗
+  /// 打开敏感词弹窗
   void _openSensitiveWordCheck() {
     showSensitiveWordCheckDialog(
       context: context,

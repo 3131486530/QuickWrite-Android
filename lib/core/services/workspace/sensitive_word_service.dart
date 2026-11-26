@@ -31,7 +31,7 @@ class SensitiveWordService extends ChangeNotifier {
   List<String> _words = const [];
 
   /// 正文敏感词标红开关（默认开启）
-  bool _highlightEnabled = true;
+  bool _highlightEnabled = false;
 
   /// 词库版本号
   ///

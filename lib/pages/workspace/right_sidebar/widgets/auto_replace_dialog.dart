@@ -121,6 +121,26 @@ class _AutoReplaceRulesContentState extends State<_AutoReplaceRulesContent> {
       padding: const EdgeInsets.symmetric(vertical: 16),
       child: Column(
         children: [
+          // 总开关：默认关闭，开启后规则才会在输入时生效
+          Padding(
+            padding: const EdgeInsets.fromLTRB(_horizontalPadding, 0, _horizontalPadding, 8),
+            child: Row(
+              children: [
+                Icon(Icons.repeat_rounded, size: 18, color: colorScheme.onSurfaceVariant),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text('启用自动替换', style: context.bodyMedium),
+                ),
+                QwSwitch(
+                  value: SettingsService.instance.autoReplaceEnabled,
+                  onChanged: (value) {
+                    SettingsService.instance.updateAutoReplaceEnabled(value);
+                    setState(() {});
+                  },
+                ),
+              ],
+            ),
+          ),
           Expanded(
             child: _rules.isEmpty
                 ? _buildEmptyState(context)

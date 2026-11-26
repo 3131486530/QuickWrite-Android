@@ -51,7 +51,8 @@ class _SensitiveWordEditorContentState
   @override
   void initState() {
     super.initState();
-    _controller = TextEditingController(text: widget.service.words.join('\n'));
+    // 词条以顿号分隔载入，避免编辑时被展平成一行一条
+    _controller = TextEditingController(text: widget.service.words.join('、'));
   }
 
   @override
@@ -114,7 +115,7 @@ class _SensitiveWordEditorContentState
                   expands: true,
                   textAlignVertical: TextAlignVertical.top,
                   decoration: InputDecoration(
-                    hintText: '每行一个词条，也可用空格或逗号分隔',
+                    hintText: '用「、」分隔词条',
                     hintStyle: context.bodyMedium?.copyWith(
                       color: colorScheme.onSurfaceVariant.withValues(
                         alpha: 0.7,

@@ -19,6 +19,8 @@ class TextReplacementPolicy {
   /// 多条规则同时命中时取原文本最长的一条。
   /// 返回是否已执行替换。
   bool applyIfMatched() {
+    // 总开关关闭时规则一律不生效，避免用户误以为已停用
+    if (!SettingsService.instance.autoReplaceEnabled) return false;
     final List<TextReplacementRule> rules = SettingsService.instance.textReplacementRules;
     if (rules.isEmpty) return false;
 

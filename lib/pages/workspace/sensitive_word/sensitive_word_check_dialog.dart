@@ -7,7 +7,7 @@ import 'package:quick_write/pages/workspace/sensitive_word/widgets/sensitive_wor
 import 'package:quick_write/shared/widgets/qw_dialogs.dart';
 import 'package:quick_write/shared/widgets/qw_switch.dart';
 
-/// 显示桌面端敏感词检测弹窗
+/// 显示桌面端敏感词弹窗
 ///
 /// 打开后自动扫描全书章节，列出含有敏感词的章节与命中行；
 /// 点击结果跳转到对应章节并选中敏感词，同时可编辑词库与切换正文标红开关。
@@ -17,7 +17,7 @@ Future<void> showSensitiveWordCheckDialog({
 }) {
   return showDialogBase(
     context: context,
-    title: '敏感词检测',
+    title: '敏感词',
     subtitle: '扫描全部章节并定位敏感词',
     titleIcon: Icons.gpp_bad_outlined,
     width: 780,
@@ -26,7 +26,7 @@ Future<void> showSensitiveWordCheckDialog({
   );
 }
 
-/// 显示移动端敏感词检测弹窗
+/// 显示移动端敏感词弹窗
 ///
 /// 与桌面端共用同一套内容，仅收窄弹窗宽度以适配移动端屏幕。
 Future<void> showMobileSensitiveWordCheckDialog({
@@ -35,7 +35,7 @@ Future<void> showMobileSensitiveWordCheckDialog({
 }) {
   return showDialogBase(
     context: context,
-    title: '敏感词检测',
+    title: '敏感词',
     subtitle: '扫描全部章节并定位敏感词',
     titleIcon: Icons.gpp_bad_outlined,
     width: 460,
@@ -44,7 +44,7 @@ Future<void> showMobileSensitiveWordCheckDialog({
   );
 }
 
-/// 敏感词检测弹窗内容
+/// 敏感词弹窗内容
 class _SensitiveWordCheckDialog extends StatefulWidget {
   /// 工作台 Provider（弹窗位于根导航之下，需由调用方显式传入）
   final WorkspaceProvider provider;

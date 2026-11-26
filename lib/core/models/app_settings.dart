@@ -323,6 +323,11 @@ class AppSettings {
   /// 每条规则包含输入的原文本与替换后的文本，输入原文本结束时自动改写
   final List<TextReplacementRule> textReplacementRules;
 
+  /// 是否启用正文自动替换
+  ///
+  /// 关闭时规则保持保存但不生效，输入不再被自动改写
+  final bool autoReplaceEnabled;
+
   // ================= 字数浮窗设置（移动端）=================
 
   /// 是否启用字数浮窗
@@ -487,6 +492,7 @@ class AppSettings {
     this.quickInputSymbolsText, // 快捷输入栏自定义符号列表（null 表示使用默认列表）
     this.quickPhrases = const [], // 快捷短语列表（移动端）
     this.textReplacementRules = const [], // 正文自动替换规则
+    this.autoReplaceEnabled = false, // 是否启用正文自动替换（默认关闭）
     // 字数浮窗设置（移动端）
     this.wordCountFloatingEnabled = false, // 是否启用字数浮窗
     this.wordCountFloatingPosition = 'topRight', // 字数浮窗显示位置（默认右上）
@@ -640,6 +646,7 @@ class AppSettings {
 
       // 正文自动替换规则（编辑器）
       textReplacementRules: _parseTextReplacementRules(textReplacementJson['rules']),
+      autoReplaceEnabled: textReplacementJson['enabled'] as bool? ?? defaults.autoReplaceEnabled,
 
       // 字数浮窗设置（编辑器）
       wordCountFloatingEnabled: wordCountFloatingJson['enabled'] as bool? ?? defaults.wordCountFloatingEnabled,
@@ -813,6 +820,7 @@ class AppSettings {
         },
         // 正文自动替换规则
         'textReplacement': {
+          'enabled': autoReplaceEnabled,
           'rules': textReplacementRules.map((rule) => rule.toJson()).toList(growable: false),
         },
         // 码字统计设置
@@ -932,6 +940,7 @@ class AppSettings {
     // 正文自动替换规则
     List<TextReplacementRule>? textReplacementRules,
     // 字数浮窗设置（移动端）
+    bool? autoReplaceEnabled,
     bool? wordCountFloatingEnabled,
     String? wordCountFloatingPosition,
     bool? wordCountFloatingSpeedEnabled,
@@ -1053,6 +1062,7 @@ class AppSettings {
       quickPhrases: quickPhrases ?? this.quickPhrases,
       // 正文自动替换规则
       textReplacementRules: textReplacementRules ?? this.textReplacementRules,
+      autoReplaceEnabled: autoReplaceEnabled ?? this.autoReplaceEnabled,
       // 字数浮窗设置（移动端）
       wordCountFloatingEnabled: wordCountFloatingEnabled ?? this.wordCountFloatingEnabled,
       wordCountFloatingPosition: wordCountFloatingPosition ?? this.wordCountFloatingPosition,
@@ -1196,6 +1206,7 @@ class AppSettings {
            listEquals(other.quickPhrases, quickPhrases) &&
            // 正文自动替换规则
            listEquals(other.textReplacementRules, textReplacementRules) &&
+           other.autoReplaceEnabled == autoReplaceEnabled &&
            // 字数浮窗设置（移动端）
            other.wordCountFloatingEnabled == wordCountFloatingEnabled &&
            other.wordCountFloatingPosition == wordCountFloatingPosition &&
@@ -1317,7 +1328,7 @@ class AppSettings {
         quickInputBarRightAction,
         quickInputSymbolsText,
         Object.hashAll(quickPhrases),
-        Object.hashAll(textReplacementRules),
+        Object.hash(Object.hashAll(textReplacementRules), autoReplaceEnabled),
         Object.hash(
           wordCountFloatingEnabled,
           wordCountFloatingPosition,

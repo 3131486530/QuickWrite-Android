@@ -24,15 +24,17 @@ class WordCountFloatingWindow extends StatefulWidget {
 
 class _WordCountFloatingWindowState extends State<WordCountFloatingWindow> {
   /// 浮窗与编辑区边缘的间距
-  static const double _edgeMargin = 12;
+  ///
+  /// 贴紧四角不留边距，避免右上角看起来"悬"在角落外侧
+  static const double _edgeMargin = 0;
 
   /// 浮窗背景不透明度（半透明效果）
   static const double _backgroundOpacity = 0.72;
 
-  /// 字号整体较早期版本缩小约三分之一
-  static const double _labelFontSize = 10;
-  static const double _valueFontSize = 11;
-  static const double _iconSize = 10;
+  /// 字号在上一版基础上再缩小三分之一
+  static const double _labelFontSize = 7;
+  static const double _valueFontSize = 7.5;
+  static const double _iconSize = 7;
 
   @override
   void initState() {
@@ -122,11 +124,12 @@ class _WordCountFloatingWindowState extends State<WordCountFloatingWindow> {
     final colorScheme = Theme.of(context).colorScheme;
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+      // 内边距同步缩小三分之一（7 -> 5，4 -> 3）
+      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 3),
       decoration: BoxDecoration(
         // 半透明底色，保留正文可见
         color: colorScheme.surface.withValues(alpha: _backgroundOpacity),
-        borderRadius: BorderRadius.circular(6),
+        borderRadius: BorderRadius.circular(4),
         border: Border.all(color: colorScheme.outlineVariant.withValues(alpha: 0.6)),
         boxShadow: [
           BoxShadow(
@@ -151,7 +154,7 @@ class _WordCountFloatingWindowState extends State<WordCountFloatingWindow> {
             ),
           if (writingSpeed != null) ...[
             // 码字速度
-            if (showWordCount) const SizedBox(height: 2),
+            if (showWordCount) const SizedBox(height: 1),
             _buildRow(
               context,
               icon: Icons.speed_rounded,
@@ -182,7 +185,7 @@ class _WordCountFloatingWindowState extends State<WordCountFloatingWindow> {
       children: [
         if (mode.showIcon) ...[
           Icon(icon, size: _iconSize, color: colorScheme.primary),
-          const SizedBox(width: 4),
+          const SizedBox(width: 2),
         ],
         if (mode.showLabel) ...[
           Text(
@@ -192,7 +195,7 @@ class _WordCountFloatingWindowState extends State<WordCountFloatingWindow> {
               color: colorScheme.onSurfaceVariant,
             ),
           ),
-          const SizedBox(width: 5),
+          const SizedBox(width: 3),
         ],
         Text(
           value,

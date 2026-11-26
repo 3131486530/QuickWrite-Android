@@ -59,7 +59,7 @@ class MiscCacheData {
     this.toolsFunctionOrder = const ['nameGen', 'sensitiveWord'],
     this.toolsSectionOrder = const ['bookInfo', 'stats'],
     this.keywordHighlightEnabled = false,
-    this.sensitiveWordHighlightEnabled = true,
+    this.sensitiveWordHighlightEnabled = false,
     this.books = const {},
   });
 
@@ -87,7 +87,7 @@ class MiscCacheData {
           const ['bookInfo', 'stats'],
       keywordHighlightEnabled: json['keywordHighlightEnabled'] as bool? ?? false,
       sensitiveWordHighlightEnabled:
-          json['sensitiveWordHighlightEnabled'] as bool? ?? true,
+          json['sensitiveWordHighlightEnabled'] as bool? ?? false,
       books: books,
     );
   }

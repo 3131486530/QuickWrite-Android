@@ -12,6 +12,8 @@ import 'package:quick_write/core/providers/writing_stats_provider.dart';
 import 'package:quick_write/core/router/router.dart';
 import 'package:quick_write/core/services/cloud_sync/cloud_sync_service.dart';
 import 'package:quick_write/core/services/multi_window_service.dart';
+import 'package:quick_write/core/services/settings_service.dart';
+import 'package:quick_write/core/utils/color_utils.dart';
 import 'package:quick_write/core/services/tray_service.dart';
 import 'package:quick_write/core/utils/platform_capabilities.dart';
 import 'package:quick_write/pages/workspace/workspace_page.dart';
@@ -36,6 +38,32 @@ Widget _wrapWithAppFontScale(BuildContext context, Widget? child, double scale) 
   return MediaQuery(
     data: MediaQuery.of(context).copyWith(textScaler: TextScaler.linear(scale)),
     child: child ?? const SizedBox.shrink(),
+  );
+}
+
+/// 让文本选择手柄（光标下方的水滴）跟随自定义光标颜色
+///
+/// 光标颜色由用户单独配置，系统默认的水滴取主题主色，两者不同色会显得割裂；
+/// 这里在应用根部覆盖 textSelectionTheme 的 selectionHandleColor，
+/// 并监听设置变化即时生效；未自定义光标颜色时仍回落到主题主色。
+Widget _wrapWithCursorHandleColor(BuildContext context, Widget? child) {
+  return ListenableBuilder(
+    listenable: SettingsService.instance,
+    builder: (context, _) {
+      final ThemeData theme = Theme.of(context);
+      final Color handleColor = ColorUtils.getCursorColorForTheme(
+        context,
+        theme.colorScheme.primary,
+      );
+      return Theme(
+        data: theme.copyWith(
+          textSelectionTheme: theme.textSelectionTheme.copyWith(
+            selectionHandleColor: handleColor,
+          ),
+        ),
+        child: child ?? const SizedBox.shrink(),
+      );
+    },
   );
 }
 
@@ -148,7 +176,11 @@ class MyWriterApp extends StatelessWidget {
               context,
               _wrapWithLinuxWindowFrame(
                 context,
-                _wrapWithAppFontScale(context, child, themeProvider.appFontScale),
+                _wrapWithAppFontScale(
+                  context,
+                  _wrapWithCursorHandleColor(context, child),
+                  themeProvider.appFontScale,
+                ),
               ),
             ),
           );
@@ -278,7 +310,11 @@ class _WorkspaceAppState extends State<WorkspaceApp> {
               context,
               _wrapWithLinuxWindowFrame(
                 context,
-                _wrapWithAppFontScale(context, child, themeProvider.appFontScale),
+                _wrapWithAppFontScale(
+                  context,
+                  _wrapWithCursorHandleColor(context, child),
+                  themeProvider.appFontScale,
+                ),
               ),
             ),
           );
