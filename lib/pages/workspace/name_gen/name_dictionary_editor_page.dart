@@ -5,8 +5,10 @@ import 'package:re_editor/re_editor.dart';
 import 'package:uuid/uuid.dart';
 
 import 'package:quick_write/core/models/name_gen/name_dictionary.dart';
+import 'package:quick_write/core/services/settings_service.dart';
 import 'package:quick_write/core/utils/color_utils.dart';
 import 'package:quick_write/core/utils/ime_cursor_fixer.dart';
+import 'package:quick_write/core/utils/platform_capabilities.dart';
 import 'package:quick_write/core/utils/typography_extension.dart';
 import 'package:quick_write/shared/widgets/qw_dropdown.dart';
 import 'package:quick_write/shared/widgets/qw_switch.dart';
@@ -96,7 +98,7 @@ class _NameDictionaryEditorPageState extends State<NameDictionaryEditorPage> {
     _partCount = _resolvePartCount(dictionary);
     _poolKeys = NamePoolKeys.keysOf(_category, partCount: _partCount);
     for (final String key in _poolKeys) {
-      _drafts[key] = dictionary?.pool(key).join('\n') ?? '';
+      _drafts[key] = dictionary?.pool(key).join('、') ?? '';
     }
     _activeKey = _poolKeys.first;
     _activeCount = _parsePool(_drafts[_activeKey] ?? '').length;
@@ -127,8 +129,8 @@ class _NameDictionaryEditorPageState extends State<NameDictionaryEditorPage> {
 
   /// 解析词条文本
   ///
-  /// 支持换行、空格、逗号、顿号分隔，自动去空与去重；
-  /// 编辑区以一行一词为主，但粘贴进来的一整段也能正确拆开。
+  /// 词条之间以顿号分隔，同时兼容换行、空格、逗号（含全角），
+  /// 粘贴进来的一整段也能正确拆开，自动去空与去重。
   List<String> _parsePool(String raw) {
     final List<String> result = <String>[];
     for (final String token in raw.split(RegExp(r'[\s,，、]+'))) {
@@ -149,6 +151,14 @@ class _NameDictionaryEditorPageState extends State<NameDictionaryEditorPage> {
       if (count == _activeCount) return;
       setState(() => _activeCount = count);
     });
+  }
+
+  /// 回车键写入顿号
+  ///
+  /// 词条以顿号分隔，回车不应产生换行（换行会在文本中留下空行，
+  /// 解析时虽被忽略，但视觉上把一段词条割裂成多行），此处直接替换为分隔符。
+  void _handleNewLine() {
+    _editor.replaceSelection('、');
   }
 
   /// 切换词组池
@@ -242,6 +252,9 @@ class _NameDictionaryEditorPageState extends State<NameDictionaryEditorPage> {
 
   @override
   Widget build(BuildContext context) {
+    // 键盘弹起时收起顶部设置区，把竖向空间全部让给词条编辑区，
+    // 避免输入法把可编辑区域压到只剩几行
+    final bool keyboardVisible = MediaQuery.viewInsetsOf(context).bottom > 0;
     return Scaffold(
       appBar: AppBar(
         title: Text(_isEditing ? '编辑词典' : '新建词典'),
@@ -257,10 +270,10 @@ class _NameDictionaryEditorPageState extends State<NameDictionaryEditorPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: <Widget>[
-            _buildHeader(context),
+            if (!keyboardVisible) _buildHeader(context),
             _buildPoolTabs(context),
-            Expanded(child: _buildEditor(context)),
-            _buildStatusBar(context),
+            Expanded(child: _buildEditor(context, keyboardVisible: keyboardVisible)),
+            if (!keyboardVisible) _buildStatusBar(context),
           ],
         ),
       ),
@@ -404,10 +417,15 @@ class _NameDictionaryEditorPageState extends State<NameDictionaryEditorPage> {
   ///
   /// 与正文编辑器同源的 re_editor：按行虚拟化渲染，滚动与选区由内核处理，
   /// 数千条词条不会像多输入框方案那样一次性构建全部文本控件。
-  Widget _buildEditor(BuildContext context) {
+  ///
+  /// 光标样式与正文保持一致：静态光标常亮，呼吸光标按同一余弦曲线起伏，
+  /// 两者都需显式传参，否则编辑器只走默认闪烁。
+  Widget _buildEditor(BuildContext context, {required bool keyboardVisible}) {
     final ColorScheme colorScheme = Theme.of(context).colorScheme;
+    final bool breathing = PlatformCapabilities.isMobile &&
+        SettingsService.instance.settings.breathingCursorEnabled;
     return Container(
-      margin: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+      margin: EdgeInsets.fromLTRB(16, keyboardVisible ? 6 : 10, 16, 0),
       clipBehavior: Clip.antiAlias,
       decoration: BoxDecoration(
         color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.35),
@@ -419,8 +437,11 @@ class _NameDictionaryEditorPageState extends State<NameDictionaryEditorPage> {
         // 进入页面不主动唤起键盘，避免遮挡词条列表
         autofocus: false,
         wordWrap: true,
-        hint: '每行一个词条，也可用空格或逗号分隔',
+        hint: '词条之间用「、」分隔',
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+        staticCursor: SettingsService.instance.settings.staticCursorEnabled,
+        breathingCursor: breathing,
+        onNewLine: _handleNewLine,
         style: CodeEditorStyle(
           fontSize: 16,
           fontHeight: 1.6,
