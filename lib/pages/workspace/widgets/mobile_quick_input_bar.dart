@@ -354,7 +354,7 @@ class _MobileQuickInputBarState extends State<MobileQuickInputBar> with WidgetsB
   void _handleToolActionTap(QuickInputAction action) {
     final MobileToolAction? toolAction = _toolActionMap[action];
     if (toolAction == null) return;
-    FocusManager.primaryFocus?.unfocus();
+    FocusManager.instance.primaryFocus?.unfocus();
     handleMobileToolAction(context, toolAction);
   }
 
