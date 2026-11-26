@@ -94,7 +94,9 @@ Future<T?> showDialogBase<T>({
       context: context,
       isScrollControlled: true,
       useSafeArea: true,
-      barrierDismissible: barrierDismissible,
+      // 底部面板用 isDismissible / enableDrag 表达"遮罩点击关闭"
+      isDismissible: barrierDismissible,
+      enableDrag: barrierDismissible,
       backgroundColor: Colors.transparent,
       barrierColor: Colors.black.withValues(alpha: 0.5),
       builder: (sheetContext) => _MobileDialogSheet(
