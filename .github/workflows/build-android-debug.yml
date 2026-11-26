@@ -78,6 +78,9 @@ jobs:
       - name: Build release APK (debug signed)
         # 只打 arm64，与正式包保持一致；versionCode 用 pubspec 基数 + 运行号，
         # 保证每次递增，能直接覆盖安装上一次的测试包。
+        env:
+          # 依赖下载失败时由 Gradle 自身重试，缓解仓库限流导致的偶发失败
+          GRADLE_OPTS: "-Dorg.gradle.internal.repository.max.retries=5 -Dorg.gradle.internal.repository.initial.backoff=2000"
         run: |
           set -euo pipefail
           FULL_VERSION="$(awk '/^version:/ {print $2; exit}' pubspec.yaml | tr -d '"')"
@@ -91,7 +94,6 @@ jobs:
           for attempt in 1 2 3; do
             echo "::group::构建尝试 ${attempt}"
             if flutter build apk --release \
-                 --stacktrace \
                  --target-platform android-arm64 \
                  --build-name "${APP_VERSION}" \
                  --build-number "${CODE}"; then
