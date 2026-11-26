@@ -338,6 +338,7 @@ class CodeEditor extends StatefulWidget {
     this.readOnly,
     this.showCursorWhenReadOnly,
     this.staticCursor = false,
+    this.breathingCursor = false,
     this.wordWrap,
     this.autocompleteSymbols,
     this.autocompletePairs,
@@ -459,6 +460,12 @@ class CodeEditor extends StatefulWidget {
   ///
   /// 默认为 false，即沿用 Flutter 默认的闪烁光标。
   final bool staticCursor;
+
+  /// 呼吸式顺滑光标：为 true 时光标以透明度渐变做淡入淡出动画，
+  /// 避免明暗硬切换造成的闪烁感。
+  ///
+  /// 优先级高于 [staticCursor]，默认为 false。
+  final bool breathingCursor;
 
   /// Should wrap the word.
   final bool? wordWrap;
@@ -731,6 +738,7 @@ class _CodeEditorState extends State<CodeEditor> {
       cursorWidth: widget.style?.cursorWidth ?? _kDefaultCaretWidth,
       showCursorWhenReadOnly: widget.showCursorWhenReadOnly ?? true,
       staticCursor: widget.staticCursor,
+      breathingCursor: widget.breathingCursor,
       leadingDivider: widget.leadingDivider,
       border: widget.border,
       borderRadius: widget.borderRadius,

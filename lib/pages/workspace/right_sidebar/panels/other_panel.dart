@@ -323,6 +323,17 @@ class _OtherPanelState extends State<OtherPanel> {
             setState(() {});
           },
         ),
+        // 呼吸式顺滑光标开关（移动端）：光标透明度平滑过渡，不做硬切换式闪烁
+        if (PlatformCapabilities.isMobile)
+          SwitchSettingItem(
+            icon: Icons.opacity_outlined,
+            label: '呼吸式顺滑光标',
+            value: SettingsService.instance.breathingCursorEnabled,
+            onChanged: (value) {
+              SettingsService.instance.updateBreathingCursorEnabled(value);
+              setState(() {});
+            },
+          ),
         // 预览模式开关（移动端不提供预览模式，隐藏此项）
         if (!PlatformCapabilities.isMobile)
           SwitchSettingItem(

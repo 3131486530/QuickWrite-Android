@@ -694,6 +694,9 @@ class SettingsService extends ChangeNotifier {
   /// 获取静态光标是否启用（true 表示光标不闪烁）
   bool get staticCursorEnabled => _settings.staticCursorEnabled;
 
+  /// 获取呼吸式顺滑光标是否启用（true 表示光标做淡入淡出的呼吸动画）
+  bool get breathingCursorEnabled => _settings.breathingCursorEnabled;
+
   /// 获取预览模式是否启用
   /// 移动端不提供预览模式，始终返回关闭
   bool get previewModeEnabled => PlatformCapabilities.isMobile ? false : _settings.previewModeEnabled;
@@ -949,8 +952,24 @@ class SettingsService extends ChangeNotifier {
   }
 
   /// 更新静态光标开关
+  ///
+  /// 静态光标与呼吸式光标互斥，开启静态光标会同时关闭呼吸式光标
   Future<bool> updateStaticCursorEnabled(bool value) async {
-    final newSettings = _settings.copyWith(staticCursorEnabled: value);
+    final newSettings = _settings.copyWith(
+      staticCursorEnabled: value,
+      breathingCursorEnabled: value ? false : _settings.breathingCursorEnabled,
+    );
+    return updateSettings(newSettings);
+  }
+
+  /// 更新呼吸式顺滑光标开关
+  ///
+  /// 呼吸式光标与静态光标互斥，开启呼吸式光标会同时关闭静态光标
+  Future<bool> updateBreathingCursorEnabled(bool value) async {
+    final newSettings = _settings.copyWith(
+      breathingCursorEnabled: value,
+      staticCursorEnabled: value ? false : _settings.staticCursorEnabled,
+    );
     return updateSettings(newSettings);
   }
 

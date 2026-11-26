@@ -16,6 +16,7 @@ class _CodeField extends SingleChildRenderObjectWidget {
   final bool hasFocus;
   final _CodeHighlighter highlighter;
   final ValueNotifier<bool> showCursorNotifier;
+  final ValueNotifier<double>? cursorOpacityNotifier;
   final ValueNotifier<_FloatingCursorState> floatingCursorNotifier;
   final ValueChanged<List<CodeLineRenderParagraph>> onRenderParagraphsChanged;
   final Color selectionColor;
@@ -56,6 +57,7 @@ class _CodeField extends SingleChildRenderObjectWidget {
     required this.hasFocus,
     required this.highlighter,
     required this.showCursorNotifier,
+    this.cursorOpacityNotifier,
     required this.floatingCursorNotifier,
     required this.onRenderParagraphsChanged,
     required this.selectionColor,
@@ -98,6 +100,7 @@ class _CodeField extends SingleChildRenderObjectWidget {
     hasFocus: hasFocus,
     highlighter: highlighter,
     showCursorNotifier: showCursorNotifier,
+    cursorOpacityNotifier: cursorOpacityNotifier,
     floatingCursorNotifier: floatingCursorNotifier,
     onRenderParagraphsChanged: onRenderParagraphsChanged,
     selectionColor: selectionColor,
@@ -138,6 +141,7 @@ class _CodeField extends SingleChildRenderObjectWidget {
       ..hasFocus = hasFocus
       ..highlighter = highlighter
       ..showCursorNotifier = showCursorNotifier
+      ..cursorOpacityNotifier = cursorOpacityNotifier
       ..floatingCursorNotifier = floatingCursorNotifier
       ..onRenderParagraphsChanged = onRenderParagraphsChanged
       ..selectionColor = selectionColor
@@ -196,6 +200,7 @@ class _CodeFieldRender extends RenderBox implements MouseTrackerAnnotation {
   bool _hasFocus;
   _CodeHighlighter _highlighter;
   ValueNotifier<bool> _showCursorNotifier;
+  ValueNotifier<double>? _cursorOpacityNotifier;
   ValueNotifier<_FloatingCursorState> _floatingCursorNotifier;
   ValueChanged<List<CodeLineRenderParagraph>> _onRenderParagraphsChanged;
   EdgeInsetsGeometry _padding;
@@ -246,6 +251,7 @@ class _CodeFieldRender extends RenderBox implements MouseTrackerAnnotation {
     required bool hasFocus,
     required _CodeHighlighter highlighter,
     required ValueNotifier<bool> showCursorNotifier,
+    ValueNotifier<double>? cursorOpacityNotifier,
     required ValueNotifier<_FloatingCursorState> floatingCursorNotifier,
     required ValueChanged<List<CodeLineRenderParagraph>> onRenderParagraphsChanged,
     required Color selectionColor,
@@ -284,6 +290,7 @@ class _CodeFieldRender extends RenderBox implements MouseTrackerAnnotation {
     _hasFocus = hasFocus,
     _highlighter = highlighter,
     _showCursorNotifier = showCursorNotifier,
+    _cursorOpacityNotifier = cursorOpacityNotifier,
     _floatingCursorNotifier = floatingCursorNotifier,
     _onRenderParagraphsChanged = onRenderParagraphsChanged,
     _padding = padding,
@@ -330,7 +337,8 @@ class _CodeFieldRender extends RenderBox implements MouseTrackerAnnotation {
           color: cursorColor,
           width: cursorWidth,
           height: 0.0,
-          visible: _showCursorNotifier.value
+          visible: _showCursorNotifier.value,
+          opacity: _cursorOpacityNotifier?.value ?? 1.0
         ),
         _CodeFieldFloatingCursorPainter(
           position: _floatingCursorNotifier.value,
@@ -608,6 +616,22 @@ class _CodeFieldRender extends RenderBox implements MouseTrackerAnnotation {
       _showCursorNotifier.addListener(_onCursorVisibleChanged);
     }
   }
+
+  set cursorOpacityNotifier(ValueNotifier<double>? value) {
+    if (_cursorOpacityNotifier == value) {
+      return;
+    }
+    if (attached) {
+      _cursorOpacityNotifier?.removeListener(_onCursorOpacityChanged);
+    }
+    _cursorOpacityNotifier = value;
+    if (attached) {
+      _onCursorOpacityChanged();
+      _cursorOpacityNotifier?.addListener(_onCursorOpacityChanged);
+    }
+  }
+
+  ValueNotifier<double>? get cursorOpacityNotifier => _cursorOpacityNotifier;
 
   set floatingCursorNotifier(ValueNotifier<_FloatingCursorState> value) {
     if (_floatingCursorNotifier == value) {
@@ -1396,6 +1420,7 @@ class _CodeFieldRender extends RenderBox implements MouseTrackerAnnotation {
     _externalScrollController?.addListener(_onExternalScrollChanged);
     _highlighter.addListener(markNeedsLayout);
     _showCursorNotifier.addListener(_onCursorVisibleChanged);
+    _cursorOpacityNotifier?.addListener(_onCursorOpacityChanged);
     _floatingCursorNotifier.addListener(_onFloatingCursorChanged);
   }
 
@@ -1406,6 +1431,7 @@ class _CodeFieldRender extends RenderBox implements MouseTrackerAnnotation {
     _externalScrollController?.removeListener(_onExternalScrollChanged);
     _highlighter.removeListener(markNeedsLayout);
     _showCursorNotifier.removeListener(_onCursorVisibleChanged);
+    _cursorOpacityNotifier?.removeListener(_onCursorOpacityChanged);
     _floatingCursorNotifier.removeListener(_onFloatingCursorChanged);
     super.detach();
     _foregroundRender.detach();
@@ -1842,6 +1868,11 @@ class _CodeFieldRender extends RenderBox implements MouseTrackerAnnotation {
 
   void _onCursorVisibleChanged() {
     _foregroundRender.find<_CodeFieldCursorPainter>().visible = _showCursorNotifier.value;
+  }
+
+  void _onCursorOpacityChanged() {
+    _foregroundRender.find<_CodeFieldCursorPainter>().opacity =
+        _cursorOpacityNotifier?.value ?? 1.0;
   }
 
   void _onFloatingCursorChanged() {
@@ -2328,6 +2359,7 @@ class _CodeFieldCursorPainter extends _CodeFieldExtraPainter {
   double _height;
   bool _visible;
   bool _willDraw;
+  double _opacity;
 
   _CodeFieldCursorPainter({
     required CodeLinePosition position,
@@ -2335,12 +2367,14 @@ class _CodeFieldCursorPainter extends _CodeFieldExtraPainter {
     required double width,
     required double height,
     required bool visible,
+    double opacity = 1.0,
   }) : _position = position,
     _color = color,
     _width = width,
     _height = height,
     _visible = visible,
     _willDraw = true,
+    _opacity = opacity,
     _paint = Paint();
 
   set position(CodeLinePosition value) {
@@ -2393,9 +2427,20 @@ class _CodeFieldCursorPainter extends _CodeFieldExtraPainter {
     notifyListeners();
   }
 
+  /// 光标不透明度，呼吸式光标会持续改变该值实现平滑明暗过渡
+  set opacity(double value) {
+    if (_opacity == value) {
+      return;
+    }
+    _opacity = value;
+    notifyListeners();
+  }
+
+  double get opacity => _opacity;
+
   @override
   void paint(Canvas canvas, Size size, _CodeFieldRender render) {
-    if (!_visible || !_willDraw || _color == Colors.transparent || _color.alpha == 0) {
+    if (!_visible || !_willDraw || _color == Colors.transparent || _color.alpha == 0 || _opacity <= 0.01) {
       return;
     }
     final CodeLineRenderParagraph? paragraph = render.findDisplayParagraphByLineIndex(_position.index);
@@ -2414,7 +2459,9 @@ class _CodeFieldCursorPainter extends _CodeFieldExtraPainter {
   }
 
   void _drawCaret(Canvas canvas, Offset offset, Size size) {
-    _paint.color = _color;
+    _paint.color = _opacity >= 0.999
+        ? _color
+        : _color.withValues(alpha: (_color.a * _opacity).clamp(0.0, 1.0));
     canvas.drawRRect(RRect.fromRectXY(Rect.fromLTWH(offset.dx - _width / 2, offset.dy, _width, _height), _width / 2, _width / 2), _paint);
   }
 

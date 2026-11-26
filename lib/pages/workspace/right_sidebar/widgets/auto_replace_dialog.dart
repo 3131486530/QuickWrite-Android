@@ -247,7 +247,8 @@ class _AutoReplaceRulesContentState extends State<_AutoReplaceRulesContent> {
                       const SizedBox(width: 4),
                       Expanded(
                         child: Text(
-                          rule.replacement,
+                          // 替换文本为空表示命中后删除原文本
+                          rule.replacement.isEmpty ? '（删除原文本）' : rule.replacement,
                           maxLines: 2,
                           overflow: TextOverflow.ellipsis,
                           style: context.bodySmall?.copyWith(color: contentColor),
@@ -350,17 +351,14 @@ class _AutoReplaceRuleEditContentState extends State<_AutoReplaceRuleEditContent
 
   /// 保存规则
   ///
-  /// 原文本与替换文本均为必填，保存时保留用户输入的原始字符
+  /// 原文本必填；替换文本允许留空，留空表示命中时直接删除原文本。
+  /// 保存时保留用户输入的原始字符。
   void _handleSave() {
     final String trigger = _triggerController.text;
     final String replacement = _replacementController.text;
 
     if (trigger.trim().isEmpty) {
       setState(() => _errorMessage = '请输入原文本');
-      return;
-    }
-    if (replacement.trim().isEmpty) {
-      setState(() => _errorMessage = '请输入替换文本');
       return;
     }
 
@@ -478,7 +476,7 @@ class _AutoReplaceRuleEditContentState extends State<_AutoReplaceRuleEditContent
         },
         decoration: _fieldDecoration(
           context,
-          hintText: '输入替换后的文本',
+          hintText: '输入替换后的文本，留空则删除原文本',
           colorScheme: colorScheme,
         ),
       ),

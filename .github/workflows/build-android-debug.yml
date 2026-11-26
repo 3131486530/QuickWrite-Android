@@ -49,28 +49,44 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Generate fixed test signing key
-        # 公开仓库里的测试密钥，口令固定，只用于 CI 出的自测包，
-        # 与正式发布用的 keystore 无关，不要混淆。
+      - name: Prepare fixed test signing key
+        # 仓库内 android/ci/quickwrite-ci-test.p12.b64 保存了一把固定不变的测试密钥
+        # （公开、口令固定，只用于 CI 出的自测包，与正式发布签名无关）。
+        # 每次构建都复用同一把密钥，签名指纹一致，因此新包可以直接覆盖安装旧包。
+        # 仅在密钥文件缺失时才退回临时生成的密钥（此时签名不固定）。
         run: |
           set -euo pipefail
-          keytool -genkeypair -v \
-            -keystore android/app/quickwrite-test.jks \
-            -storetype JKS \
-            -keyalg RSA \
-            -keysize 2048 \
-            -validity 10000 \
-            -alias quickwrite-test \
-            -storepass quickwrite2014 \
-            -keypass quickwrite2014 \
-            -dname "CN=QuickWrite CI Test,O=QuickWrite,C=CN"
+          B64_FILE=android/ci/quickwrite-ci-test.p12.b64
+          if [ -f "$B64_FILE" ]; then
+            base64 -d "$B64_FILE" > android/app/quickwrite-ci-test.p12
+            STORE_FILE=quickwrite-ci-test.p12
+            STORE_TYPE=PKCS12
+            KEY_ALIAS=quickwrite-ci
+          else
+            echo "::warning::未找到固定测试密钥，退回临时生成（本次签名不固定）"
+            keytool -genkeypair -v \
+              -keystore android/app/quickwrite-test.jks \
+              -storetype JKS \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -alias quickwrite-test \
+              -storepass quickwrite2014 \
+              -keypass quickwrite2014 \
+              -dname "CN=QuickWrite CI Test,O=QuickWrite,C=CN"
+            STORE_FILE=quickwrite-test.jks
+            STORE_TYPE=JKS
+            KEY_ALIAS=quickwrite-test
+          fi
 
-          cat > android/key.properties <<'EOF'
-          storeFile=quickwrite-test.jks
+          cat > android/key.properties <<EOF
+          storeFile=$STORE_FILE
           storePassword=quickwrite2014
-          keyAlias=quickwrite-test
+          keyAlias=$KEY_ALIAS
           keyPassword=quickwrite2014
+          storeType=$STORE_TYPE
           EOF
+          cat android/key.properties
 
       - name: Fetch packages
         run: flutter pub get

@@ -119,7 +119,7 @@ class NovelEditorState extends State<NovelEditor> with WidgetsBindingObserver {
   /// 由设置中的规则列表推导，规则增删改或开关切换后随设置监听重建即时生效。
   static List<CodeTextReplacement> get _textReplacements => [
         for (final rule in SettingsService.instance.textReplacementRules)
-          if (rule.enabled && rule.trigger.isNotEmpty && rule.replacement.isNotEmpty)
+          if (rule.enabled && rule.trigger.isNotEmpty)
             CodeTextReplacement(rule.trigger, rule.replacement),
       ];
 
@@ -1958,6 +1958,9 @@ class NovelEditorState extends State<NovelEditor> with WidgetsBindingObserver {
               showCursorWhenReadOnly: false,
               // 静态光标：开启后光标常亮不闪烁（其他设置中可切换）
               staticCursor: settings.staticCursorEnabled,
+              // 呼吸式顺滑光标：光标透明度平滑起伏，仅移动端启用
+              breathingCursor: PlatformCapabilities.isMobile &&
+                  settings.breathingCursorEnabled,
               // 成对符号自动补全仅移动端启用，符号表取自标点符号表；
               // 表中未列出的 ASCII 引号与括号不会被写入正文
               autocompleteSymbols: PlatformCapabilities.isMobile &&

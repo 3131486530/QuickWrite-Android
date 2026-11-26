@@ -30,6 +30,9 @@ class _CodeEditable extends StatefulWidget {
   final double cursorWidth;
   final bool showCursorWhenReadOnly;
   final bool staticCursor;
+
+  /// 呼吸式顺滑光标：光标以透明度渐变做淡入淡出动画，不做硬切换式闪烁
+  final bool breathingCursor;
   final EdgeInsetsGeometry padding;
   final EdgeInsetsGeometry margin;
   final Widget? leadingDivider;
@@ -83,6 +86,7 @@ class _CodeEditable extends StatefulWidget {
     required this.cursorWidth,
     required this.showCursorWhenReadOnly,
     this.staticCursor = false,
+    this.breathingCursor = false,
     required this.padding,
     required this.margin,
     required this.leadingDivider,
@@ -179,7 +183,8 @@ class _CodeEditableState extends State<_CodeEditable> with AutomaticKeepAliveCli
     if (oldWidget.codeTheme != widget.codeTheme) {
       _highlighter.theme = widget.codeTheme;
     }
-    if (oldWidget.staticCursor != widget.staticCursor) {
+    if (oldWidget.staticCursor != widget.staticCursor ||
+        oldWidget.breathingCursor != widget.breathingCursor) {
       _updateCursorState();
     }
     super.didUpdateWidget(oldWidget);
@@ -332,6 +337,7 @@ class _CodeEditableState extends State<_CodeEditable> with AutomaticKeepAliveCli
       hasFocus: widget.focusNode.hasFocus,
       highlighter: _highlighter,
       showCursorNotifier: _cursorController,
+      cursorOpacityNotifier: _cursorController.opacity,
       floatingCursorNotifier: widget.floatingCursorController,
       onRenderParagraphsChanged: (paragraphs) {
         _codeIndicatorValueNotifier.value = CodeIndicatorValue(
@@ -435,6 +441,7 @@ class _CodeEditableState extends State<_CodeEditable> with AutomaticKeepAliveCli
 
   void _updateCursorState() {
     _cursorController.staticCursor = widget.staticCursor;
+    _cursorController.breathingCursor = widget.breathingCursor;
     if (widget.focusNode.hasFocus && (!widget.readOnly || widget.showCursorWhenReadOnly)) {
       _cursorController.startBlink();
     } else {
@@ -499,14 +506,54 @@ class _CodeCursorBlinkController extends ValueNotifier<bool> {
 
   Timer? _timer;
 
+  /// 光标当前不透明度，1.0 表示完全显示，仅供呼吸式光标使用
+  final ValueNotifier<double> opacity = ValueNotifier<double>(1.0);
+
+  /// 呼吸式顺滑光标动画计时器
+  Timer? _breathTimer;
+
+  /// 呼吸动画的时间基准
+  final Stopwatch _breathWatch = Stopwatch();
+
+  /// 一次完整呼吸（亮 → 暗 → 亮）的时长
+  static const Duration _breathPeriod = Duration(milliseconds: 1500);
+
+  /// 呼吸动画刷新间隔，约 60fps
+  static const Duration _breathRefreshInterval = Duration(milliseconds: 16);
+
+  /// 呼吸动画最暗时的不透明度，不归零，避免光标彻底消失带来的跳动感
+  static const double _breathMinOpacity = 0.15;
+
   /// 静态光标模式：为 true 时不启动闪烁定时器，光标保持常亮
   bool staticCursor = false;
+
+  /// 呼吸式顺滑光标模式：为 true 时用透明度渐变代替明暗硬切换
+  bool breathingCursor = false;
 
   _CodeCursorBlinkController() : super(false);
 
   void startBlink() {
     if (_timer != null) {
       _timer!.cancel();
+    }
+    _stopBreath();
+    if (breathingCursor) {
+      // 呼吸式光标：不改变可见性，只让不透明度平滑起伏
+      _timer = null;
+      opacity.value = 1.0;
+      _breathWatch
+        ..reset()
+        ..start();
+      _breathTimer = Timer.periodic(_breathRefreshInterval, _onBreathTick);
+      if (kIsAndroid || kIsIOS) {
+        // Wait selection position to update
+        Future.delayed(const Duration(milliseconds: 100), () {
+          value = true;
+        });
+      } else {
+        value = true;
+      }
+      return;
     }
     if (staticCursor) {
       // 静态光标：不做明暗交替，直接常亮
@@ -533,9 +580,10 @@ class _CodeCursorBlinkController extends ValueNotifier<bool> {
   }
 
   void stopBlink() {
+    _stopBreath();
     if (_timer == null) {
-      // 无定时器时（静态光标）仍需确保失焦后隐藏光标
-      if (staticCursor) {
+      // 无定时器时（静态光标 / 呼吸式光标）仍需确保失焦后隐藏光标
+      if (staticCursor || breathingCursor) {
         value = false;
       }
       return;
@@ -549,9 +597,30 @@ class _CodeCursorBlinkController extends ValueNotifier<bool> {
     value = !value;
   }
 
+  void _onBreathTick(Timer timer) {
+    final int periodMs = _breathPeriod.inMilliseconds;
+    final double progress = (_breathWatch.elapsedMilliseconds % periodMs) / periodMs;
+    // 余弦曲线：两端变化平缓、中间过渡连续，肉眼看不到生硬跳变
+    final double wave = 0.5 + 0.5 * cos(2 * pi * progress);
+    opacity.value = _breathMinOpacity + (1 - _breathMinOpacity) * wave;
+  }
+
+  void _stopBreath() {
+    _breathTimer?.cancel();
+    _breathTimer = null;
+    _breathWatch
+      ..stop()
+      ..reset();
+    if (opacity.value != 1.0) {
+      opacity.value = 1.0;
+    }
+  }
+
   @override
   void dispose() {
     stopBlink();
+    _stopBreath();
+    opacity.dispose();
     super.dispose();
   }
 

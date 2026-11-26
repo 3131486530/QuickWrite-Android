@@ -71,6 +71,8 @@ android {
                 keyPassword = keystoreProperties["keyPassword"] as String
                 storeFile = file(keystoreProperties["storeFile"] as String)
                 storePassword = keystoreProperties["storePassword"] as String
+                // 密钥库格式按 key.properties 指定（JKS / PKCS12），未指定时由 Gradle 自行推断
+                (keystoreProperties["storeType"] as String?)?.let { storeType = it }
             }
         }
     }

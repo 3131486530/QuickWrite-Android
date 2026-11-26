@@ -7,6 +7,18 @@ import 'package:quick_write/core/utils/rich_text_controller.dart';
 ///
 /// 依次绘制字底色、普通查找匹配、选区、当前匹配；选区颜色按焦点自动切换，失焦选区仅在上下文菜单显示期间绘制。
 /// 所有矩形合并进 Path 一次填充，避免半透明重叠与行间 1px 细缝。
+/// 光标绘制模式
+enum QwCaretMode {
+  /// 跟随编辑框内置行为（默认闪烁）
+  system,
+
+  /// 常亮，不做闪烁
+  steady,
+
+  /// 呼吸式顺滑动画，不透明度在时间轴上平滑起伏
+  breathing,
+}
+
 /// 在 foreground 层补画光标
 ///
 /// 内置 caret 在部分平台排在自定义 painter 之前，会被字底色盖住；
@@ -14,6 +26,34 @@ import 'package:quick_write/core/utils/rich_text_controller.dart';
 class QwCaretPainter extends RenderEditablePainter {
   RenderEditable? _attached;
   VoidCallback? _showCursorListener;
+
+  /// 自定义光标行为：默认跟随内置闪烁，可切换为常亮或呼吸式动画
+  QwCaretMode mode = QwCaretMode.system;
+
+  /// 光标不透明度，仅 [QwCaretMode.breathing] 与 [QwCaretMode.steady] 使用
+  double opacity = 1.0;
+
+  /// 自定义光标颜色，为空时取内置光标颜色
+  Color? caretColor;
+
+  void updateCaret({
+    QwCaretMode? mode,
+    double? opacity,
+    Color? caretColor,
+  }) {
+    final QwCaretMode nextMode = mode ?? this.mode;
+    final double nextOpacity = opacity ?? this.opacity;
+    final Color? nextColor = caretColor ?? this.caretColor;
+    if (nextMode == this.mode &&
+        nextOpacity == this.opacity &&
+        nextColor == this.caretColor) {
+      return;
+    }
+    this.mode = nextMode;
+    this.opacity = nextOpacity;
+    this.caretColor = nextColor;
+    notifyListeners();
+  }
 
   /// 监听 showCursor 的闪烁切换，触发 foreground 层重绘
   void attach(RenderEditable renderEditable) {
@@ -45,12 +85,23 @@ class QwCaretPainter extends RenderEditablePainter {
 
   @override
   void paint(Canvas canvas, Size size, RenderEditable renderEditable) {
-    if (renderEditable.paintCursorAboveText) return;
+    if (renderEditable.paintCursorAboveText && mode == QwCaretMode.system) {
+      return;
+    }
     final TextSelection? selection = renderEditable.selection;
     if (selection == null || !selection.isValid || !selection.isCollapsed) return;
-    if (!renderEditable.showCursor.value) return;
-    final Color? color = renderEditable.cursorColor;
-    if (color == null || color.a == 0) return;
+    if (mode == QwCaretMode.system) {
+      if (!renderEditable.showCursor.value) return;
+    } else {
+      // 常亮 / 呼吸式光标不跟随内置闪烁状态，改由焦点与自定义不透明度决定
+      if (!renderEditable.hasFocus) return;
+      if (opacity <= 0.01) return;
+    }
+    final Color? baseColor = caretColor ?? renderEditable.cursorColor;
+    if (baseColor == null || baseColor.a == 0) return;
+    final Color color = mode == QwCaretMode.system || opacity >= 0.999
+        ? baseColor
+        : baseColor.withValues(alpha: (baseColor.a * opacity).clamp(0.0, 1.0));
 
     final Rect rect = renderEditable
         .getLocalRectForCaret(selection.extent)

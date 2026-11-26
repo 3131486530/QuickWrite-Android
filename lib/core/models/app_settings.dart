@@ -240,6 +240,12 @@ class AppSettings {
   /// 开启后正文编辑器的光标不再闪烁，保持常亮显示
   final bool staticCursorEnabled;
 
+  /// 是否启用呼吸式顺滑光标
+  ///
+  /// 开启后光标以平滑的透明度渐变做呼吸动画（渐亮渐暗，无硬切换）。
+  /// 与 [staticCursorEnabled] 互斥，同时只会有一种光标动画生效。
+  final bool breathingCursorEnabled;
+
   /// 是否启用预览模式
   /// 开启后，单击章节/设定/备份预览以预览模式打开，再次单击其他项时替换当前预览标签页
   /// 关闭后，所有标签页均以固定模式打开
@@ -415,6 +421,7 @@ class AppSettings {
     this.historyRetentionDays = 30, // 历史记录保存天数
     this.openChapterCursorMode = 'default', // 打开文件时光标定位模式
     this.staticCursorEnabled = false, // 静态光标（光标不闪烁）
+    this.breathingCursorEnabled = false, // 呼吸式顺滑光标（淡入淡出呼吸动画）
     this.previewModeEnabled = true, // 是否启用预览模式
     this.quickInputBarEnabled = true, // 是否显示快捷输入栏（移动端）
     this.punctuationAutoCompleteEnabled = true, // 是否开启标点符号自动补全（移动端）
@@ -546,6 +553,7 @@ class AppSettings {
       historyRetentionDays: autoBackupJson['historyRetentionDays'] as int? ?? defaults.historyRetentionDays,
       openChapterCursorMode: autoBackupJson['openCursorMode'] as String? ?? defaults.openChapterCursorMode,
       staticCursorEnabled: autoBackupJson['staticCursor'] as bool? ?? defaults.staticCursorEnabled,
+      breathingCursorEnabled: autoBackupJson['breathingCursor'] as bool? ?? defaults.breathingCursorEnabled,
       previewModeEnabled: autoBackupJson['previewModeEnabled'] as bool? ?? defaults.previewModeEnabled,
       quickInputBarEnabled: autoBackupJson['quickInputBarEnabled'] as bool? ?? defaults.quickInputBarEnabled,
       punctuationAutoCompleteEnabled: autoBackupJson['punctuationAutoCompleteEnabled'] as bool? ?? defaults.punctuationAutoCompleteEnabled,
@@ -586,13 +594,13 @@ class AppSettings {
   /// 解析正文自动替换规则
   ///
   /// 配置文件中该字段缺失或格式异常时返回空列表，
-  /// 忽略原文本或替换文本为空的条目
+  /// 仅要求原文本非空；替换文本允许为空，表示命中后删除原文本
   static List<TextReplacementRule> _parseTextReplacementRules(Object? raw) {
     if (raw is! List) return const [];
     return raw
         .whereType<Map>()
         .map((item) => TextReplacementRule.fromJson(Map<String, dynamic>.from(item)))
-        .where((rule) => rule.trigger.isNotEmpty && rule.replacement.isNotEmpty)
+        .where((rule) => rule.trigger.isNotEmpty)
         .toList(growable: false);
   }
 
@@ -698,6 +706,7 @@ class AppSettings {
           'historyRetentionDays': historyRetentionDays,
           'openCursorMode': openChapterCursorMode,
           'staticCursor': staticCursorEnabled,
+          'breathingCursor': breathingCursorEnabled,
           'previewModeEnabled': previewModeEnabled,
           'quickInputBarEnabled': quickInputBarEnabled,
           'punctuationAutoCompleteEnabled': punctuationAutoCompleteEnabled,
@@ -810,6 +819,7 @@ class AppSettings {
     int? historyRetentionDays,
     String? openChapterCursorMode,
     bool? staticCursorEnabled,
+    bool? breathingCursorEnabled,
     bool? previewModeEnabled,
     bool? quickInputBarEnabled,
     bool? punctuationAutoCompleteEnabled,
@@ -908,6 +918,7 @@ class AppSettings {
       historyRetentionDays: historyRetentionDays ?? this.historyRetentionDays,
       openChapterCursorMode: openChapterCursorMode ?? this.openChapterCursorMode,
       staticCursorEnabled: staticCursorEnabled ?? this.staticCursorEnabled,
+      breathingCursorEnabled: breathingCursorEnabled ?? this.breathingCursorEnabled,
       previewModeEnabled: previewModeEnabled ?? this.previewModeEnabled,
       quickInputBarEnabled: quickInputBarEnabled ?? this.quickInputBarEnabled,
       punctuationAutoCompleteEnabled: punctuationAutoCompleteEnabled ?? this.punctuationAutoCompleteEnabled,
@@ -1039,6 +1050,7 @@ class AppSettings {
            other.historyRetentionDays == historyRetentionDays &&
            other.openChapterCursorMode == openChapterCursorMode &&
            other.staticCursorEnabled == staticCursorEnabled &&
+           other.breathingCursorEnabled == breathingCursorEnabled &&
            other.previewModeEnabled == previewModeEnabled &&
            other.quickInputBarEnabled == quickInputBarEnabled &&
            other.punctuationAutoCompleteEnabled == punctuationAutoCompleteEnabled &&
@@ -1152,6 +1164,7 @@ class AppSettings {
         historyRetentionDays,
         openChapterCursorMode,
         staticCursorEnabled,
+        breathingCursorEnabled,
         previewModeEnabled,
         quickInputBarEnabled,
         punctuationAutoCompleteEnabled,

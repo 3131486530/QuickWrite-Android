@@ -2,6 +2,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:quick_write/core/services/settings_service.dart';
 import 'package:quick_write/core/utils/find_match_highlighter.dart';
 import 'package:quick_write/core/utils/persistent_selection.dart';
 import 'package:quick_write/core/utils/platform_capabilities.dart';
@@ -225,10 +226,23 @@ class QwTextField extends StatefulWidget {
   State<QwTextField> createState() => _QwTextFieldState();
 }
 
-class _QwTextFieldState extends State<QwTextField> {
+class _QwTextFieldState extends State<QwTextField>
+    with SingleTickerProviderStateMixin {
   final GlobalKey _anchorKey = GlobalKey();
   final QwCaretPainter _caretPainter = QwCaretPainter();
   late final QwTextFieldPainter _painter;
+
+  /// 呼吸式光标动画控制器：0 → 1 往返循环，映射为不透明度起伏
+  late final AnimationController _breathController;
+
+  /// 当前生效的光标模式
+  QwCaretMode _caretMode = QwCaretMode.system;
+
+  /// 呼吸动画一次完整起伏的时长
+  static const Duration _breathPeriod = Duration(milliseconds: 1500);
+
+  /// 呼吸动画最暗时的不透明度
+  static const double _breathMinOpacity = 0.15;
 
   Color _focusedColor(BuildContext context) =>
       widget.selectionColor ??
@@ -243,6 +257,11 @@ class _QwTextFieldState extends State<QwTextField> {
   @override
   void initState() {
     super.initState();
+    _breathController = AnimationController(
+      vsync: this,
+      duration: _breathPeriod,
+    )..addListener(_onBreathTick);
+    SettingsService.instance.addListener(_onSettingsChanged);
     _painter = QwTextFieldPainter(
       controller: widget.controller,
       focusedColor: Colors.transparent,
@@ -314,9 +333,64 @@ class _QwTextFieldState extends State<QwTextField> {
     );
   }
 
+  /// 解析当前应使用的光标模式
+  ///
+  /// 仅移动端支持静态与呼吸式光标；桌面端保持原生闪烁行为不变。
+  QwCaretMode _resolveCaretMode() {
+    if (!PlatformCapabilities.isMobile) return QwCaretMode.system;
+    if (widget.showCursor == false) return QwCaretMode.system;
+    final SettingsService settings = SettingsService.instance;
+    if (settings.breathingCursorEnabled) return QwCaretMode.breathing;
+    if (settings.staticCursorEnabled) return QwCaretMode.steady;
+    return QwCaretMode.system;
+  }
+
+  /// 应用光标模式：呼吸式启动动画，其余模式停止动画
+  void _applyCaretMode(QwCaretMode mode) {
+    if (mode != _caretMode) {
+      _caretMode = mode;
+      if (mode == QwCaretMode.breathing) {
+        if (!_breathController.isAnimating) {
+          _breathController.repeat(reverse: true);
+        }
+      } else {
+        _breathController
+          ..stop()
+          ..value = 0;
+      }
+      // 切换模式需要重建输入框，让内置光标颜色与自定义光标同步
+      if (mounted) setState(() {});
+    }
+    _caretPainter.updateCaret(
+      mode: mode,
+      opacity: mode == QwCaretMode.breathing ? null : 1.0,
+      caretColor: _caretColor(context),
+    );
+  }
+
+  /// 自定义光标颜色，与内置光标默认取色保持一致
+  Color _caretColor(BuildContext context) =>
+      widget.cursorColor ?? Theme.of(context).colorScheme.primary;
+
+  void _onBreathTick() {
+    final double eased = Curves.easeInOut.transform(_breathController.value);
+    _caretPainter.updateCaret(
+      opacity: _breathMinOpacity + (1 - _breathMinOpacity) * eased,
+    );
+  }
+
+  void _onSettingsChanged() {
+    if (!mounted) return;
+    _applyCaretMode(_resolveCaretMode());
+  }
+
   @override
   void dispose() {
     ContextMenu.showingListenable.removeListener(_syncUnfocusedSelection);
+    SettingsService.instance.removeListener(_onSettingsChanged);
+    _breathController
+      ..removeListener(_onBreathTick)
+      ..dispose();
     _painter.dispose();
     _caretPainter.dispose();
     super.dispose();
@@ -335,6 +409,7 @@ class _QwTextFieldState extends State<QwTextField> {
       if (!identical(renderEditable.foregroundPainter, _caretPainter)) {
         renderEditable.foregroundPainter = _caretPainter;
       }
+      _applyCaretMode(_resolveCaretMode());
     });
 
     return KeyedSubtree(
@@ -381,7 +456,9 @@ class _QwTextFieldState extends State<QwTextField> {
           cursorHeight: widget.cursorHeight,
           cursorRadius: widget.cursorRadius,
           cursorOpacityAnimates: widget.cursorOpacityAnimates,
-          cursorColor: widget.cursorColor,
+          cursorColor: _caretMode == QwCaretMode.system
+              ? widget.cursorColor
+              : Colors.transparent,
           cursorErrorColor: widget.cursorErrorColor,
           selectionHeightStyle: widget.selectionHeightStyle,
           selectionWidthStyle: widget.selectionWidthStyle,
