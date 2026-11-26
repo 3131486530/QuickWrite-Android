@@ -12,11 +12,13 @@ import 'package:quick_write/core/utils/code_line_selection_utils.dart';
 import 'package:quick_write/core/utils/platform_capabilities.dart';
 import 'package:quick_write/core/utils/re_editor_span_builder.dart';
 import 'package:quick_write/core/utils/typography_extension.dart';
+import 'package:quick_write/core/utils/word_count_utils.dart';
 import 'package:quick_write/pages/workspace/editor/widgets/find_replace_bar.dart';
 import 'package:quick_write/pages/workspace/editor/widgets/outline_editor_widgets.dart';
 import 'package:quick_write/pages/workspace/editor/widgets/word_count_floating_window.dart';
 import 'package:quick_write/pages/workspace/editor/novel_editor.dart';
 import 'package:quick_write/pages/workspace/editor/outline_editor.dart';
+import 'package:quick_write/shared/dialogs/word_count_dialog.dart';
 import 'package:quick_write/shared/widgets/widgets.dart';
 import 'package:re_editor/re_editor.dart';
 
@@ -465,7 +467,7 @@ class _EditorContainerState extends State<EditorContainer> {
                   ),
                 ),
               // 字数浮窗（移动端，浮在编辑内容之上，随编辑区一起被键盘上推）
-              const WordCountFloatingWindow(),
+              WordCountFloatingWindow(onTap: () => _showWordCountStatsDialog(workspaceProvider)),
               // 查找替换栏（浮动在编辑区域右上角）
               if (workspaceProvider.isFindReplaceVisible)
                 Positioned(
@@ -524,6 +526,17 @@ class _EditorContainerState extends State<EditorContainer> {
       }
     }
     tab.recordedSessionWords = currentNet;
+  }
+
+  /// 点击字数浮窗时弹出字数统计
+  ///
+  /// 复用底部状态栏点击字数所用的同一统计弹窗，统计当前标签页正文的详细字数
+  void _showWordCountStatsDialog(WorkspaceProvider provider) {
+    final tab = provider.currentTab;
+    final controller = tab?.textController;
+    if (tab == null || controller == null) return;
+    final result = WordCountUtils.countWordsDetail(controller.text);
+    showWordCountDialog(context: context, result: result, chapterTitle: tab.title);
   }
 
   /// 构建编辑器内容区域

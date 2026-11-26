@@ -106,6 +106,12 @@ class AppSettings {
   /// 大纲标题颜色（暗色主题，十六进制字符串）
   final String? outlineTitleColorDark;
 
+  /// 大纲正文字体颜色（亮色主题，十六进制字符串）
+  final String? outlineContentColorLight;
+
+  /// 大纲正文字体颜色（暗色主题，十六进制字符串）
+  final String? outlineContentColorDark;
+
   // ================= 布局设置（右侧边栏 - 布局设置面板）=================
   
   /// 是否显示章节标题
@@ -459,6 +465,8 @@ class AppSettings {
     this.outlineTitleAlignment = outlineTitleAlignLeft, // 大纲标题对齐方式
     this.outlineTitleColorLight, // 大纲标题颜色（亮色主题，十六进制字符串）
     this.outlineTitleColorDark, // 大纲标题颜色（暗色主题，十六进制字符串）
+    this.outlineContentColorLight, // 大纲正文字体颜色（亮色主题，十六进制字符串）
+    this.outlineContentColorDark, // 大纲正文字体颜色（暗色主题，十六进制字符串）
     // 其他设置
     this.autoSaveEnabled = false, // 是否开启自动保存
     this.autoBackupEnabled = true, // 是否开启自动备份
@@ -604,6 +612,10 @@ class AppSettings {
           fontJson['outlineTitleColorLight'] as String? ?? defaults.outlineTitleColorLight,
       outlineTitleColorDark:
           fontJson['outlineTitleColorDark'] as String? ?? defaults.outlineTitleColorDark,
+      outlineContentColorLight:
+          fontJson['outlineContentColorLight'] as String? ?? defaults.outlineContentColorLight,
+      outlineContentColorDark:
+          fontJson['outlineContentColorDark'] as String? ?? defaults.outlineContentColorDark,
 
       // 其他设置（编辑器）
       autoSaveEnabled: autoSaveJson['enabled'] as bool? ?? defaults.autoSaveEnabled,
@@ -713,6 +725,8 @@ class AppSettings {
           'outlineTitleAlign': outlineTitleAlignment,
           'outlineTitleColorLight': outlineTitleColorLight,
           'outlineTitleColorDark': outlineTitleColorDark,
+          'outlineContentColorLight': outlineContentColorLight,
+          'outlineContentColorDark': outlineContentColorDark,
         },
         // 布局设置
         'layout': {
@@ -891,6 +905,8 @@ class AppSettings {
     String? outlineTitleAlignment,
     Object? outlineTitleColorLight = _unset,
     Object? outlineTitleColorDark = _unset,
+    Object? outlineContentColorLight = _unset,
+    Object? outlineContentColorDark = _unset,
     // 其他设置（右侧边栏 - 其他设置面板）
     bool? autoSaveEnabled,
     bool? autoBackupEnabled,
@@ -1005,6 +1021,12 @@ class AppSettings {
       outlineTitleColorDark: outlineTitleColorDark == _unset
           ? this.outlineTitleColorDark
           : outlineTitleColorDark as String?,
+      outlineContentColorLight: outlineContentColorLight == _unset
+          ? this.outlineContentColorLight
+          : outlineContentColorLight as String?,
+      outlineContentColorDark: outlineContentColorDark == _unset
+          ? this.outlineContentColorDark
+          : outlineContentColorDark as String?,
       // 其他设置（右侧边栏 - 其他设置面板）
       autoSaveEnabled: autoSaveEnabled ?? this.autoSaveEnabled,
       autoBackupEnabled: autoBackupEnabled ?? this.autoBackupEnabled,
@@ -1149,6 +1171,8 @@ class AppSettings {
            other.outlineTitleAlignment == outlineTitleAlignment &&
            other.outlineTitleColorLight == outlineTitleColorLight &&
            other.outlineTitleColorDark == outlineTitleColorDark &&
+           other.outlineContentColorLight == outlineContentColorLight &&
+           other.outlineContentColorDark == outlineContentColorDark &&
            // 其他设置（右侧边栏 - 其他设置面板）
            other.autoSaveEnabled == autoSaveEnabled &&
            other.autoBackupEnabled == autoBackupEnabled &&
@@ -1270,6 +1294,8 @@ class AppSettings {
         outlineTitleAlignment,
         outlineTitleColorLight,
         outlineTitleColorDark,
+        outlineContentColorLight,
+        outlineContentColorDark,
       ),
       // 其他设置（右侧边栏 - 其他设置面板）与字数浮窗设置（移动端）
       Object.hash(

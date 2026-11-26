@@ -527,7 +527,6 @@ class OutlineTitleField extends StatelessWidget {
                       // 清除主题输入框默认的水平内边距，使标题文字左边缘与一级节点圆点对齐
                       contentPadding: EdgeInsets.zero,
                     ),
-                    cursorColor: colorScheme.primary,
                     onChanged: onChanged,
                   ),
                 ),

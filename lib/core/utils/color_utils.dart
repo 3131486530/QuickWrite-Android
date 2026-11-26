@@ -93,6 +93,31 @@ class ColorUtils {
     }
   }
 
+  /// 获取当前主题亮度下大纲正文字体颜色的原始 HEX 字符串
+  static String? getOutlineContentColorHexForTheme(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return isDark
+        ? SettingsService.instance.outlineContentColorDark
+        : SettingsService.instance.outlineContentColorLight;
+  }
+
+  /// 根据当前主题亮度获取大纲正文字体颜色（未自定义时使用 [fallback]）
+  static Color getOutlineContentColorForTheme(BuildContext context, Color fallback) {
+    final String? hex = getOutlineContentColorHexForTheme(context);
+    if (hex == null || hex.isEmpty) return fallback;
+    return tryParseHex(hex) ?? fallback;
+  }
+
+  /// 更新当前主题亮度下的大纲正文字体颜色
+  static Future<void> updateOutlineContentColorForTheme(BuildContext context, String colorHex) async {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    if (isDark) {
+      await SettingsService.instance.updateOutlineContentColorDark(colorHex);
+    } else {
+      await SettingsService.instance.updateOutlineContentColorLight(colorHex);
+    }
+  }
+
   /// 获取当前主题亮度下章节标题颜色的原始 HEX 字符串
   static String? getChapterTitleColorHexForTheme(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;

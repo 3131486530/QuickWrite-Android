@@ -675,7 +675,6 @@ class OutlineNodeAttachmentState extends State<OutlineNodeAttachment> {
             maxLines: null,
             minLines: 1,
             style: _noteTextStyle,
-            cursorColor: widget.colorScheme.primary,
             decoration: InputDecoration(
               isCollapsed: true,
               isDense: true,

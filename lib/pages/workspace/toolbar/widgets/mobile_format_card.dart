@@ -113,6 +113,11 @@ class _MobileFormatCardState extends State<MobileFormatCard> {
                         ),
                         const SizedBox(height: 10),
                         _buildOutlineTitleColorRow(colorScheme),
+                        const SizedBox(height: 10),
+                        _buildDivider(colorScheme),
+                        _buildGroupLabel('大纲正文', colorScheme),
+                        const SizedBox(height: 12),
+                        _buildOutlineContentColorRow(colorScheme),
                       ] else ...[
                         _buildDivider(colorScheme),
                         _buildGroupLabel('标题', colorScheme),
@@ -630,6 +635,55 @@ class _MobileFormatCardState extends State<MobileFormatCard> {
       title: '选择大纲标题颜色',
       initialColorHex: ColorUtils.getOutlineTitleColorHexForTheme(context),
       onColorSelected: (colorHex) => ColorUtils.updateOutlineTitleColorForTheme(context, colorHex),
+    );
+  }
+
+  /// 构建大纲正文颜色设置行
+  Widget _buildOutlineContentColorRow(ColorScheme colorScheme) {
+    return InkWell(
+      onTap: _showOutlineContentColorPicker,
+      borderRadius: BorderRadius.circular(8),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.color_lens_outlined, size: 18, color: colorScheme.onSurfaceVariant),
+                const SizedBox(width: 6),
+                Text(
+                  '颜色',
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: colorScheme.onSurfaceVariant,
+                      ),
+                ),
+              ],
+            ),
+            // 颜色指示器
+            Container(
+              width: 24,
+              height: 24,
+              decoration: BoxDecoration(
+                color: ColorUtils.getOutlineContentColorForTheme(context, colorScheme.onSurface),
+                shape: BoxShape.circle,
+                border: Border.all(color: colorScheme.outline.withValues(alpha: 0.3)),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 打开大纲正文颜色选择器
+  void _showOutlineContentColorPicker() {
+    ColorPickerDialog.show(
+      context: context,
+      title: '选择大纲正文颜色',
+      initialColorHex: ColorUtils.getOutlineContentColorHexForTheme(context),
+      onColorSelected: (colorHex) => ColorUtils.updateOutlineContentColorForTheme(context, colorHex),
     );
   }
 

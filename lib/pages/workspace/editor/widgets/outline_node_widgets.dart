@@ -1,6 +1,7 @@
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:quick_write/core/services/settings_service.dart';
+import 'package:quick_write/core/utils/color_utils.dart';
 import 'package:quick_write/core/utils/ime_cursor_fixer.dart';
 import 'package:quick_write/core/utils/persistent_selection.dart';
 import 'package:quick_write/core/models/outline_models.dart';
@@ -948,7 +949,8 @@ class _OutlineNodeTileState extends State<OutlineNodeTile> {
                   fontFamily: SettingsService.instance.outlineFontFamily,
                   fontSize: _fontSize,
                   height: _lineHeightFactor,
-                  color: node.foregroundColor ?? colorScheme.onSurface,
+                  color: node.foregroundColor ??
+                      ColorUtils.getOutlineContentColorForTheme(context, colorScheme.onSurface),
                 ),
                 decoration: const InputDecoration(
                   border: InputBorder.none,
@@ -959,7 +961,6 @@ class _OutlineNodeTileState extends State<OutlineNodeTile> {
                   // contentPadding: EdgeInsets.fromLTRB(6, _contentPaddingVertical - 2.5, 6, _contentPaddingVertical + 2.5),
                   isDense: true,
                 ),
-                cursorColor: colorScheme.primary,
                 // 折叠光标（单击定位产生的光标）不绘制拖动调整用的手柄，仅保留光标本身；
                 // 仅 Android 的默认控件会为折叠光标绘制手柄，故只在 Android 上替换，桌面端与 iOS 保持系统默认
                 selectionControls: Theme.of(context).platform == TargetPlatform.android

@@ -11,9 +11,12 @@ import 'package:quick_write/core/utils/typography_extension.dart';
 /// 移动端叠加在编辑区上的一层半透明浮窗，实时显示当前标签页字数；
 /// 开启码字速度后额外显示一行码字速度。显示位置由设置决定，
 /// 位于底部时随编辑区一同被键盘上推。
-/// 点击浮窗会从底部弹出快捷面板，可直接切换字数统计与码字统计的显示。
+/// 点击浮窗弹出「字数统计」弹窗，与底部状态栏点击字数使用同一统计页。
 class WordCountFloatingWindow extends StatefulWidget {
-  const WordCountFloatingWindow({super.key});
+  const WordCountFloatingWindow({super.key, this.onTap});
+
+  /// 点击浮窗时的回调，由外层打开字数统计弹窗；为空时不响应点击
+  final VoidCallback? onTap;
 
   @override
   State<WordCountFloatingWindow> createState() => _WordCountFloatingWindowState();
@@ -51,62 +54,6 @@ class _WordCountFloatingWindowState extends State<WordCountFloatingWindow> {
         // 重新构建以应用新的设置
       });
     }
-  }
-
-  /// 点击浮窗后弹出的快捷设置面板
-  Future<void> _showQuickSettings(BuildContext context) async {
-    final settings = SettingsService.instance;
-    await showModalBottomSheet<void>(
-      context: context,
-      showDragHandle: true,
-      builder: (sheetContext) {
-        return StatefulBuilder(
-          builder: (sheetContext, setSheetState) {
-            void apply(Future<bool> future) {
-              future.then((_) {
-                if (!sheetContext.mounted) return;
-                setSheetState(() {});
-                setState(() {});
-              });
-            }
-
-            return SafeArea(
-              top: false,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
-                    child: Text(
-                      '字数浮窗',
-                      style: Theme.of(sheetContext).textTheme.titleMedium,
-                    ),
-                  ),
-                  SwitchListTile(
-                    value: settings.wordCountFloatingWordCountEnabled,
-                    title: const Text('字数统计'),
-                    subtitle: const Text('在浮窗中显示当前章节字数'),
-                    onChanged: (value) => apply(
-                      settings.updateWordCountFloatingWordCountEnabled(value),
-                    ),
-                  ),
-                  SwitchListTile(
-                    value: settings.wordCountFloatingSpeedEnabled,
-                    title: const Text('码字统计'),
-                    subtitle: const Text('在浮窗中显示每分钟码字速度'),
-                    onChanged: (value) => apply(
-                      settings.updateWordCountFloatingSpeedEnabled(value),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                ],
-              ),
-            );
-          },
-        );
-      },
-    );
   }
 
   @override
@@ -147,7 +94,7 @@ class _WordCountFloatingWindowState extends State<WordCountFloatingWindow> {
         listenable: listenable,
         builder: (context, _) => GestureDetector(
           behavior: HitTestBehavior.opaque,
-          onTap: () => _showQuickSettings(context),
+          onTap: widget.onTap,
           child: _buildWindow(
             context,
             tab.wordCount,

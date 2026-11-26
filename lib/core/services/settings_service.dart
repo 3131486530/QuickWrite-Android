@@ -691,6 +691,12 @@ class SettingsService extends ChangeNotifier {
   /// 获取大纲标题颜色（暗色主题，为 null 时跟随主题默认颜色）
   String? get outlineTitleColorDark => _settings.outlineTitleColorDark;
 
+  /// 获取大纲正文字体颜色（亮色主题，为 null 时跟随主题默认颜色）
+  String? get outlineContentColorLight => _settings.outlineContentColorLight;
+
+  /// 获取大纲正文字体颜色（暗色主题，为 null 时跟随主题默认颜色）
+  String? get outlineContentColorDark => _settings.outlineContentColorDark;
+
   // ================= 其他设置 =================
 
   /// 获取是否开启自动保存
@@ -884,6 +890,18 @@ class SettingsService extends ChangeNotifier {
   /// 更新大纲标题颜色（暗色主题）
   Future<bool> updateOutlineTitleColorDark(String colorHex) async {
     final newSettings = _settings.copyWith(outlineTitleColorDark: colorHex);
+    return updateSettings(newSettings);
+  }
+
+  /// 更新大纲正文字体颜色（亮色主题）
+  Future<bool> updateOutlineContentColorLight(String colorHex) async {
+    final newSettings = _settings.copyWith(outlineContentColorLight: colorHex);
+    return updateSettings(newSettings);
+  }
+
+  /// 更新大纲正文字体颜色（暗色主题）
+  Future<bool> updateOutlineContentColorDark(String colorHex) async {
+    final newSettings = _settings.copyWith(outlineContentColorDark: colorHex);
     return updateSettings(newSettings);
   }
 

@@ -2290,7 +2290,6 @@ class _OutlineTableBlockState extends State<OutlineTableBlock>
               keyboardType: TextInputType.multiline,
               textAlign: _cellTextAlign,
               style: _cellTextStyle(cell),
-              cursorColor: widget.colorScheme.primary,
               // 拖动行或列时整表使用抓取光标，避免经过其他单元格时出现文字光标
               mouseCursor: _isDraggingStructure ? _dragCursor : null,
               decoration: InputDecoration(
