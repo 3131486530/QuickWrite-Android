@@ -174,14 +174,20 @@ class UpdateService {
 
     var latestVersion = _normalizeVersion(tag);
     // 固定构建 tag（android-debug）不含版本号时，退回到安装包文件名，
-    // 形如 quick-write-5.2.0-android-debug.apk
+    // 形如 quick-write-5.2.0-android-debug.apk；历史安装包会一并留在发布页，
+    // 因此取文件名中最大的版本号，避免误报成旧版本
     if (!RegExp(r'^\d').hasMatch(latestVersion)) {
       final String names = ((data['assets'] as List?) ?? const [])
           .whereType<Map>()
           .map((asset) => (asset['name'] as String?) ?? '')
           .join(' ');
-      final Match? versionMatch = RegExp(r'(\d+\.\d+\.\d+)').firstMatch(names);
-      if (versionMatch != null) latestVersion = versionMatch.group(1)!;
+      final Iterable<RegExpMatch> matches = RegExp(r'(\d+\.\d+\.\d+)').allMatches(names);
+      for (final match in matches) {
+        final candidate = match.group(1)!;
+        if (compareVersion(candidate, latestVersion) > 0) {
+          latestVersion = candidate;
+        }
+      }
     }
 
     return UpdateCheckResult(
