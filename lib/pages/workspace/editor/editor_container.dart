@@ -530,12 +530,24 @@ class _EditorContainerState extends State<EditorContainer> {
 
   /// 点击字数浮窗时弹出字数统计
   ///
-  /// 复用底部状态栏点击字数所用的同一统计弹窗，统计当前标签页正文的详细字数
+  /// 复用底部状态栏点击字数所用的同一统计弹窗，统计当前标签页正文的详细字数。
+  /// 设定项标签页使用大纲编辑器，没有文本控制器，需从其节点树导出纯文本统计。
   void _showWordCountStatsDialog(WorkspaceProvider provider) {
     final tab = provider.currentTab;
-    final controller = tab?.textController;
-    if (tab == null || controller == null) return;
-    final result = WordCountUtils.countWordsDetail(controller.text);
+    if (tab == null) return;
+
+    final String text;
+    if (tab.usesOutlineEditor) {
+      final state = tab.editorKey.currentState;
+      if (state is! OutlineEditorState) return;
+      text = state.serializeToText();
+    } else {
+      final controller = tab.textController;
+      if (controller == null) return;
+      text = controller.text;
+    }
+
+    final result = WordCountUtils.countWordsDetail(text);
     showWordCountDialog(context: context, result: result, chapterTitle: tab.title);
   }
 

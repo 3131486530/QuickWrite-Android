@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:quick_write/core/constants/material_icons.dart';
 import 'package:quick_write/core/models/name_gen/name_dictionary.dart';
+import 'package:quick_write/core/services/cache_services/name_gen_cache_service.dart';
 import 'package:quick_write/core/utils/typography_extension.dart';
 
 /// 词典管理弹窗的操作类型
@@ -64,20 +65,47 @@ Future<NameDictionarySheetAction?> showNameDictionarySheet({
 }
 
 /// 词典管理弹窗内容
-class _NameDictionarySheet extends StatelessWidget {
+class _NameDictionarySheet extends StatefulWidget {
   /// 当前类别的词典列表
   final List<NameDictionary> dictionaries;
 
   /// 当前选中的词典 ID
   final String selectedId;
 
-  /// 弹窗内容的最大高度占屏幕高度的比例
-  static const double _maxHeightRatio = 0.7;
-
   const _NameDictionarySheet({
     required this.dictionaries,
     required this.selectedId,
   });
+
+  @override
+  State<_NameDictionarySheet> createState() => _NameDictionarySheetState();
+}
+
+class _NameDictionarySheetState extends State<_NameDictionarySheet> {
+  /// 弹窗内容的最大高度占屏幕高度的比例
+  static const double _maxHeightRatio = 0.7;
+
+  /// 本地列表副本，拖动排序后立即反映在界面上
+  late final List<NameDictionary> _items =
+      List<NameDictionary>.of(widget.dictionaries);
+
+  /// 词典列表
+  List<NameDictionary> get dictionaries => _items;
+
+  /// 当前选中的词典 ID
+  String get selectedId => widget.selectedId;
+
+  /// 拖动排序结束后写回词典顺序
+  Future<void> _handleReorder(int oldIndex, int newIndex) async {
+    if (newIndex > oldIndex) newIndex -= 1;
+    if (oldIndex == newIndex) return;
+    final moved = _items.removeAt(oldIndex);
+    _items.insert(newIndex, moved);
+    setState(() {});
+    await NameGenCacheService.instance.reorderDictionaries(
+      _items.map((dictionary) => dictionary.id).toList(),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -132,11 +160,27 @@ class _NameDictionarySheet extends StatelessWidget {
                         style: context.bodyMedium?.copyWith(color: colorScheme.onSurfaceVariant),
                       ),
                     )
-                  : ListView.builder(
+                  : ReorderableListView.builder(
                       shrinkWrap: true,
+                      physics: const ClampingScrollPhysics(),
                       padding: const EdgeInsets.symmetric(horizontal: 12),
                       itemCount: dictionaries.length,
-                      itemBuilder: (context, index) => _buildTile(context, dictionaries[index]),
+                      // 长按拖动调整词典顺序，顺序即时落盘
+                      buildDefaultDragHandles: true,
+                      proxyDecorator: (child, index, animation) => Material(
+                        color: Colors.transparent,
+                        elevation: 4,
+                        borderRadius: BorderRadius.circular(10),
+                        child: child,
+                      ),
+                      onReorder: _handleReorder,
+                      itemBuilder: (context, index) {
+                        final dictionary = dictionaries[index];
+                        return KeyedSubtree(
+                          key: ValueKey<String>(dictionary.id),
+                          child: _buildTile(context, dictionary),
+                        );
+                      },
                     ),
             ),
             const Divider(height: 1),

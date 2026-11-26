@@ -171,6 +171,64 @@ mixin EditorMixin on WorkspaceStateBase, BookDataMixin {
     );
   }
 
+  /// 当前编辑器是否持有输入焦点
+  ///
+  /// 用于在打开弹窗、切走焦点之前记录编辑器是否处于可插入状态。
+  bool get currentEditorHasFocus {
+    final state = currentTab?.editorKey.currentState;
+    if (state is NovelEditorState) return state.hasEditorFocus;
+    if (state is OutlineEditorState) return state.hasEditorFocus;
+    return false;
+  }
+
+  /// 把文本插入当前编辑器并恢复编辑器光标
+  ///
+  /// 用于弹窗关闭后回插正文：先写入文本再请求编辑器焦点，
+  /// 没有可编辑的标签页时返回 false。
+  bool insertTextToCurrentEditor(String text) {
+    if (text.isEmpty) return false;
+    final tab = currentTab;
+    if (tab == null) return false;
+
+    final state = tab.editorKey.currentState;
+    if (state is NovelEditorState) {
+      state.insertText(text);
+      state.requestEditorFocus();
+      return true;
+    }
+    if (state is OutlineEditorState) {
+      state.insertPlainText(text);
+      state.requestFocus();
+      return true;
+    }
+    return false;
+  }
+
+  /// 向当前编辑器插入文本
+  ///
+  /// 仅当编辑器正持有输入焦点时才插入，返回是否插入成功：
+  /// 小说编辑器调用 [NovelEditorState.insertText]，大纲编辑器调用
+  /// [OutlineEditorState.insertPlainText]。焦点不在编辑器时返回 false，
+  /// 由调用方退化为仅复制到剪贴板。
+  bool insertTextIfEditorFocused(String text) {
+    if (text.isEmpty) return false;
+    final tab = currentTab;
+    if (tab == null) return false;
+
+    final state = tab.editorKey.currentState;
+    if (state is NovelEditorState) {
+      if (!state.hasEditorFocus) return false;
+      state.insertText(text);
+      return true;
+    }
+    if (state is OutlineEditorState) {
+      if (!state.hasEditorFocus) return false;
+      state.insertPlainText(text);
+      return true;
+    }
+    return false;
+  }
+
   /// 对小说编辑器标签页应用修改标记和字数统计更新
   ///
   /// 大纲编辑器标签页的修改标记和字数统计由 [OutlineEditorState.notifyContentChanged] 通过回调链处理，

@@ -15,13 +15,16 @@ import 'package:quick_write/pages/workspace/name_gen/widgets/name_options_panel.
 import 'package:quick_write/pages/workspace/name_gen/widgets/name_result_panel.dart';
 
 /// 显示随机取名对话框
-Future<void> showNameGeneratorDialog({
+///
+/// 点击任意名字即复制到剪贴板并关闭对话框，被点击的名字作为返回值返回；
+/// 对话框被取消时返回 null，由调用方决定是否插入编辑器。
+Future<String?> showNameGeneratorDialog({
   required BuildContext context,
 }) {
-  return showDialogBase(
+  return showDialogBase<String>(
     context: context,
     title: '随机取名',
-    subtitle: '从词典词条中随机抽取名字',
+    subtitle: '从词典词条中随机抽取名字，点击即复制并关闭',
     titleIcon: Icons.casino_outlined,
     width: 880,
     height: 600,
@@ -82,14 +85,8 @@ class _NameGeneratorDialogState extends State<_NameGeneratorDialog> {
   /// 各类别选中的词典 ID
   final Map<NameCategory, String> _selectedIds = {};
 
-  /// 各类别的生成历史
-  final Map<NameCategory, List<String>> _history = {};
-
   /// 本次生成结果
   List<String> _results = const [];
-
-  /// 结果区当前视图
-  NameResultTab _resultTab = NameResultTab.results;
 
   @override
   void initState() {
@@ -98,7 +95,6 @@ class _NameGeneratorDialogState extends State<_NameGeneratorDialog> {
     _surnameController.text = _options.customSurname;
     _suffixController.text = _options.customSuffix;
     _reloadDictionaries();
-    _reloadHistory();
     // 打开界面时立即生成一次结果
     _results = _generateNames();
 
@@ -163,13 +159,6 @@ class _NameGeneratorDialogState extends State<_NameGeneratorDialog> {
     _selectedIds[NameCategory.other] = selected;
   }
 
-  /// 重新加载各类别的生成历史
-  void _reloadHistory() {
-    for (final category in NameCategory.values) {
-      _history[category] = _cache.getHistory(category);
-    }
-  }
-
   /// 获取当前类别选中的词典
   NameDictionary? get _currentDictionary {
     final list = _dictionaries[_category] ?? const [];
@@ -203,18 +192,9 @@ class _NameGeneratorDialogState extends State<_NameGeneratorDialog> {
     );
   }
 
-  /// 将当前结果归档到历史
-  ///
-  /// 当前结果被新结果覆盖时调用，使其作为被覆盖的旧结果保留在历史中。
-  void _archiveCurrentResults() {
-    if (_results.isEmpty) return;
-    _cache.addHistory(_category, _results);
-    _history[_category] = _cache.getHistory(_category);
-  }
-
   /// 点击生成按钮
   ///
-  /// 批量生成名字并切换到结果视图；无法生成时提示用户。
+  /// 批量生成名字并替换当前结果；无法生成时提示用户。
   void _generate() {
     if (_currentDictionary == null) {
       SnackBarService.show(context, '请先在左侧选择或新建一个词典');
@@ -225,33 +205,21 @@ class _NameGeneratorDialogState extends State<_NameGeneratorDialog> {
       SnackBarService.show(context, '词典词条不足，无法生成，请补充词条');
       return;
     }
-    setState(() {
-      _archiveCurrentResults();
-      _results = names;
-      _resultTab = NameResultTab.results;
-    });
+    setState(() => _results = names);
   }
 
-  /// 复制名字到剪贴板
-  Future<void> _copy(String name) async {
+  /// 选中名字
+  ///
+  /// 复制名字到剪贴板并关闭对话框，把名字作为结果返回给调用方，
+  /// 由调用方判断正文是否处于光标焦点并决定是否直接插入。
+  Future<void> _selectName(String name) async {
     await Clipboard.setData(ClipboardData(text: name));
     if (!mounted) return;
-    SnackBarService.show(context, '已复制：$name');
+    Navigator.of(context).pop(name);
   }
 
-  /// 清空当前视图
-  Future<void> _clearCurrentView() async {
-    switch (_resultTab) {
-      case NameResultTab.results:
-        setState(() => _results = const []);
-        break;
-      case NameResultTab.history:
-        await _cache.clearHistory(_category);
-        if (!mounted) return;
-        setState(_reloadHistory);
-        break;
-    }
-  }
+  /// 清空生成结果
+  void _clearResults() => setState(() => _results = const []);
 
   // ================= 词典管理 =================
 
@@ -261,11 +229,27 @@ class _NameGeneratorDialogState extends State<_NameGeneratorDialog> {
   void _selectDictionary(String id) {
     _cache.saveSelectedDictionaryId(_category, id);
     setState(() {
-      _archiveCurrentResults();
       _selectedIds[_category] = id;
-      _resultTab = NameResultTab.results;
       _results = _generateNames();
     });
+  }
+
+  /// 拖动排序词典
+  ///
+  /// 列表顺序变化后立即刷新界面，并把新顺序写回缓存与磁盘。
+  Future<void> _reorderDictionaries(int oldIndex, int newIndex) async {
+    var target = newIndex;
+    if (target > oldIndex) target -= 1;
+    final list = List<NameDictionary>.of(_dictionaries[_category] ?? const []);
+    if (oldIndex < 0 || oldIndex >= list.length) return;
+    if (target < 0) target = 0;
+    if (target >= list.length) target = list.length - 1;
+    if (target == oldIndex) return;
+
+    final moved = list.removeAt(oldIndex);
+    list.insert(target, moved);
+    setState(() => _dictionaries[_category] = list);
+    await _cache.reorderDictionaries(list.map((d) => d.id).toList());
   }
 
   /// 新建词典
@@ -275,11 +259,9 @@ class _NameGeneratorDialogState extends State<_NameGeneratorDialog> {
     await _cache.saveDictionary(result);
     if (!mounted) return;
     setState(() {
-      _archiveCurrentResults();
       _reloadDictionaries();
       _selectedIds[NameCategory.other] = result.id;
       _category = NameCategory.other;
-      _resultTab = NameResultTab.results;
       _results = _generateNames();
     });
   }
@@ -293,7 +275,11 @@ class _NameGeneratorDialogState extends State<_NameGeneratorDialog> {
     if (result == null) return;
     await _cache.saveDictionary(result);
     if (!mounted) return;
-    setState(_reloadDictionaries);
+    setState(() {
+      _reloadDictionaries();
+      // 词条可能已变化，按新内容重新生成一批结果
+      _results = _generateNames();
+    });
   }
 
   /// 删除词典
@@ -309,7 +295,11 @@ class _NameGeneratorDialogState extends State<_NameGeneratorDialog> {
     if (!confirmed) return;
     await _cache.deleteDictionary(dictionary.id);
     if (!mounted) return;
-    setState(_reloadDictionaries);
+    setState(() {
+      _reloadDictionaries();
+      // 选中的词典可能已被删除，重新生成结果避免展示旧词典内容
+      _results = _generateNames();
+    });
   }
 
   // ================= 参数变化 =================
@@ -342,6 +332,7 @@ class _NameGeneratorDialogState extends State<_NameGeneratorDialog> {
                   onEdit: _editDictionary,
                   onDelete: _deleteDictionary,
                   onCreate: _createDictionary,
+                  onReorder: _reorderDictionaries,
                 ),
               ),
             ],
@@ -387,12 +378,10 @@ class _NameGeneratorDialogState extends State<_NameGeneratorDialog> {
                 // 结果区
                 Expanded(
                   child: NameResultPanel(
-                    tab: _resultTab,
-                    onTabChanged: (tab) => setState(() => _resultTab = tab),
-                    names: _namesOfCurrentTab(),
-                    onCopy: _copy,
-                    onClear: _clearCurrentView,
-                    emptyHint: _emptyHintOfCurrentTab(),
+                    names: _results,
+                    onSelect: _selectName,
+                    onClear: _clearResults,
+                    emptyHint: '点击"生成"按钮开始取名，点击名字即可复制并关闭',
                   ),
                 ),
               ],
@@ -401,25 +390,5 @@ class _NameGeneratorDialogState extends State<_NameGeneratorDialog> {
         ),
       ],
     );
-  }
-
-  /// 获取当前视图展示的名字列表
-  List<String> _namesOfCurrentTab() {
-    switch (_resultTab) {
-      case NameResultTab.results:
-        return _results;
-      case NameResultTab.history:
-        return _history[_category] ?? const [];
-    }
-  }
-
-  /// 获取当前视图的空状态提示
-  String _emptyHintOfCurrentTab() {
-    switch (_resultTab) {
-      case NameResultTab.results:
-        return '点击"生成"按钮开始取名，点击名字即可复制';
-      case NameResultTab.history:
-        return '暂无生成历史';
-    }
   }
 }

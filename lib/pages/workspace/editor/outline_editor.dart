@@ -5559,6 +5559,39 @@ class OutlineEditorState extends State<OutlineEditor>
     _endBatchAndNotify(description: '插入标点符号', focusNodeId: nodeId, focusSelection: controller.selection);
   }
 
+  /// 在活动节点的光标处插入纯文本
+  ///
+  /// 供随机取名等外部能力把结果直接写进正文：有选区时替换选中文字，
+  /// 无有效选区时追加在光标处或节点末尾。没有活动节点时不做任何处理。
+  void insertPlainText(String text) {
+    if (text.isEmpty) return;
+    final nodeId = _activeNodeId;
+    final controller = nodeId == null ? null : _controllers[nodeId];
+    final node = nodeId == null ? null : _findNode(nodeId);
+    if (controller == null || node == null) return;
+
+    final oldText = controller.text;
+    final selection = controller.selection;
+    final start = selection.isValid ? selection.start : oldText.length;
+    final end = selection.isValid ? selection.end : oldText.length;
+    final newText = oldText.substring(0, start) + text + oldText.substring(end);
+
+    _undoManager.beginBatch();
+    controller.value = TextEditingValue(
+      text: newText,
+      selection: TextSelection.collapsed(offset: start + text.length),
+    );
+    // 程序化改写不会触发输入框的 onChanged，需同步节点文本与样式区间
+    node.styleRanges = TextStyleRangeUtils.adjustForTextChange(node.styleRanges, oldText, newText);
+    (controller as RichTextEditingController).styleRanges = node.styleRanges;
+    node.text = newText;
+    _endBatchAndNotify(
+      description: '插入文本',
+      focusNodeId: nodeId,
+      focusSelection: controller.selection,
+    );
+  }
+
   /// 活动节点是否可以添加关联
   ///
   /// 关联文本仅作用于节点内的文字选区，没有选区时不可用。

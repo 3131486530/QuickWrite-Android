@@ -162,6 +162,31 @@ class NameGenCacheService extends CacheService<NameGenCacheData> {
     return true;
   }
 
+  /// 按给定顺序重排词典
+  ///
+  /// [orderedIds] 为从前往后排列的词典 ID；未列出的词典保持原有相对顺序排在末尾。
+  /// 重排结果写回各词典的 orderIndex 并落盘，返回是否全部保存成功。
+  Future<bool> reorderDictionaries(List<String> orderedIds) async {
+    final Map<String, int> orderById = {
+      for (int i = 0; i < orderedIds.length; i++)
+        orderedIds[i]: NameDictionary.customOrderStart + i,
+    };
+    final List<NameDictionary> updated = _dictionaries.map((dictionary) {
+      final order = orderById[dictionary.id];
+      return order == null ? dictionary : dictionary.copyWith(orderIndex: order);
+    }).toList();
+
+    bool success = true;
+    for (final dictionary in updated) {
+      if (!await _store.saveDictionary(dictionary)) success = false;
+    }
+    _dictionaries = updated;
+
+    // 词典顺序已变化，交由云同步服务安排一次同步
+    CloudSyncService.instance.notifyLocalChange();
+    return success;
+  }
+
   // ================= 选中词典 =================
 
   /// 获取指定类别当前选中的词典 ID

@@ -351,8 +351,14 @@ Future<void> handleMobileToolAction(BuildContext context, MobileToolAction actio
       await _copyCurrentChapter(context, provider);
       break;
     case MobileToolAction.randomName:
-      // 打开随机取名弹窗
-      showMobileNameGeneratorDialog(context: context);
+      // 打开随机取名弹窗，原本在正文输入时回插取到的名字
+      {
+        final bool editorHadFocus = provider.currentEditorHasFocus;
+        final String? name = await showMobileNameGeneratorDialog(context: context);
+        if (name != null && editorHadFocus) {
+          provider.insertTextToCurrentEditor(name);
+        }
+      }
       break;
     case MobileToolAction.sensitiveWordCheck:
       // 打开敏感词检测弹窗

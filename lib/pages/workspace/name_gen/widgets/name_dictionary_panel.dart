@@ -27,6 +27,9 @@ class NameDictionaryPanel extends StatelessWidget {
   /// 新建词典回调
   final VoidCallback onCreate;
 
+  /// 拖动排序回调
+  final void Function(int oldIndex, int newIndex) onReorder;
+
   const NameDictionaryPanel({
     super.key,
     required this.dictionaries,
@@ -35,6 +38,7 @@ class NameDictionaryPanel extends StatelessWidget {
     required this.onEdit,
     required this.onDelete,
     required this.onCreate,
+    required this.onReorder,
   });
 
   @override
@@ -75,17 +79,27 @@ class NameDictionaryPanel extends StatelessWidget {
                     style: context.bodySmall?.copyWith(color: colorScheme.onSurfaceVariant),
                   ),
                 )
-              : ListView.builder(
+              : ReorderableListView.builder(
                   padding: const EdgeInsets.symmetric(horizontal: 8),
+                  buildDefaultDragHandles: false,
                   itemCount: dictionaries.length,
+                  onReorder: onReorder,
+                  proxyDecorator: (child, index, animation) => Material(
+                    color: Colors.transparent,
+                    child: child,
+                  ),
                   itemBuilder: (context, index) {
                     final dictionary = dictionaries[index];
-                    return _DictionaryTile(
-                      dictionary: dictionary,
-                      selected: dictionary.id == selectedId,
-                      onTap: () => onSelected(dictionary.id),
-                      onEdit: () => onEdit(dictionary),
-                      onDelete: () => onDelete(dictionary),
+                    return ReorderableDelayedDragStartListener(
+                      key: ValueKey(dictionary.id),
+                      index: index,
+                      child: _DictionaryTile(
+                        dictionary: dictionary,
+                        selected: dictionary.id == selectedId,
+                        onTap: () => onSelected(dictionary.id),
+                        onEdit: () => onEdit(dictionary),
+                        onDelete: () => onDelete(dictionary),
+                      ),
                     );
                   },
                 ),

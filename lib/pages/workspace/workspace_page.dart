@@ -22,6 +22,7 @@ import 'right_sidebar/right_sidebar.dart';
 import 'toolbar/workspace_toolbar.dart';
 import 'editor/editor_container.dart';
 import 'editor/novel_editor.dart';
+import 'editor/outline_editor.dart';
 import 'widgets/cloud_sync_status_icon.dart';
 import 'widgets/mobile_workspace_app_bar.dart';
 import 'widgets/mobile_quick_input_bar.dart';
@@ -905,16 +906,26 @@ class _WorkspaceContentState extends State<_WorkspaceContent> with WidgetsBindin
   }
 
   /// 显示字数统计弹窗
+  ///
+  /// 小说标签页取文本控制器内容，设定项标签页没有控制器，
+  /// 需从大纲节点树导出纯文本，否则点击字数不会弹出统计。
   void _showWordCountDialog(BuildContext context, WorkspaceProvider provider) {
     final currentTab = provider.currentTab;
+    if (currentTab == null) return;
 
-    // 如果没有打开的标签页，不显示弹窗
-    if (currentTab == null || currentTab.textController == null) {
-      return;
+    final String text;
+    if (currentTab.usesOutlineEditor) {
+      final state = currentTab.editorKey.currentState;
+      if (state is! OutlineEditorState) return;
+      text = state.serializeToText();
+    } else {
+      final controller = currentTab.textController;
+      if (controller == null) return;
+      text = controller.text;
     }
 
     // 获取详细字数统计
-    final result = WordCountUtils.countWordsDetail(currentTab.textController!.text);
+    final result = WordCountUtils.countWordsDetail(text);
 
     showWordCountDialog(context: context, result: result, chapterTitle: currentTab.title);
   }

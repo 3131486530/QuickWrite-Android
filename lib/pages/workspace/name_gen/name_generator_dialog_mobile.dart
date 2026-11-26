@@ -7,6 +7,7 @@ import 'package:quick_write/core/models/name_gen/name_gen_options.dart';
 import 'package:quick_write/core/services/cache_services/name_gen_cache_service.dart';
 import 'package:quick_write/core/services/cloud_sync/cloud_sync_service.dart';
 import 'package:quick_write/core/services/name_gen/name_generator.dart';
+import 'package:quick_write/core/services/settings_service.dart';
 import 'package:quick_write/core/utils/typography_extension.dart';
 import 'package:quick_write/pages/workspace/name_gen/widgets/name_dictionary_editor_dialog.dart';
 import 'package:quick_write/pages/workspace/name_gen/widgets/name_dictionary_sheet.dart';
@@ -30,11 +31,14 @@ const int _batchCount = 7;
 /// 以卡片式弹窗承载随机取名功能：弹窗内自上而下为类别切换、词典入口、
 /// 生成参数、结果区与生成按钮，四周保留留白。词典的选中、新建、
 /// 编辑与删除通过底部弹窗完成。
-Future<void> showMobileNameGeneratorDialog({required BuildContext context}) {
-  return showDialogBase(
+///
+/// 点击任意名字即复制到剪贴板并关闭弹窗，被点击的名字作为返回值返回；
+/// 弹窗被取消时返回 null，由调用方决定是否插入编辑器。
+Future<String?> showMobileNameGeneratorDialog({required BuildContext context}) {
+  return showDialogBase<String>(
     context: context,
     title: '随机取名',
-    subtitle: '按类别与词典随机组合名字',
+    subtitle: '点击名字即复制并关闭，光标在正文时直接插入',
     titleIcon: Icons.casino_outlined,
     width: 420,
     height: 620,
@@ -53,9 +57,6 @@ class _MobileNameGeneratorDialog extends StatefulWidget {
 class _MobileNameGeneratorDialogState extends State<_MobileNameGeneratorDialog> {
   /// 内容区左右留白
   static const double _horizontalPadding = 20;
-
-  /// 结果区视图切换条的高度
-  static const double _resultTabHeight = 36;
 
   /// 底部主按钮的高度
   static const double _primaryButtonHeight = 42;
@@ -86,20 +87,13 @@ class _MobileNameGeneratorDialogState extends State<_MobileNameGeneratorDialog> 
   /// 各类别选中的词典 ID
   final Map<NameCategory, String> _selectedIds = {};
 
-  /// 各类别的生成历史
-  final Map<NameCategory, List<String>> _history = {};
-
   /// 本次生成结果
   List<String> _results = const [];
-
-  /// 结果区当前视图
-  NameResultTab _resultTab = NameResultTab.results;
 
   @override
   void initState() {
     super.initState();
     _reloadDictionaries();
-    _reloadHistory();
     // 打开弹窗时立即生成一次结果
     _results = _generateNames();
 
@@ -160,13 +154,6 @@ class _MobileNameGeneratorDialogState extends State<_MobileNameGeneratorDialog> 
     _selectedIds[NameCategory.other] = selected;
   }
 
-  /// 重新加载各类别的生成历史
-  void _reloadHistory() {
-    for (final category in NameCategory.values) {
-      _history[category] = _cache.getHistory(category);
-    }
-  }
-
   /// 获取当前类别选中的词典
   NameDictionary? get _currentDictionary {
     final list = _dictionaries[_category] ?? const [];
@@ -200,18 +187,9 @@ class _MobileNameGeneratorDialogState extends State<_MobileNameGeneratorDialog> 
     );
   }
 
-  /// 将当前结果归档到历史
-  ///
-  /// 当前结果被新结果覆盖时调用，使其作为被覆盖的旧结果保留在历史中。
-  void _archiveCurrentResults() {
-    if (_results.isEmpty) return;
-    _cache.addHistory(_category, _results);
-    _history[_category] = _cache.getHistory(_category);
-  }
-
   /// 点击生成按钮
   ///
-  /// 批量生成名字并切换到结果视图，保持弹窗位置不变；无法生成时提示用户。
+  /// 批量生成名字并替换当前结果，保持弹窗位置不变；无法生成时提示用户。
   void _generate() {
     if (_currentDictionary == null) {
       SnackBarService.show(context, '请先选择或新建一个词典');
@@ -222,33 +200,21 @@ class _MobileNameGeneratorDialogState extends State<_MobileNameGeneratorDialog> 
       SnackBarService.show(context, '词典词条不足，无法生成，请补充词条');
       return;
     }
-    setState(() {
-      _archiveCurrentResults();
-      _results = names;
-      _resultTab = NameResultTab.results;
-    });
+    setState(() => _results = names);
   }
 
-  /// 复制名字到剪贴板
-  Future<void> _copy(String name) async {
+  /// 选中名字
+  ///
+  /// 复制名字到剪贴板并关闭弹窗，把名字作为结果返回给调用方，
+  /// 由调用方判断正文是否处于光标焦点并决定是否直接插入。
+  Future<void> _selectName(String name) async {
     await Clipboard.setData(ClipboardData(text: name));
     if (!mounted) return;
-    SnackBarService.show(context, '已复制：$name');
+    Navigator.of(context).pop(name);
   }
 
-  /// 清空当前视图
-  Future<void> _clearCurrentView() async {
-    switch (_resultTab) {
-      case NameResultTab.results:
-        setState(() => _results = const []);
-        break;
-      case NameResultTab.history:
-        await _cache.clearHistory(_category);
-        if (!mounted) return;
-        setState(_reloadHistory);
-        break;
-    }
-  }
+  /// 清空生成结果
+  void _clearResults() => setState(() => _results = const []);
 
   // ================= 词典管理 =================
 
@@ -258,9 +224,7 @@ class _MobileNameGeneratorDialogState extends State<_MobileNameGeneratorDialog> 
   void _selectDictionary(String id) {
     _cache.saveSelectedDictionaryId(_category, id);
     setState(() {
-      _archiveCurrentResults();
       _selectedIds[_category] = id;
-      _resultTab = NameResultTab.results;
       _results = _generateNames();
     });
   }
@@ -272,7 +236,10 @@ class _MobileNameGeneratorDialogState extends State<_MobileNameGeneratorDialog> 
       dictionaries: _dictionaries[_category] ?? const [],
       selectedId: _selectedIds[_category] ?? '',
     );
-    if (action == null || !mounted) return;
+    if (!mounted) return;
+    // 弹窗内可能拖动调整过词典顺序，返回后按磁盘顺序刷新
+    setState(_reloadDictionaries);
+    if (action == null) return;
 
     switch (action.type) {
       case NameDictionarySheetActionType.select:
@@ -297,11 +264,9 @@ class _MobileNameGeneratorDialogState extends State<_MobileNameGeneratorDialog> 
     await _cache.saveDictionary(result);
     if (!mounted) return;
     setState(() {
-      _archiveCurrentResults();
       _reloadDictionaries();
       _selectedIds[NameCategory.other] = result.id;
       _category = NameCategory.other;
-      _resultTab = NameResultTab.results;
       _results = _generateNames();
     });
   }
@@ -418,57 +383,43 @@ class _MobileNameGeneratorDialogState extends State<_MobileNameGeneratorDialog> 
 
   /// 构建结果区
   ///
-  /// 顶部为「生成结果 / 历史」切换，下方以标签流展示名字，
-  /// 点击任意名字即可复制。
+  /// 以标签列表展示名字，一行一个；点击任意名字即复制并关闭弹窗。
   Widget _buildResultsSection() {
     final colorScheme = Theme.of(context).colorScheme;
-    final names = _namesOfCurrentTab();
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        SegmentedControl(
-          labels: NameResultTab.values.map((t) => t.label).toList(),
-          selectedIndex: NameResultTab.values.indexOf(_resultTab),
-          height: _resultTabHeight,
-          onChanged: (index) => setState(() => _resultTab = NameResultTab.values[index]),
-        ),
-        const SizedBox(height: 8),
-        if (names.isEmpty)
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 32),
-            child: Center(
-              child: Text(
-                _emptyHintOfCurrentTab(),
-                textAlign: TextAlign.center,
-                style: context.bodyMedium?.copyWith(color: colorScheme.onSurfaceVariant),
-              ),
-            ),
-          )
-        else
-          // 结果一行一个，纵向排布
-          ListView.separated(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            padding: EdgeInsets.zero,
-            itemCount: names.length,
-            separatorBuilder: (context, index) => const SizedBox(height: _chipGap),
-            itemBuilder: (context, index) => _NameChip(
-              name: names[index],
-              onTap: () => _copy(names[index]),
-            ),
+    if (_results.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 32),
+        child: Center(
+          child: Text(
+            '点击"生成"按钮开始取名，点击名字即可复制并关闭',
+            textAlign: TextAlign.center,
+            style: context.bodyMedium?.copyWith(color: colorScheme.onSurfaceVariant),
           ),
-      ],
+        ),
+      );
+    }
+
+    return ListView.separated(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      padding: EdgeInsets.zero,
+      itemCount: _results.length,
+      separatorBuilder: (context, index) => const SizedBox(height: _chipGap),
+      itemBuilder: (context, index) => _NameChip(
+        name: _results[index],
+        onTap: () => _selectName(_results[index]),
+      ),
     );
   }
 
   /// 构建底部操作栏
   ///
-  /// 左侧为生成按钮，右侧为清空当前视图的按钮，两者等高；
-  /// 当前视图没有名字时清空按钮不可用。
+  /// 左侧为生成按钮，右侧为清空结果的按钮，两者等高；
+  /// 没有结果时清空按钮不可用。
   Widget _buildGenerateBar() {
     final colorScheme = Theme.of(context).colorScheme;
-    final hasNames = _namesOfCurrentTab().isNotEmpty;
+    final hasNames = _results.isNotEmpty;
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(_horizontalPadding, 8, _horizontalPadding, 12),
@@ -490,9 +441,9 @@ class _MobileNameGeneratorDialogState extends State<_MobileNameGeneratorDialog> 
             width: _primaryButtonHeight,
             height: _primaryButtonHeight,
             child: Tooltip(
-              message: '清空${_resultTab.label}',
+              message: '清空结果',
               child: PressScale(
-                onTap: hasNames ? _clearCurrentView : null,
+                onTap: hasNames ? _clearResults : null,
                 child: Center(
                   child: Icon(
                     Icons.delete_sweep_outlined,
@@ -508,32 +459,12 @@ class _MobileNameGeneratorDialogState extends State<_MobileNameGeneratorDialog> 
     );
   }
 
-  /// 获取当前视图展示的名字列表
-  List<String> _namesOfCurrentTab() {
-    switch (_resultTab) {
-      case NameResultTab.results:
-        return _results;
-      case NameResultTab.history:
-        return _history[_category] ?? const [];
-    }
-  }
-
-  /// 获取当前视图的空状态提示
-  String _emptyHintOfCurrentTab() {
-    switch (_resultTab) {
-      case NameResultTab.results:
-        return '点击"生成"按钮开始取名，点击名字即可复制';
-      case NameResultTab.history:
-        return '暂无生成历史';
-    }
-  }
-
 }
 
 /// 单个名字标签
 ///
-/// 宽度由所在网格单元决定并铺满该单元，文字居中，使整行标签左右对齐；
-/// 点击即复制名字到剪贴板。
+/// 宽度铺满所在行，文字居中；字号与字体跟随章节正文字体设置，
+/// 点击即复制名字并关闭弹窗。
 class _NameChip extends StatelessWidget {
   /// 名字文本
   final String name;
@@ -546,6 +477,7 @@ class _NameChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
+    final settings = SettingsService.instance;
 
     return Material(
       color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.35),
@@ -558,13 +490,21 @@ class _NameChip extends StatelessWidget {
         onTap: onTap,
         child: Center(
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: _chipHorizontalPadding),
+            padding: const EdgeInsets.symmetric(
+              horizontal: _chipHorizontalPadding,
+              vertical: 10,
+            ),
             child: Text(
               name,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               textAlign: TextAlign.center,
-              style: context.bodyMedium?.copyWith(color: colorScheme.onSurface),
+              style: TextStyle(
+                fontSize: settings.fontSize,
+                fontFamily: settings.fontFamily,
+                letterSpacing: settings.letterSpacing,
+                color: colorScheme.onSurface,
+              ),
             ),
           ),
         ),

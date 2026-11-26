@@ -196,10 +196,19 @@ class _MobileQuickInputBarState extends State<MobileQuickInputBar> with WidgetsB
   }
 
   /// 打开随机取名弹窗
-  void _handleRandomNameTap() {
+  ///
+  /// 打开前先记录编辑器是否处于光标焦点，收起输入法后再弹窗；
+  /// 拿到名字时若原本在正文中输入，则把名字插入回去，否则仅复制。
+  Future<void> _handleRandomNameTap() async {
+    final provider = context.read<WorkspaceProvider>();
+    final bool editorHadFocus = provider.currentEditorHasFocus;
     // 先收起输入法，避免键盘遮挡弹窗
     FocusManager.instance.primaryFocus?.unfocus();
-    showMobileNameGeneratorDialog(context: context);
+    final String? name = await showMobileNameGeneratorDialog(context: context);
+    if (!mounted || name == null) return;
+    if (editorHadFocus && provider.insertTextToCurrentEditor(name)) return;
+    // 没有编辑器焦点时仅复制，明确告知用户内容已进剪贴板
+    SnackBarService.show(context, '已复制：$name');
   }
 
   /// 切换快捷短语浮层的显隐

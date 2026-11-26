@@ -7,6 +7,7 @@ import 'package:quick_write/pages/workspace/right_sidebar/widgets/book_info_sect
 import 'package:quick_write/pages/workspace/right_sidebar/widgets/tools_display_settings.dart';
 import 'package:quick_write/pages/workspace/right_sidebar/widgets/writing_stats_section.dart';
 import 'package:quick_write/pages/workspace/sensitive_word/sensitive_word_check_dialog.dart';
+import 'package:quick_write/shared/widgets/qw_snackbar.dart';
 
 /// 工具面板
 ///
@@ -158,8 +159,17 @@ class _ToolsPanelState extends State<ToolsPanel> {
   }
 
   /// 打开随机取名弹窗
-  void _openNameGenerator() {
-    showNameGeneratorDialog(context: context);
+  ///
+  /// 打开前记录编辑器是否处于光标焦点；取到名字后若原本在正文中输入，
+  /// 则把名字直接回插到光标处，否则只保留已复制的剪贴板内容。
+  Future<void> _openNameGenerator() async {
+    final provider = context.read<WorkspaceProvider>();
+    final bool editorHadFocus = provider.currentEditorHasFocus;
+    final String? name = await showNameGeneratorDialog(context: context);
+    if (!mounted || name == null) return;
+    if (editorHadFocus && provider.insertTextToCurrentEditor(name)) return;
+    // 没有编辑器焦点时仅复制，明确告知用户内容已进剪贴板
+    SnackBarService.show(context, '已复制：$name');
   }
 
   /// 打开敏感词检测弹窗
