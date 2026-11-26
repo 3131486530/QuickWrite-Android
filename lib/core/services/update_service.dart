@@ -195,7 +195,7 @@ class UpdateService {
       latestVersion: latestVersion,
       releaseUrl: releasesPageUrl,
       releaseNotes: (data['body'] as String?)?.trim() ?? '',
-      asset: _pickPlatformAsset(data['assets'], source.name),
+      asset: _pickPlatformAsset(data['assets'], source.name, latestVersion),
     );
   }
 
@@ -347,15 +347,28 @@ class UpdateService {
 
   /// 从发布资产中挑选适配当前平台的文件
   ///
-  /// 优先按平台关键词匹配；仅有单个资产且未命中关键词时直接使用该资产
-  static UpdateAsset? _pickPlatformAsset(dynamic rawAssets, String sourceName) {
+  /// 优先按平台关键词匹配；发布页会保留历史安装包，因此再优先选文件名里
+  /// 带 [preferredVersion] 的那个，避免下载到旧版本；
+  /// 仅有单个资产且未命中关键词时直接使用该资产。
+  static UpdateAsset? _pickPlatformAsset(
+    dynamic rawAssets,
+    String sourceName, [
+    String? preferredVersion,
+  ]) {
     final assets = _parseAssets(rawAssets, sourceName);
     if (assets.isEmpty) return null;
 
     final keywords = _platformKeywords();
-    for (final asset in assets) {
-      final lowerName = asset.name.toLowerCase();
-      if (keywords.any(lowerName.contains)) return asset;
+    final matched = assets
+        .where((asset) => keywords.any(asset.name.toLowerCase().contains))
+        .toList(growable: false);
+    if (matched.isNotEmpty) {
+      if (preferredVersion != null && preferredVersion.isNotEmpty) {
+        for (final asset in matched) {
+          if (asset.name.contains(preferredVersion)) return asset;
+        }
+      }
+      return matched.first;
     }
 
     return assets.length == 1 ? assets.first : null;
