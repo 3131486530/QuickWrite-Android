@@ -408,43 +408,19 @@ class _WorkspaceContentState extends State<_WorkspaceContent> with WidgetsBindin
 
   /// 构建移动端抽屉外壳
   ///
-  /// 视觉上按"工具面板弹窗"处理：面板四周留出浮动边距、四角全圆角，
-  /// 并叠加主投影与贴边细影，形成盖在页面上、有厚度的浮层观感；
-  /// 抽屉打开时不再压暗未覆盖区域，层次完全由投影表达
-  Widget _buildMobileDrawerShell(
-    BuildContext context, {
-    required bool isLeft,
-    required Widget child,
-  }) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-    final bool isDark = theme.brightness == Brightness.dark;
+  /// 面板四周留出浮动边距、四角全圆角，与编辑区之间靠底色差分层；
+  /// 不使用投影，抽屉打开时也不压暗未覆盖区域
+  Widget _buildMobileDrawerShell(BuildContext context, {required Widget child}) {
+    final colorScheme = Theme.of(context).colorScheme;
     final BorderRadius radius = BorderRadius.circular(_mobileDrawerOuterRadius);
-    // 投影重心偏向编辑区一侧，纵向略下沉，模拟面板自身的重量
-    final double shadowDx = isLeft ? 1.5 : -1.5;
 
     return SafeArea(
-      // 浮动边距：让面板四边都能露出投影，而不是贴死在屏幕边缘
+      // 浮动边距：面板不贴死在屏幕边缘，四周留白与编辑区分开
       minimum: const EdgeInsets.all(_mobileDrawerFloatMargin),
       child: DecoratedBox(
-        // 阴影画在外壳外层，子内容用 ClipRRect 单独裁剪，避免圆角裁剪把投影一起裁掉
         decoration: BoxDecoration(
           color: colorScheme.surface,
           borderRadius: radius,
-          boxShadow: [
-            // 主影：把面板整体托起来，四周可见柔和扩散
-            BoxShadow(
-              color: Colors.black.withValues(alpha: isDark ? 0.62 : 0.22),
-              blurRadius: 24,
-              offset: Offset(shadowDx, 8),
-            ),
-            // 贴边细影：压住轮廓，避免只有大面积模糊时显得发飘
-            BoxShadow(
-              color: Colors.black.withValues(alpha: isDark ? 0.4 : 0.1),
-              blurRadius: 4,
-              offset: Offset(shadowDx * 0.5, 1),
-            ),
-          ],
         ),
         child: ClipRRect(
           borderRadius: radius,
@@ -480,7 +456,7 @@ class _WorkspaceContentState extends State<_WorkspaceContent> with WidgetsBindin
       child: Scaffold(
         key: _mobileScaffoldKey,
         backgroundColor: colorScheme.secondaryContainer,
-        // 抽屉打开时不压暗未覆盖区域，层次改由抽屉自身的投影表达
+        // 抽屉打开时不压暗未覆盖区域，也不加投影，层次由面板与正文的底色差表达
         drawerScrimColor: Colors.transparent,
         // 左侧抽屉：章节目录与设定，宽度占屏幕的 75%
         // 底色由外壳统一提供，Drawer 自身不再绘制背景与抬升阴影
@@ -492,7 +468,6 @@ class _WorkspaceContentState extends State<_WorkspaceContent> with WidgetsBindin
           // 抽屉内容加绘制隔离：滑出与收回只改变图层位置，可直接复用已缓存的图层
           child: _buildMobileDrawerShell(
             context,
-            isLeft: true,
             child: const LeftSidebar(forceExpanded: true),
           ),
         ),
@@ -505,7 +480,6 @@ class _WorkspaceContentState extends State<_WorkspaceContent> with WidgetsBindin
           // 与左侧抽屉同理，隔离绘制避免抽屉滑动时逐帧重绘下方正文
           child: _buildMobileDrawerShell(
             context,
-            isLeft: false,
             child: const RightSidebar(forceExpanded: true),
           ),
         ),
