@@ -382,6 +382,11 @@ class NovelEditorState extends State<NovelEditor> with WidgetsBindingObserver {
     _focusNode.addListener(_onFocusChanged);
     // 登记输入节点：顶部快捷键、左右抽屉等操作让编辑器失焦后，仍需把光标还回原位
     EditorFocusKeep.track(_focusNode);
+    // 标题输入框同样会被工具面板夺走焦点，一并登记后才能把名字插进标题并归还光标
+    final TextEditingController? titleController = widget.chapterTitleController;
+    if (titleController != null) {
+      EditorFocusKeep.trackTitleInput(_titleFocusNode, titleController);
+    }
     _lastCodeLines = widget.controller.value.codeLines;
     _previousTextLength = widget.controller.text.length;
 
@@ -449,6 +454,7 @@ class NovelEditorState extends State<NovelEditor> with WidgetsBindingObserver {
     _scrollGuard.dispose();
     widget.controller.removeListener(_onControllerChanged);
     _focusNode.removeListener(_onFocusChanged);
+    EditorFocusKeep.untrackTitleInput(_titleFocusNode);
     _titleFocusNode.dispose();
     SettingsService.instance.removeListener(_onSettingsChanged);
     _customHighlightService?.removeListener(_onSettingsChanged);
@@ -1269,6 +1275,33 @@ class NovelEditorState extends State<NovelEditor> with WidgetsBindingObserver {
       );
     }
     widget.controller.makeCursorCenterIfInvisible();
+  }
+
+  /// 章节标题是否持有输入焦点
+  bool get hasTitleFocus => _titleFocusNode.hasFocus;
+
+  /// 在章节标题的光标处插入文本
+  ///
+  /// 供随机取名等外部能力使用：有选区时替换选中文字，无有效选区时追加在
+  /// 光标处或标题末尾。程序化改写不会触发输入框的 onChanged，需手工回调
+  /// 外部保存标题。标题不可编辑或无光标记录时不插入，返回是否插入成功。
+  bool insertTextToTitle(String text) {
+    final TextEditingController? controller = widget.chapterTitleController;
+    if (controller == null || widget.readOnly || text.isEmpty) return false;
+
+    final String oldText = controller.text;
+    final TextSelection selection = controller.selection;
+    final int start = selection.isValid ? selection.start : oldText.length;
+    final int end = selection.isValid ? selection.end : oldText.length;
+    final String newText = oldText.replaceRange(start, end, text);
+
+    controller.value = TextEditingValue(
+      text: newText,
+      selection: TextSelection.collapsed(offset: start + text.length),
+    );
+    widget.onChapterTitleChanged?.call(newText);
+    if (!_titleFocusNode.hasFocus) _titleFocusNode.requestFocus();
+    return true;
   }
 
   /// 自定义粘贴处理

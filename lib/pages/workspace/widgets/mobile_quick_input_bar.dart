@@ -201,12 +201,13 @@ class _MobileQuickInputBarState extends State<MobileQuickInputBar> with WidgetsB
   /// 拿到名字时若原本在正文中输入，则把名字插入回去，否则仅复制。
   Future<void> _handleRandomNameTap() async {
     final provider = context.read<WorkspaceProvider>();
-    final bool editorHadFocus = provider.currentEditorHasFocus;
+    final bool editorHadFocus = provider.hasRecentEditorInput;
     // 先收起输入法，避免键盘遮挡弹窗
     FocusManager.instance.primaryFocus?.unfocus();
     final String? name = await showMobileNameGeneratorDialog(context: context);
     if (!mounted || name == null) return;
-    if (editorHadFocus && provider.insertTextToCurrentEditor(name)) return;
+    // 最近聚焦的是标题时写进标题，否则写进正文
+    if (editorHadFocus && provider.insertTextToRecentInput(name)) return;
     // 没有编辑器焦点时仅复制，明确告知用户内容已进剪贴板
     SnackBarService.show(context, '已复制：$name');
   }

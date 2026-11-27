@@ -7,7 +7,6 @@ import 'package:quick_write/core/models/chapter.dart';
 import 'package:quick_write/core/providers/workspace_provider.dart';
 import 'package:quick_write/core/utils/clipboard_state_cache.dart';
 import 'package:quick_write/core/utils/code_line_selection_utils.dart';
-import 'package:quick_write/core/utils/editor_focus_keep.dart';
 import 'package:quick_write/core/utils/paragraph_formatter.dart';
 import 'package:quick_write/pages/workspace/editor/novel_editor.dart';
 import 'package:quick_write/pages/workspace/name_gen/name_generator_dialog_mobile.dart';
@@ -357,12 +356,12 @@ Future<void> handleMobileToolAction(BuildContext context, MobileToolAction actio
       // 打开随机取名弹窗，原本在正文输入时回插取到的名字
       {
         // 工具卡片本身会先抢走焦点，故不能只看「此刻是否聚焦」，
-        // 还要看编辑器是否曾是最近一次聚焦的输入节点（大纲走的就是这条判断）
-        final bool editorHadFocus = provider.currentEditorHasFocus ||
-            EditorFocusKeep.lastEditorFocus != null;
+        // 还要看最近一次聚焦的是编辑器正文还是标题（章节标题、大纲标题）
+        final bool editorHadFocus = provider.hasRecentEditorInput;
         final String? name = await showMobileNameGeneratorDialog(context: context);
         if (name != null && editorHadFocus) {
-          provider.insertTextToCurrentEditor(name);
+          // 最近聚焦的是标题时写进标题，否则写进正文
+          provider.insertTextToRecentInput(name);
         }
         // 移动端插入后不会主动唤起输入法，需显式归还焦点，光标才不会丢
         if (editorHadFocus) await _restoreEditorFocusAfterOverlay(provider);

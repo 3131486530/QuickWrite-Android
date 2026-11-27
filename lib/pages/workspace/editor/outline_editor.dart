@@ -511,6 +511,8 @@ class OutlineEditorState extends State<OutlineEditor>
     _scrollGuard = EditorScrollGuard(_scrollController);
     // 标题初始内容取自外部传入的大纲标题
     _titleController = TextEditingController(text: widget.title);
+    // 标题输入框会被工具面板夺走焦点，登记后才能把名字插进标题并归还光标
+    EditorFocusKeep.trackTitleInput(_titleFocusNode, _titleController);
 
     // 初始化批量选择滑选交互控制器，按住行尾竖条滑动时按区间连续选中或取消途经节点
     _batchSelectionController = BatchSelectionController(
@@ -561,6 +563,7 @@ class OutlineEditorState extends State<OutlineEditor>
     _foldAnimations.clear();
     _editorFocusNode.dispose();
     _titleController.dispose();
+    EditorFocusKeep.untrackTitleInput(_titleFocusNode);
     _titleFocusNode.dispose();
     _scrollController.dispose();
     _batchRevision.dispose();
@@ -2803,6 +2806,9 @@ class OutlineEditorState extends State<OutlineEditor>
   void _restoreEditorFocusIfIdle() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
+      // 弹层打开期间焦点临时落在路由的焦点作用域上，此时抢回编辑器焦点会
+      // 唤起输入法把面板顶一下，随后面板夺回焦点输入法又收起，形成跳动
+      if (EditorFocusKeep.overlayOpen) return;
       // 焦点仍由输入控件持有时保持不动，避免打断正在进行的输入
       final FocusNode? primary = FocusManager.instance.primaryFocus;
       if (primary != null && primary is! FocusScopeNode) return;
@@ -5604,6 +5610,36 @@ class OutlineEditorState extends State<OutlineEditor>
       focusNodeId: nodeId,
       focusSelection: controller.selection,
     );
+  }
+
+  /// 大纲标题是否持有输入焦点
+  bool get hasTitleFocus => _titleFocusNode.hasFocus;
+
+  /// 在大纲标题的光标处插入文本
+  ///
+  /// 供随机取名等外部能力使用：有选区时替换选中文字，无有效选区时追加在
+  /// 光标处或标题末尾。标题不可编辑（只读、内容未载入完成、或已进入主题
+  /// 模式显示只读标签）时不插入，返回是否插入成功。
+  bool insertTextToTitle(String text) {
+    if (text.isEmpty || widget.readOnly || !_isContentReady) return false;
+    // 主题模式下标题位置展示的是当前主题节点文本，不能编辑
+    if (_focusNode != null) return false;
+
+    final TextEditingController controller = _titleController;
+    final String oldText = controller.text;
+    final TextSelection selection = controller.selection;
+    final int start = selection.isValid ? selection.start : oldText.length;
+    final int end = selection.isValid ? selection.end : oldText.length;
+    final String newText = oldText.replaceRange(start, end, text);
+
+    controller.value = TextEditingValue(
+      text: newText,
+      selection: TextSelection.collapsed(offset: start + text.length),
+    );
+    // 程序化改写不会触发输入框的 onChanged，需手工通知外部保存标题
+    widget.onTitleChanged?.call(newText);
+    if (!_titleFocusNode.hasFocus) _titleFocusNode.requestFocus();
+    return true;
   }
 
   /// 活动节点是否可以添加关联

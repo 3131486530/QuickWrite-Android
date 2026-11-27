@@ -181,11 +181,24 @@ mixin EditorMixin on WorkspaceStateBase, BookDataMixin {
     return false;
   }
 
+  /// 当前是否有可回插文本的输入位置
+  ///
+  /// 工具面板打开时会先抢走焦点，故不能只看「此刻是否聚焦」：
+  /// 标题输入框与编辑器正文都登记过最近聚焦记录。
+  bool get hasRecentEditorInput =>
+      currentEditorHasFocus ||
+      EditorFocusKeep.lastTitleFocus != null ||
+      EditorFocusKeep.lastEditorFocus != null;
+
   /// 把输入焦点还给当前编辑器
   ///
   /// 用于顶部快捷键、左右抽屉等操作结束后恢复光标：
-  /// 优先按最近一次聚焦的输入节点归还，节点已卸载时退回编辑器自身的焦点入口。
+  /// 优先按最近一次聚焦的输入节点归还（标题优先于正文），
+  /// 节点已卸载时退回编辑器自身的焦点入口。
   bool restoreEditorFocus() {
+    if (EditorFocusKeep.titleIsMostRecent && EditorFocusKeep.restoreLastTitleFocus()) {
+      return true;
+    }
     if (EditorFocusKeep.restoreLastEditorFocus()) return true;
     final state = currentTab?.editorKey.currentState;
     if (state is NovelEditorState) {
@@ -220,6 +233,24 @@ mixin EditorMixin on WorkspaceStateBase, BookDataMixin {
       return true;
     }
     return false;
+  }
+
+  /// 把文本插入最近的输入位置（标题或正文）
+  ///
+  /// 工具面板弹层会先夺走焦点，此时判断插入目标要依据「最近一次聚焦」：
+  /// 最近聚焦的是章节标题或大纲标题时写入标题，否则写入正文，
+  /// 返回是否插入成功。
+  bool insertTextToRecentInput(String text) {
+    if (text.isEmpty) return false;
+    final tab = currentTab;
+    if (tab == null) return false;
+
+    final state = tab.editorKey.currentState;
+    if (EditorFocusKeep.titleIsMostRecent) {
+      if (state is NovelEditorState && state.insertTextToTitle(text)) return true;
+      if (state is OutlineEditorState && state.insertTextToTitle(text)) return true;
+    }
+    return insertTextToCurrentEditor(text);
   }
 
   /// 向当前编辑器插入文本

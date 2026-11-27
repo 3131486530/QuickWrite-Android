@@ -803,12 +803,14 @@ class _MobileOutlineToolbarState extends State<MobileOutlineToolbar> with Widget
   }
 
   /// 随机取名：把选中的名字插入当前大纲节点光标处
+  ///
+  /// 光标原本落在大纲标题时改写标题，落在节点文本时写入该节点。
   Future<void> _handleRandomNameTap(BuildContext context, OutlineEditorState state) async {
+    final WorkspaceProvider provider = context.read<WorkspaceProvider>();
     final String? name = await showMobileNameGeneratorDialog(context: context);
     if (!mounted || name == null || name.isEmpty) return;
-    // 面板关闭后先把光标交还节点，再插入文字，保证落点是原来的编辑位置
-    state.requestEditorFocus();
-    _runAction(() => state.insertPlainText(name));
+    // 面板关闭后先把光标交还原输入框（节点文本或标题），再插入文字
+    _runAction(() => provider.insertTextToRecentInput(name));
   }
 
   /// 切换快捷短语浮层
