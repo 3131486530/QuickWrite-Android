@@ -1793,6 +1793,10 @@ mixin BookDataMixin on WorkspaceStateBase {
           settingItemUuid: item.uuid,
         );
       }
+
+      // 分组内的设定项一并删除，其关键词索引条目也必须立刻清除，
+      // 否则正文关键词高亮会残留到重新进入工作台
+      purgeSettingItemKeywords(groupItems.map((SettingItemModel item) => item.uuid));
     }
 
     // 删除分组目录
@@ -1869,6 +1873,11 @@ mixin BookDataMixin on WorkspaceStateBase {
         await _isar.bookModels.put(_currentBook!);
       }
     });
+
+    // 清除该设定项在书籍级关键词索引中的条目：
+    // 设定项与伴生文件已删除，若索引仍保留条目，正文和阅读模式的关键词高亮
+    // 会一直残留到重新进入工作台（重新 load）为止；此处即时移除并通知监听者。
+    purgeSettingItemKeywords(<String>[itemUuid]);
 
     await _loadSettingItems();
     notifyListeners();

@@ -155,11 +155,31 @@ class _ReadingModePageState extends State<ReadingModePage> {
     super.initState();
     _chapterIndex = widget.initialChapterIndex;
     _pageController = PageController();
+    // 关键词索引变化（新增、改色、删除关键词或删除整个设定项）后，
+    // 需要立即按新索引重新解析高亮并重新分页，不能等下一次进入阅读模式
+    widget.outlineKeywordService?.addListener(_onKeywordIndexChanged);
     _loadChapter(_chapterIndex);
   }
 
   @override
+  void didUpdateWidget(covariant ReadingModePage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 切换书籍时关键词服务实例会变，需要重新绑定监听
+    if (!identical(oldWidget.outlineKeywordService, widget.outlineKeywordService)) {
+      oldWidget.outlineKeywordService?.removeListener(_onKeywordIndexChanged);
+      widget.outlineKeywordService?.addListener(_onKeywordIndexChanged);
+    }
+  }
+
+  /// 关键词索引变化：触发重建，[_ensurePaginated] 会因版本号变化而重新分页
+  void _onKeywordIndexChanged() {
+    if (!mounted) return;
+    setState(() {});
+  }
+
+  @override
   void dispose() {
+    widget.outlineKeywordService?.removeListener(_onKeywordIndexChanged);
     _pageController.dispose();
     super.dispose();
   }

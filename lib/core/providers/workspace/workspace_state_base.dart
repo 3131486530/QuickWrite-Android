@@ -124,6 +124,13 @@ abstract class WorkspaceStateBase extends ChangeNotifier {
   /// 由 [BookDataMixin] 实现，供 [EditorMixin] 在全文搜索时调用。
   Future<String> readChapterContent(ChapterModel chapter);
 
+  /// 清除指定设定项在大纲关键词索引中的全部绑定
+  ///
+  /// 由 [WorkspaceProvider] 实现，供 [BookDataMixin] 在删除整个设定项时调用：
+  /// 设定项及其伴生文件被删除后，索引条目必须同步移除并通知监听者，
+  /// 否则正文与阅读模式的高亮要等到重新进入工作台才失效。
+  void purgeSettingItemKeywords(Iterable<String> settingItemUuids);
+
   /// 保存指定章节对应的标签页光标位置（若该标签页已打开）
   ///
   /// 由 [EditorMixin] 实现，供 [BookDataMixin] 在保存章节内容后调用，

@@ -150,6 +150,11 @@ class WorkspaceProvider extends WorkspaceStateBase
   /// 获取敏感词服务（全局单例，词库为所有书籍共用）
   SensitiveWordService get sensitiveWordService => SensitiveWordService.instance;
 
+  @override
+  void purgeSettingItemKeywords(Iterable<String> settingItemUuids) {
+    _outlineKeywordService.removeSettingItems(settingItemUuids);
+  }
+
   // ================= 初始化方法 =================
 
   /// 初始化工作台

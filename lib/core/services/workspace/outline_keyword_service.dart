@@ -134,6 +134,24 @@ class OutlineKeywordService extends ChangeNotifier {
     _rebuildKeywordIndex();
   }
 
+  /// 移除指定设定项在索引中的全部条目
+  ///
+  /// 删除整个设定项时调用：伴生文件随设定项一起被删除，索引里的条目却仍留在
+  /// 内存中，正文和阅读模式的大纲关键词高亮要等到重新进入工作台才会失效。
+  /// 这里在删除的同时重建索引并通知监听者，让高亮立即消失。
+  /// 索引中没有该设定项时不触发通知，避免无谓的全量重算。
+  void removeSettingItem(String settingItemUuid) => removeSettingItems(<String>[settingItemUuid]);
+
+  /// 批量移除多个设定项在索引中的全部条目（删除分组时一次清理）
+  void removeSettingItems(Iterable<String> settingItemUuids) {
+    final Set<String> targets = settingItemUuids.toSet();
+    if (targets.isEmpty) return;
+    final int before = _entries.length;
+    _entries.removeWhere((entry) => targets.contains(entry.settingItemUuid));
+    if (_entries.length == before) return;
+    _rebuildKeywordIndex();
+  }
+
   /// 计算设定项的绝对文件路径
   ///
   /// 设定项文件路径相对于书籍的 settings 目录存放；
