@@ -30,16 +30,20 @@ mixin BookDataMixin on WorkspaceStateBase {
   String get bookTitle => _currentBook?.title ?? '未知书籍';
 
   /// 获取章节列表
-  List<ChapterModel> get chapters => List.unmodifiable(_chapters);
+  ///
+  /// 使用 [UnmodifiableListView] 提供只读视图而不是复制一份列表：
+  /// 这些 getter 会在 build 阶段被高频访问，列表长度可达数千，
+  /// 复制会带来每次 O(n) 的分配开销，只读视图是 O(1) 包装。
+  List<ChapterModel> get chapters => UnmodifiableListView(_chapters);
 
   /// 获取分卷列表（按 orderIndex 排序）
-  List<VolumeModel> get volumes => List.unmodifiable(_volumes);
+  List<VolumeModel> get volumes => UnmodifiableListView(_volumes);
 
   /// 获取设定分组列表（按 orderIndex 排序）
-  List<SettingGroupModel> get settingGroups => List.unmodifiable(_settingGroups);
+  List<SettingGroupModel> get settingGroups => UnmodifiableListView(_settingGroups);
 
   /// 获取设定项列表
-  List<SettingItemModel> get settingItems => List.unmodifiable(_settingItems);
+  List<SettingItemModel> get settingItems => UnmodifiableListView(_settingItems);
 
   // ================= 数据加载 =================
 
@@ -165,7 +169,11 @@ mixin BookDataMixin on WorkspaceStateBase {
   /// [content] 章节内容
   /// 返回是否保存成功
   @override
-  Future<bool> saveChapterContent(ChapterModel chapter, String content) async {
+  Future<bool> saveChapterContent(
+    ChapterModel chapter,
+    String content, {
+    bool reloadChapters = true,
+  }) async {
     try {
       final filePath = getChapterFilePath(chapter);
       final file = File(filePath);
@@ -183,37 +191,27 @@ mixin BookDataMixin on WorkspaceStateBase {
       final wordCount = WordCountUtils.countWords(content);
 
       // 更新数据库中的字数和修改时间
+      final previousWordCount = chapter.wordCount;
       chapter.wordCount = wordCount;
       chapter.updatedAt = DateTime.now();
 
       await _isar.writeTxn(() async {
         await _isar.chapterModels.put(chapter);
 
-        // 更新书籍总字数
-        if (_currentBook != null) {
-          // 计算所有章节的总字数
-          final allChapters = await _isar.chapterModels
-              .where()
-              .bookUuidEqualTo(_currentBook!.uuid)
-              .findAll();
-          final totalWordCount = allChapters.fold<int>(
-            0,
-            (sum, c) => sum + c.wordCount,
-          );
-
-          _currentBook!.wordCount = totalWordCount;
-          _currentBook!.updatedAt = DateTime.now();
-          await _isar.bookModels.put(_currentBook!);
-        }
+        // 更新书籍总字数（按增量维护，避免每次保存都全表扫描累加）
+        await _applyWordCountDelta(previousWordCount, wordCount);
       });
 
       // 刷新章节列表
-      await _loadChapters();
+      //
+      // 批量保存（保存全部/自动保存）时由调用方在循环结束后统一刷新一次，
+      // 避免每个标签页都触发一次全表查询与列表重建。
+      if (reloadChapters) {
+        await _loadChapters();
+      }
 
       // 通知刷新书架（更新最近编辑显示）
       _notifyBookshelfRefresh();
-
-      debugPrint('章节保存成功: ${chapter.title}, 字数: $wordCount');
 
       // 保存当前章节的光标位置到缓存（用于下次打开时恢复）
       await saveChapterCursorPositionIfAny(chapter.uuid);
@@ -223,6 +221,45 @@ mixin BookDataMixin on WorkspaceStateBase {
       debugPrint('保存章节文件失败: $e');
       return false;
     }
+  }
+
+  /// 累计触发全量重算书籍总字数的保存次数阈值
+  ///
+  /// 增量维护在正常运行下与全量累加完全等价；每累计这么多次保存做一次
+  /// 全量重算，用于自愈历史数据中可能出现的不一致，同时避免频繁全表扫描。
+  static const int _fullRecalcSaveInterval = 64;
+
+  /// 距上次全量重算书籍总字数已经过的保存次数
+  int _savesSinceFullRecalc = 0;
+
+  /// 维护当前书籍的总字数
+  ///
+  /// 常规情况只按本次章节字数变化量更新书籍总字数（O(1)）；
+  /// 出现负数越界或累计到重算阈值时，回退为全量重算以保证数值正确。
+  /// 必须在写事务内调用，保证读取到的章节字数为最新值。
+  Future<void> _applyWordCountDelta(
+    int previousWordCount,
+    int wordCount,
+  ) async {
+    final book = _currentBook;
+    if (book == null) return;
+
+    final delta = wordCount - previousWordCount;
+    var totalWordCount = book.wordCount + delta;
+    _savesSinceFullRecalc++;
+
+    if (totalWordCount < 0 || _savesSinceFullRecalc >= _fullRecalcSaveInterval) {
+      _savesSinceFullRecalc = 0;
+      final allChapters = await _isar.chapterModels
+          .where()
+          .bookUuidEqualTo(book.uuid)
+          .findAll();
+      totalWordCount = allChapters.fold<int>(0, (sum, c) => sum + c.wordCount);
+    }
+
+    book.wordCount = totalWordCount;
+    book.updatedAt = DateTime.now();
+    await _isar.bookModels.put(book);
   }
 
   // ================= 章节 CRUD =================

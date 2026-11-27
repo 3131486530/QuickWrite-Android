@@ -248,7 +248,14 @@ class _ChapterPanelState extends State<ChapterPanel>
           _buildTopBar(context),
 
           // 章节列表
-          Expanded(child: _buildChapterList(context, workspaceProvider)),
+          // 自动保存完成后章节字数会更新但不再触发全局通知，
+          // 这里监听保存状态通知器，使列表中的字数与标题同步刷新
+          Expanded(
+            child: ListenableBuilder(
+              listenable: workspaceProvider.tabSavedStateNotifier,
+              builder: (context, _) => _buildChapterList(context, workspaceProvider),
+            ),
+          ),
 
           // 批量操作栏
           if (_isBatchMode) _buildBatchActionBar(context, chapters),

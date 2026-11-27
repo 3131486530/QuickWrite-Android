@@ -39,6 +39,12 @@ mixin EditorMixin on WorkspaceStateBase, BookDataMixin {
   /// 向后定位首个匹配项，而不是每次都被拉回文件开头。
   int? _findAnchorOffset;
 
+  /// 查找结果刷新的合并定时器
+  ///
+  /// 正文每敲一个字都会重建全部匹配；连续输入时把多次重建合并成一次，
+  /// 避免每个按键都扫描一遍全文并触发整页重建。
+  Timer? _findRefreshTimer;
+
   // ================= 全文搜索状态 =================
 
   /// 全文搜索关键词
@@ -94,6 +100,13 @@ mixin EditorMixin on WorkspaceStateBase, BookDataMixin {
   /// 与 [wordCountNotifier] 同理，独立于全局 notifyListeners，
   /// 仅通知顶部操作栏刷新撤销与恢复按钮的禁用态。
   final ValueNotifier<int> editHistoryNotifier = ValueNotifier<int>(0);
+
+  /// 标签页保存状态通知器
+  ///
+  /// 自动保存每秒都会完成一次，把「未保存 → 已保存」的标记变化连同
+  /// 章节字数一起刷新即可；若走全局 notifyListeners，编辑器会随之
+  /// 每秒重建一次。这里改用独立通知器，只让状态栏与同步图标重建。
+  final ValueNotifier<int> tabSavedStateNotifier = ValueNotifier<int>(0);
 
   // ================= Getters =================
 
@@ -362,6 +375,8 @@ mixin EditorMixin on WorkspaceStateBase, BookDataMixin {
   /// 关闭查找替换栏
   void closeFindReplace() {
     _isFindReplaceVisible = false;
+    // 关掉挂起的合并刷新，避免栏已关闭后仍白跑一次全文扫描
+    _cancelFindRefreshTimer();
     _clearFindMatches();
     _findAnchorOffset = null;
     // 关闭后将焦点归还给编辑器
@@ -377,13 +392,43 @@ mixin EditorMixin on WorkspaceStateBase, BookDataMixin {
   void refreshFindIfVisible({bool resetIndex = false}) {
     if (!_isFindReplaceVisible || _findText.isEmpty) return;
     if (resetIndex) {
+      // 低频场景（标签页切换、内容重新载入）：丢弃挂起的合并刷新，立即重算
+      _cancelFindRefreshTimer();
       // 标签页切换或内容重新加载后，以当前光标位置重新确定查找起点
       _captureFindAnchor();
       _performFind();
-    } else {
-      _rebuildMatches();
+      notifyListeners();
+      return;
     }
-    notifyListeners();
+
+    // 高频场景：正文每次变化都会走到这里（逐字输入、长按删除、撤销）。
+    // 合并 120ms 内的多次请求，定时器到期时读取的是最新正文，
+    // 结果与逐次重建一致，但把「全文扫描 + 整页重建」的次数
+    // 从每键一次降到每 120ms 一次。
+    if (_findRefreshTimer != null) return;
+    _findRefreshTimer = Timer(const Duration(milliseconds: 120), () {
+      _findRefreshTimer = null;
+      if (!_isFindReplaceVisible || _findText.isEmpty) return;
+      _rebuildMatches();
+      notifyListeners();
+    });
+  }
+
+  /// 立即应用尚未执行的合并刷新
+  ///
+  /// 查找导航与替换都基于当前的匹配列表工作，若此时仍有挂起的刷新，
+  /// 必须先执行，否则会按旧正文的偏移量定位或替换。
+  void _flushFindRefresh() {
+    if (_findRefreshTimer == null) return;
+    _cancelFindRefreshTimer();
+    if (!_isFindReplaceVisible || _findText.isEmpty) return;
+    _rebuildMatches();
+  }
+
+  /// 取消挂起的合并刷新
+  void _cancelFindRefreshTimer() {
+    _findRefreshTimer?.cancel();
+    _findRefreshTimer = null;
   }
 
   /// 切换查找替换栏显示/隐藏
@@ -397,6 +442,8 @@ mixin EditorMixin on WorkspaceStateBase, BookDataMixin {
 
   /// 更新查找文本并执行搜索
   void updateFindText(String text) {
+    // 关键词变化后会立即全量重算，挂起的合并刷新已无意义
+    _cancelFindRefreshTimer();
     // 从空文本开始输入时，以当前光标位置作为查找起点
     if (_findText.isEmpty && text.isNotEmpty) {
       _captureFindAnchor();
@@ -419,6 +466,8 @@ mixin EditorMixin on WorkspaceStateBase, BookDataMixin {
 
   /// 设置大小写敏感
   void setFindCaseSensitive(bool value) {
+    // 切换后立即全量重算，挂起的合并刷新已无意义
+    _cancelFindRefreshTimer();
     _findCaseSensitive = value;
     _performFind();
     notifyListeners();
@@ -485,6 +534,7 @@ mixin EditorMixin on WorkspaceStateBase, BookDataMixin {
 
   /// 查找下一个匹配
   void findNext() {
+    _flushFindRefresh();
     if (_findMatches.isEmpty) return;
     _currentMatchIndex = _findNextMatchIndexFromCursor();
     _selectCurrentMatch();
@@ -493,6 +543,7 @@ mixin EditorMixin on WorkspaceStateBase, BookDataMixin {
 
   /// 查找上一个匹配
   void findPrevious() {
+    _flushFindRefresh();
     if (_findMatches.isEmpty) return;
     _currentMatchIndex = _findPreviousMatchIndexFromCursor();
     _selectCurrentMatch();
@@ -505,6 +556,7 @@ mixin EditorMixin on WorkspaceStateBase, BookDataMixin {
   /// - 是（selection 非空且与某个 match 完全一致）：直接替换该 match，然后定位到下一个
   /// - 否（selection 为空 / collapsed / 选中的不是查找项）：仅执行"查找下一个"来定位，不替换
   void replaceCurrentMatch() {
+    _flushFindRefresh();
     final target = _currentFindReplaceTarget;
     if (target == null) return;
 
@@ -558,6 +610,7 @@ mixin EditorMixin on WorkspaceStateBase, BookDataMixin {
 
   /// 替换所有匹配项
   void replaceAllMatches() {
+    _flushFindRefresh();
     final target = _currentFindReplaceTarget;
     if (target == null) return;
     if (_findMatches.isEmpty || _findText.isEmpty) return;
@@ -1951,7 +2004,9 @@ mixin EditorMixin on WorkspaceStateBase, BookDataMixin {
   void notifyTabModified(String tabId) {
     // 首次修改时启动备份计时器
     _startBackupTimerIfNeeded(tabId);
-    // 触发 UI 更新以显示修改标记
+    // 保存状态相关 UI 走独立通知器（状态栏、同步图标、章节列表字数）
+    tabSavedStateNotifier.value++;
+    // 首次修改只发生一次，仍需整树通知以同步标签栏标题等依赖项
     notifyListeners();
   }
 
@@ -2226,6 +2281,8 @@ mixin EditorMixin on WorkspaceStateBase, BookDataMixin {
   /// 返回保存成功的数量
   Future<int> saveAllTabs() async {
     int savedCount = 0;
+    // 是否有章节内容被写入，用于在循环结束后统一刷新一次章节列表
+    bool chaptersSaved = false;
 
     for (final tab in _openedTabs) {
       if (!tab.isModified) continue;
@@ -2242,9 +2299,14 @@ mixin EditorMixin on WorkspaceStateBase, BookDataMixin {
           if (!titleUpdated) continue;
 
           final content = tab.textController!.text;
-          final success = await saveChapterContent(chapter, content);
+          final success = await saveChapterContent(
+            chapter,
+            content,
+            reloadChapters: false,
+          );
 
           if (success) {
+            chaptersSaved = true;
             tab.isModified = false;
             savedCount++;
           }
@@ -2285,6 +2347,11 @@ mixin EditorMixin on WorkspaceStateBase, BookDataMixin {
           debugPrint('保存大纲标签页失败: ${tab.title}, 错误: $e');
         }
       }
+    }
+
+    // 章节内容已落盘，统一刷新一次章节列表（批量保存只查一次库）
+    if (chaptersSaved) {
+      await _loadChapters();
     }
 
     if (savedCount > 0) {
@@ -2328,15 +2395,27 @@ mixin EditorMixin on WorkspaceStateBase, BookDataMixin {
         .toList();
     if (modifiedTabs.isEmpty) return;
 
+    // 是否有章节内容被写入，用于在循环结束后统一刷新一次章节列表
+    bool chaptersSaved = false;
+
+    // 标题被改动后标签栏需要同步新标题，此时不能只走轻量通知
+    bool titleChanged = false;
+
     for (final tab in modifiedTabs) {
       // 章节类型自动保存
       if (tab.textController != null && tab.type == EditorTabType.chapter) {
         try {
           final chapter = _chapters.firstWhere((c) => c.uuid == tab.id);
+          if (chapter.title != tab.title) titleChanged = true;
           await _updateChapterTitle(chapter, tab.title);
           final content = tab.textController!.text;
-          final success = await saveChapterContent(chapter, content);
+          final success = await saveChapterContent(
+            chapter,
+            content,
+            reloadChapters: false,
+          );
           if (success) {
+            chaptersSaved = true;
             tab.isModified = false;
           }
         } catch (e) {
@@ -2361,6 +2440,7 @@ mixin EditorMixin on WorkspaceStateBase, BookDataMixin {
           final content = outlineState.serializeToText();
 
           // 更新设定项标题
+          if (item.title != tab.title) titleChanged = true;
           await renameSettingItem(itemUuid: item.uuid, newTitle: tab.title);
 
           final success = await saveSettingItemContent(item, content);
@@ -2375,7 +2455,20 @@ mixin EditorMixin on WorkspaceStateBase, BookDataMixin {
       }
     }
 
-    notifyListeners();
+    // 章节内容已落盘，统一刷新一次章节列表（自动保存只查一次库）
+    if (chaptersSaved) {
+      await _loadChapters();
+    }
+
+    // 自动保存是高频路径（持续输入时每秒一次）：
+    // 常态只有「未保存 → 已保存」标记与章节字数变化，
+    // 走独立通知器刷新状态栏/同步图标/章节列表字数即可，
+    // 避免整棵工作台（含编辑器）每秒重建一次。
+    tabSavedStateNotifier.value++;
+
+    // 标题被改名时标签栏、侧边栏的标题需要同步，这类变化频率极低，
+    // 仍走整树通知以保证显示正确。
+    if (titleChanged) notifyListeners();
   }
 
   /// 立即执行自动保存（用于窗口关闭前等场景）
@@ -2558,6 +2651,9 @@ mixin EditorMixin on WorkspaceStateBase, BookDataMixin {
     // 取消自动保存定时器
     _autoSaveTimer?.cancel();
 
+    // 取消查找结果合并刷新定时器，避免释放后回调继续访问已清理的状态
+    _cancelFindRefreshTimer();
+
     // 释放码字会话追踪器（内部会 flush 剩余字数与时长）
     _sessionTracker?.dispose();
 
@@ -2573,5 +2669,6 @@ mixin EditorMixin on WorkspaceStateBase, BookDataMixin {
     // 释放字数统计通知器与撤销/恢复可用状态通知器
     wordCountNotifier.dispose();
     editHistoryNotifier.dispose();
+    tabSavedStateNotifier.dispose();
   }
 }

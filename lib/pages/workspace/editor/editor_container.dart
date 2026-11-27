@@ -558,11 +558,14 @@ class _EditorContainerState extends State<EditorContainer> {
 
     // 用 ColoredBox 包裹整个编辑器区域，确保内容为空时不会露出灰色底层
     // 底色与编辑器背景设置保持一致，避免空内容状态下出现异色
-    return ColoredBox(
-      color: ColorUtils.getEditorBackgroundColorForTheme(context),
-      child: IndexedStack(
-        index: provider.currentTabIndex,
-        children: provider.openedTabs.asMap().entries.map((entry) {
+    // 先构建所有已打开标签页的编辑器实例
+    //
+    // 这些实例必须常驻（切换标签页要保留滚动位置、节点展开状态与输入连接），
+    // 但隐藏页里的动画（光标闪烁、呼吸式光标、字数浮窗动画等）如果继续
+    // 按帧推进，会在后台持续触发重建与文本布局；下面用 TickerMode 只让
+    // 当前页的动画运行，消除隐藏页的空转开销。
+    final List<Widget> tabEditors =
+        provider.openedTabs.asMap().entries.map((entry) {
         final index = entry.key;
         final tab = entry.value;
 
@@ -779,7 +782,20 @@ class _EditorContainerState extends State<EditorContainer> {
           onSave: tab.isReadOnly ? null : () => provider.saveCurrentTab(),
           extraTopPadding: provider.findReplaceBarPadding,
         );
-      }).toList(),
+      }).toList();
+
+    final int currentTabIndex = provider.currentTabIndex;
+    return ColoredBox(
+      color: ColorUtils.getEditorBackgroundColorForTheme(context),
+      child: IndexedStack(
+        index: currentTabIndex,
+        children: [
+          for (int i = 0; i < tabEditors.length; i++)
+            TickerMode(
+              enabled: i == currentTabIndex,
+              child: tabEditors[i],
+            ),
+        ],
       ),
     );
   }

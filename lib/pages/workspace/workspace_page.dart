@@ -630,15 +630,19 @@ class _WorkspaceContentState extends State<_WorkspaceContent> with WidgetsBindin
       child: Row(
         children: [
           // 左侧：当前文件信息（实时同步开启时图标反映云同步状态，整块信息悬停显示状态说明）
-          CloudSyncStatusTooltip(
-            hasPendingLocalEdits: currentTab?.isModified ?? false,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                CloudSyncStatusIcon(size: 14, hasPendingLocalEdits: currentTab?.isModified ?? false),
-                const SizedBox(width: 6),
-                Text(currentTab?.title ?? '未打开文件', style: context.bodySmall?.copyWith(color: colorScheme.onSurfaceVariant)),
-              ],
+          // 自动保存完成后全局不再通知，这里单独监听保存状态通知器刷新
+          ListenableBuilder(
+            listenable: workspaceProvider.tabSavedStateNotifier,
+            builder: (context, _) => CloudSyncStatusTooltip(
+              hasPendingLocalEdits: currentTab?.isModified ?? false,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  CloudSyncStatusIcon(size: 14, hasPendingLocalEdits: currentTab?.isModified ?? false),
+                  const SizedBox(width: 6),
+                  Text(currentTab?.title ?? '未打开文件', style: context.bodySmall?.copyWith(color: colorScheme.onSurfaceVariant)),
+                ],
+              ),
             ),
           ),
 
@@ -672,7 +676,7 @@ class _WorkspaceContentState extends State<_WorkspaceContent> with WidgetsBindin
           const SizedBox(width: 16),
 
           // 右侧：保存状态信息
-          _buildSaveStatusIndicator(context, colorScheme, currentTab),
+          _buildSaveStatusIndicator(context, colorScheme, workspaceProvider, currentTab),
 
           const SizedBox(width: 12),
 
@@ -706,29 +710,33 @@ class _WorkspaceContentState extends State<_WorkspaceContent> with WidgetsBindin
             children: [
               // 左侧：当前文件信息（实时同步开启时图标反映云同步状态，过长时省略号截断，整块信息悬停显示状态说明）
               Expanded(
-                child: CloudSyncStatusTooltip(
-                  hasPendingLocalEdits: currentTab?.isModified ?? false,
-                  child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: ConstrainedBox(
-                      constraints: BoxConstraints(maxWidth: halfWidth),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          CloudSyncStatusIcon(
-                            size: 14,
-                            hasPendingLocalEdits: currentTab?.isModified ?? false,
-                          ),
-                          const SizedBox(width: 6),
-                          Flexible(
-                            child: Text(
-                              currentTab?.title ?? '未打开文件',
-                              style: context.bodySmall?.copyWith(color: colorScheme.onSurfaceVariant),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
+                // 自动保存完成后全局不再通知，这里单独监听保存状态通知器刷新
+                child: ListenableBuilder(
+                  listenable: workspaceProvider.tabSavedStateNotifier,
+                  builder: (context, _) => CloudSyncStatusTooltip(
+                    hasPendingLocalEdits: currentTab?.isModified ?? false,
+                    child: Align(
+                      alignment: Alignment.centerLeft,
+                      child: ConstrainedBox(
+                        constraints: BoxConstraints(maxWidth: halfWidth),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            CloudSyncStatusIcon(
+                              size: 14,
+                              hasPendingLocalEdits: currentTab?.isModified ?? false,
                             ),
-                          ),
-                        ],
+                            const SizedBox(width: 6),
+                            Flexible(
+                              child: Text(
+                                currentTab?.title ?? '未打开文件',
+                                style: context.bodySmall?.copyWith(color: colorScheme.onSurfaceVariant),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   ),
@@ -797,17 +805,30 @@ class _WorkspaceContentState extends State<_WorkspaceContent> with WidgetsBindin
   }
 
   /// 构建保存状态指示（图标 + 文案，存在未保存修改时用错误色提示）
-  Widget _buildSaveStatusIndicator(BuildContext context, ColorScheme colorScheme, EditorTab? currentTab) {
-    final isModified = currentTab?.isModified == true;
-    final color = isModified ? colorScheme.error : colorScheme.onSurfaceVariant;
+  ///
+  /// 自动保存完成后只通过保存状态通知器局部通知，
+  /// 因此这里单独监听，保证「未保存/已保存」文案始终与标签页状态一致。
+  Widget _buildSaveStatusIndicator(
+    BuildContext context,
+    ColorScheme colorScheme,
+    WorkspaceProvider provider,
+    EditorTab? currentTab,
+  ) {
+    return ListenableBuilder(
+      listenable: provider.tabSavedStateNotifier,
+      builder: (context, _) {
+        final isModified = currentTab?.isModified == true;
+        final color = isModified ? colorScheme.error : colorScheme.onSurfaceVariant;
 
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(Icons.save_outlined, size: 14, color: color),
-        const SizedBox(width: 4),
-        Text(isModified ? '未保存' : '已保存', style: context.bodySmall?.copyWith(color: color)),
-      ],
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.save_outlined, size: 14, color: color),
+            const SizedBox(width: 4),
+            Text(isModified ? '未保存' : '已保存', style: context.bodySmall?.copyWith(color: color)),
+          ],
+        );
+      },
     );
   }
 

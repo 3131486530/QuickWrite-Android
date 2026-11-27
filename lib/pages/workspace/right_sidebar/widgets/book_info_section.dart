@@ -40,7 +40,14 @@ class BookInfoSection extends StatelessWidget {
         ),
         const SizedBox(height: 8),
         // 信息卡片：作品未加载时显示占位
-        book == null ? _buildPlaceholder(context) : _buildInfoCard(context, provider, book),
+        // 自动保存完成后章节字数会更新但不再触发全局通知，
+        // 这里监听保存状态通知器，使总字数与分卷统计同步刷新
+        book == null
+            ? _buildPlaceholder(context)
+            : ListenableBuilder(
+                listenable: provider.tabSavedStateNotifier,
+                builder: (context, _) => _buildInfoCard(context, provider, book),
+              ),
       ],
     );
   }

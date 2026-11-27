@@ -126,7 +126,23 @@ Widget _buildDesktopHomeContent(BuildContext context) {
   // 当 selectedIndex 改变时，会自动重新构建此组件
   final selectedIndex = context.watch<HomeStateProvider>().selectedIndex;
 
-  return IndexedStack(index: selectedIndex, children: _buildHomePages());
+  // 与移动端一致：隐藏页不保留动画时钟，避免后台页面里的加载圈与图表动效空转
+  return _buildTickerGatedPages(selectedIndex);
+}
+
+/// 以 IndexedStack 保留各页状态，同时只让当前页的动画继续运行
+///
+/// [IndexedStack] 会把隐藏页一并布局，页面内的循环动画若不关闭，
+/// 会在不可见状态下持续触发重建与布局，累积成明显的后台开销。
+Widget _buildTickerGatedPages(int selectedIndex) {
+  final pages = _buildHomePages();
+  return IndexedStack(
+    index: selectedIndex,
+    children: [
+      for (int i = 0; i < pages.length; i++)
+        TickerMode(enabled: i == selectedIndex, child: pages[i]),
+    ],
+  );
 }
 
 class _DesktopHomeShell extends StatelessWidget {

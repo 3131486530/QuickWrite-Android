@@ -160,18 +160,23 @@ class _MobilePageStackState extends State<MobilePageStack> with SingleTickerProv
 
     return Offstage(
       offstage: !isVisible,
-      // 仅当前显示的页面可获得焦点：切换页面时立即释放旧页面内输入框的焦点，
-      // 避免离屏页面的输入框仍持有焦点，在焦点恢复时重新弹出键盘
-      child: ExcludeFocus(
-        excluding: index != _currentIndex,
-        child: FractionalTranslation(
-          // 平移量按页面宽度计算，dx 为 1 时页面刚好移出屏幕右侧
-          translation: Offset(dx, 0),
-          // 页面内容加绘制隔离：平移只改变图层位置，滑动期间可直接复用已缓存的图层
-          child: RepaintBoundary(
-            // 为页面铺上底色，避免动效期间滑动页透出下层页面，
-            // 同时作为页面内水波纹的绘制载体
-            child: Material(color: background, child: widget.children[index]),
+      // 仅当前页保留动画时钟：隐藏页仍在树中，若不关掉 ticker，
+      // 页面里的加载圈、图表与呼吸动效会一直按帧推进，白白占用绘制与布局时间
+      child: TickerMode(
+        enabled: index == _currentIndex,
+        // 仅当前显示的页面可获得焦点：切换页面时立即释放旧页面内输入框的焦点，
+        // 避免离屏页面的输入框仍持有焦点，在焦点恢复时重新弹出键盘
+        child: ExcludeFocus(
+          excluding: index != _currentIndex,
+          child: FractionalTranslation(
+            // 平移量按页面宽度计算，dx 为 1 时页面刚好移出屏幕右侧
+            translation: Offset(dx, 0),
+            // 页面内容加绘制隔离：平移只改变图层位置，滑动期间可直接复用已缓存的图层
+            child: RepaintBoundary(
+              // 为页面铺上底色，避免动效期间滑动页透出下层页面，
+              // 同时作为页面内水波纹的绘制载体
+              child: Material(color: background, child: widget.children[index]),
+            ),
           ),
         ),
       ),
