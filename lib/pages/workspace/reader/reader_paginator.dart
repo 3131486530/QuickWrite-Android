@@ -157,13 +157,21 @@ class ReaderPaginator {
         continue;
       }
 
-      // 整段放不下：按行切块，把本页剩余空间填满后再翻页。
+      // 分页以段落为最小单位：当前页剩余空间装不下这一整段，就整段推到下一页。
       //
-      // 主流阅读软件的通用做法，这里照此实现：
-      //   1. 切块边界一律落在行首，永远不把一行切成两半；
-      //   2. 每个候选切块都按真实排版重新实测高度（切块单独渲染时折行、末行宽度
-      //      都可能与整段排版不同），只有实测装得下才放置；
-      //   3. 宁可少排一行，也不许内容超出页面——超出的整行留给下一页。
+      // 这样页尾最长会空出接近一整段（半页甚至大半页），但绝不会出现任何一行
+      // 被页面边缘截断的情况——可读性优先于版面利用率。
+      if (blocks.isNotEmpty) {
+        flush();
+        if (measured + separator <= pageLimit - used) {
+          blocks.add(ReaderBlock(paragraphIndex: i, start: 0, end: raw.length, height: measured + separator));
+          used += measured + separator;
+          continue;
+        }
+      }
+
+      // 兜底：单段本身比一整页还高（极端超长段落），只能按行拆开，
+      // 否则这段内容永远无法显示。此处仍遵守"只切在行首、切块必实测"。
       final _LineLayout layout = _layoutLines(
         text: text,
         startOffset: starts[i],
