@@ -1857,7 +1857,7 @@ class NovelEditorState extends State<NovelEditor> with WidgetsBindingObserver {
           // 标题对齐方式由布局设置决定，默认居中
           textAlign: settings.isChapterTitleLeftAligned ? TextAlign.left : TextAlign.center,
           onChanged: (title) {
-            widget.onChapterTitleChanged(title);
+            widget.onChapterTitleChanged?.call(title);
             // 标题折行数变化会改变标题区高度，重新测量以修正正文顶部留白
             _scheduleTitleAreaMeasure();
             Future.delayed(const Duration(milliseconds: 80), () {
