@@ -360,6 +360,11 @@ class AppSettings {
   /// 关闭时两者均不计入
   final bool statsIncludeSettingWords;
 
+  /// 码字统计是否按章节记录今日字数
+  ///
+  /// 开启后只保留当天各章节的字数，跨天自动清空，不累计历史
+  final bool statsChapterWordCountEnabled;
+
   /// 空闲判定阈值（秒）
   ///
   /// 超过该时间无编辑活动即视为空闲，停止累计码字时长
@@ -502,6 +507,7 @@ class AppSettings {
     // 码字统计设置
     this.statsIncludePasteWords = false, // 码字统计是否包含粘贴字数
     this.statsIncludeSettingWords = false, // 码字统计是否包含设定字数
+    this.statsChapterWordCountEnabled = false, // 码字统计是否按章节记录今日字数
     this.statsIdleThresholdSeconds = 15, // 空闲判定阈值（单位：秒）
   });
 
@@ -659,6 +665,8 @@ class AppSettings {
       // 码字统计设置（编辑器）
       statsIncludePasteWords: writingStatsJson['includePasteWords'] as bool? ?? defaults.statsIncludePasteWords,
       statsIncludeSettingWords: writingStatsJson['includeSettingWords'] as bool? ?? defaults.statsIncludeSettingWords,
+      statsChapterWordCountEnabled: writingStatsJson['chapterWordCountEnabled'] as bool? ??
+          defaults.statsChapterWordCountEnabled,
       statsIdleThresholdSeconds: writingStatsJson['idleThresholdSeconds'] as int? ?? defaults.statsIdleThresholdSeconds,
     );
   }
@@ -827,6 +835,7 @@ class AppSettings {
         'writingStats': {
           'includePasteWords': statsIncludePasteWords,
           'includeSettingWords': statsIncludeSettingWords,
+          'chapterWordCountEnabled': statsChapterWordCountEnabled,
           'idleThresholdSeconds': statsIdleThresholdSeconds,
         },
       },
@@ -949,6 +958,7 @@ class AppSettings {
     // 码字统计设置
     bool? statsIncludePasteWords,
     bool? statsIncludeSettingWords,
+    bool? statsChapterWordCountEnabled,
     int? statsIdleThresholdSeconds,
   }) {
     return AppSettings(
@@ -1073,6 +1083,7 @@ class AppSettings {
       // 码字统计设置
       statsIncludePasteWords: statsIncludePasteWords ?? this.statsIncludePasteWords,
       statsIncludeSettingWords: statsIncludeSettingWords ?? this.statsIncludeSettingWords,
+      statsChapterWordCountEnabled: statsChapterWordCountEnabled ?? this.statsChapterWordCountEnabled,
       statsIdleThresholdSeconds: statsIdleThresholdSeconds ?? this.statsIdleThresholdSeconds,
     );
   }
@@ -1216,6 +1227,7 @@ class AppSettings {
            // 码字统计设置
            other.statsIncludePasteWords == statsIncludePasteWords &&
            other.statsIncludeSettingWords == statsIncludeSettingWords &&
+           other.statsChapterWordCountEnabled == statsChapterWordCountEnabled &&
            other.statsIdleThresholdSeconds == statsIdleThresholdSeconds;
   }
 
@@ -1341,6 +1353,7 @@ class AppSettings {
       Object.hash(
         statsIncludePasteWords,
         statsIncludeSettingWords,
+        statsChapterWordCountEnabled,
         statsIdleThresholdSeconds,
       ),
     );

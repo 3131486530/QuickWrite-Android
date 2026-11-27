@@ -115,6 +115,11 @@ class _StatsPageState extends State<StatsPage> {
                     ],
                   ),
                 ),
+                // 今日章节字数（仅开关开启时展示）
+                if (statsProvider.chapterWordCountEnabled) ...[
+                  const SizedBox(height: 16),
+                  const TodayChapterWordCountCard(),
+                ],
                 const SizedBox(height: 16),
 
                 // 本周/本月切换
@@ -196,6 +201,11 @@ class _StatsPageState extends State<StatsPage> {
           stat: statsProvider.selectedDateStat,
           consecutiveDays: statsProvider.consecutiveDays,
         ),
+        // 今日章节字数（仅开关开启时展示）
+        if (statsProvider.chapterWordCountEnabled) ...[
+          const SizedBox(height: 12),
+          const TodayChapterWordCountCard(),
+        ],
         const SizedBox(height: 12),
 
         // 码字日历

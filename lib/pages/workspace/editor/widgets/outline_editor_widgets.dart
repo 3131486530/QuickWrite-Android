@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:quick_write/core/constants/material_icons.dart';
@@ -507,14 +508,18 @@ class OutlineTitleField extends StatelessWidget {
           padding: titlePadding,
           child: readOnly
               // 只读时以静态文本展示，不提供编辑光标与选区交互
-              ? Text(controller.text, style: style, textAlign: titleAlign, maxLines: 1, overflow: TextOverflow.ellipsis)
+              ? Text(controller.text, style: style, textAlign: titleAlign, maxLines: null)
               : ImeCursorFixerWrapper(
                   controller: controller,
                   focusNode: focusNode,
                   child: QwTextField(
                     controller: controller,
                     focusNode: focusNode,
-                    maxLines: 1,
+                    // 标题不限单行：超出宽度自动折行，不再截断
+                    maxLines: null,
+                    minLines: 1,
+                    // 允许自动折行但不接受手动换行
+                    inputFormatters: [FilteringTextInputFormatter.deny(RegExp(r'[\n\r]'))],
                     style: style,
                     textAlign: titleAlign,
                     decoration: const InputDecoration(

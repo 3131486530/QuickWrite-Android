@@ -1848,10 +1848,22 @@ class NovelEditorState extends State<NovelEditor> with WidgetsBindingObserver {
             fontSize: settings.chapterTitleFontSize,
             color: ColorUtils.getChapterTitleColorForTheme(context),
           ),
-          maxLines: 1,
+          // 标题不再限制单行：文字超出宽度时自动折行，标题区高度由
+          // _scheduleTitleAreaMeasure 在帧末按实际排版结果校正
+          maxLines: null,
+          minLines: 1,
+          // 允许自动折行但不接受手动换行，避免标题被拆成多段
+          inputFormatters: [FilteringTextInputFormatter.deny(RegExp(r'[\n\r]'))],
           // 标题对齐方式由布局设置决定，默认居中
           textAlign: settings.isChapterTitleLeftAligned ? TextAlign.left : TextAlign.center,
-          onChanged: widget.onChapterTitleChanged,
+          onChanged: (title) {
+            widget.onChapterTitleChanged(title);
+            // 标题折行数变化会改变标题区高度，重新测量以修正正文顶部留白
+            _scheduleTitleAreaMeasure();
+            Future.delayed(const Duration(milliseconds: 80), () {
+              if (mounted) _scheduleTitleAreaMeasure();
+            });
+          },
         ),
       ),
     );

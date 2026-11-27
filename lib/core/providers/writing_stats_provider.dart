@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:quick_write/core/services/chapter_word_count_service.dart';
 import 'package:quick_write/core/services/settings_service.dart';
 import 'package:quick_write/core/services/writing_stats_service.dart';
 
@@ -53,6 +54,10 @@ class WritingStatsProvider extends ChangeNotifier {
   bool _includeSettingWords = true;
   bool get includeSettingWords => _includeSettingWords;
 
+  /// 是否按章节记录今日字数
+  bool _chapterWordCountEnabled = false;
+  bool get chapterWordCountEnabled => _chapterWordCountEnabled;
+
   /// 空闲判定阈值（秒）
   int _idleThresholdSeconds = 30;
   int get idleThresholdSeconds => _idleThresholdSeconds;
@@ -62,6 +67,7 @@ class WritingStatsProvider extends ChangeNotifier {
     final settings = SettingsService.instance;
     _includePasteWords = settings.statsIncludePasteWords;
     _includeSettingWords = settings.statsIncludeSettingWords;
+    _chapterWordCountEnabled = settings.statsChapterWordCountEnabled;
     _idleThresholdSeconds = settings.statsIdleThresholdSeconds;
   }
 
@@ -164,6 +170,18 @@ class WritingStatsProvider extends ChangeNotifier {
     _includeSettingWords = include;
     notifyListeners();
     SettingsService.instance.updateStatsIncludeSettingWords(include);
+  }
+
+  /// 设置是否按章节记录今日字数
+  ///
+  /// 开启后编辑器会把每个章节的当日净增字数写入今日章节字数清单，
+  /// 关闭后不再记录，已有数据保留到当天结束
+  void setChapterWordCountEnabled(bool enabled) {
+    if (_chapterWordCountEnabled == enabled) return;
+    _chapterWordCountEnabled = enabled;
+    notifyListeners();
+    SettingsService.instance.updateStatsChapterWordCountEnabled(enabled);
+    if (enabled) ChapterWordCountService.instance.ensureLoaded(forceNotify: true);
   }
 
   /// 设置空闲判定阈值（秒）

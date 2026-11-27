@@ -6,6 +6,7 @@ import 'package:quick_write/core/models/setting_item.dart';
 import 'package:quick_write/core/providers/workspace_provider.dart';
 import 'package:quick_write/core/services/backup_service.dart';
 import 'package:quick_write/core/services/cache_services/chapter_cursor_cache_service.dart';
+import 'package:quick_write/core/services/chapter_word_count_service.dart';
 import 'package:quick_write/core/services/settings_service.dart';
 import 'package:quick_write/core/utils/color_utils.dart';
 import 'package:quick_write/core/utils/code_line_selection_utils.dart';
@@ -739,6 +740,15 @@ class _EditorContainerState extends State<EditorContainer> {
                     // 不会到达：上方分支已处理
                     break;
                 }
+                // 今日章节字数：开关开启时按章节累计当日净增字数（跨天自动清空）
+                if (tab.type == EditorTabType.chapter &&
+                    SettingsService.instance.statsChapterWordCountEnabled) {
+                  ChapterWordCountService.instance.addWords(
+                    chapterId: tab.id,
+                    title: tab.title,
+                    delta: delta,
+                  );
+                }
               }
               tab.recordedSessionWords = currentNet;
             }
@@ -756,6 +766,8 @@ class _EditorContainerState extends State<EditorContainer> {
             }
             // 更新标签页标题
             tab.title = title;
+            // 同步今日章节字数清单中的标题
+            ChapterWordCountService.instance.updateTitle(tab.id, title);
             // 标记为已修改
             if (!tab.isModified) {
               tab.isModified = true;

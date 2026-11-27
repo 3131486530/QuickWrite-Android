@@ -7,8 +7,8 @@ import 'package:quick_write/shared/widgets/qw_text_field.dart';
 
 /// 显示码字统计设置弹窗
 ///
-/// 集中管理码字统计的三项设置：是否包含粘贴字数、是否包含设定字数、
-/// 以及空闲判定时间。
+/// 集中管理码字统计的设置：是否包含粘贴字数、是否包含设定字数、
+/// 是否记录今日章节字数，以及空闲判定时间。
 Future<void> showWritingStatsSettingsDialog({
   required BuildContext context,
   required WritingStatsProvider provider,
@@ -17,7 +17,7 @@ Future<void> showWritingStatsSettingsDialog({
     context: context,
     title: '统计设置',
     width: 380,
-    height: 320,
+    height: 340,
     adaptiveHeight: true,
     content: _WritingStatsSettingsContent(provider: provider),
   );
@@ -123,6 +123,16 @@ class _WritingStatsSettingsContentState
                 trailing: QwSwitch(
                   value: provider.includeSettingWords,
                   onChanged: provider.setIncludeSettingWords,
+                ),
+              ),
+              const _SettingDivider(),
+              _SettingTile(
+                icon: Icons.menu_book_outlined,
+                title: '章节字数',
+                subtitle: '只记录今日所有章节的字数，跨天自动清空',
+                trailing: QwSwitch(
+                  value: provider.chapterWordCountEnabled,
+                  onChanged: provider.setChapterWordCountEnabled,
                 ),
               ),
               const _SettingDivider(),

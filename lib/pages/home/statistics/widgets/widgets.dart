@@ -4,6 +4,7 @@ library;
 export 'overview_card.dart';
 export 'stats_chart_card.dart';
 export 'stats_line_chart.dart';
+export 'today_chapter_word_count_card.dart';
 export 'today_stats_card.dart';
 export 'writing_calendar.dart';
 export 'writing_stats_settings_dialog.dart';

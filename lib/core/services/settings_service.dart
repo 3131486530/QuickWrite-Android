@@ -1304,6 +1304,15 @@ class SettingsService extends ChangeNotifier {
     return updateSettings(newSettings);
   }
 
+  /// 码字统计是否按章节记录今日字数
+  bool get statsChapterWordCountEnabled => _settings.statsChapterWordCountEnabled;
+
+  /// 更新是否按章节记录今日字数
+  Future<bool> updateStatsChapterWordCountEnabled(bool value) async {
+    final newSettings = _settings.copyWith(statsChapterWordCountEnabled: value);
+    return updateSettings(newSettings);
+  }
+
   /// 空闲判定阈值（秒）
   int get statsIdleThresholdSeconds => _settings.statsIdleThresholdSeconds;
 
