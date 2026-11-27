@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:quick_write/core/services/settings_service.dart';
 import 'package:quick_write/core/services/workspace/custom_highlight_service.dart';
 import 'package:quick_write/core/utils/color_utils.dart';
@@ -55,6 +56,15 @@ Future<void> showReadingMode(
 ///
 /// 交互：左右滑动或点击屏幕左右三分之一区域翻页，点击中间区域显隐顶部栏，
 /// 每章末尾有一次「本章完」过渡页，点击后进入下一章。
+/// 翻页动效
+enum ReadingTurnMode {
+  /// 直接换页，无过渡动画（默认）
+  none,
+
+  /// 下一页覆盖上一页的覆盖式翻页
+  cover,
+}
+
 class ReadingModePage extends StatefulWidget {
   const ReadingModePage({
     super.key,
@@ -98,6 +108,12 @@ class _ReadingModePageState extends State<ReadingModePage> {
 
   late final PageController _pageController;
 
+  /// 翻页动效，默认无动画
+  ReadingTurnMode _turnMode = ReadingTurnMode.none;
+
+  /// 翻页动效偏好的本地存储 key
+  static const String _turnModePrefKey = 'reader_turn_mode';
+
   int _chapterIndex = 0;
 
   /// 当前章正文，null 表示正在加载
@@ -132,6 +148,7 @@ class _ReadingModePageState extends State<ReadingModePage> {
     _chapterIndex = widget.initialChapterIndex;
     _pageController = PageController();
     _loadChapter(_chapterIndex);
+    _restoreTurnMode();
   }
 
   @override
@@ -393,9 +410,12 @@ class _ReadingModePageState extends State<ReadingModePage> {
       },
       child: PageView.builder(
         controller: _pageController,
+        // 翻页只有「无动画」与「覆盖」两种，均靠点击/按键触发，禁用拖动抢占
+        physics: const NeverScrollableScrollPhysics(),
         itemCount: _pages.length,
         onPageChanged: (int index) => setState(() => _pageIndex = index),
-        itemBuilder: (BuildContext context, int index) => _buildPage(context, index),
+        itemBuilder: (BuildContext context, int index) =>
+            _buildPageWithTurnEffect(context, index),
       ),
     );
   }
@@ -601,6 +621,16 @@ class _ReadingModePageState extends State<ReadingModePage> {
                       ),
                     ),
                     IconButton(
+                      onPressed: _toggleTurnMode,
+                      icon: Icon(_turnMode == ReadingTurnMode.cover
+                          ? Icons.layers_rounded
+                          : Icons.compare_arrows_rounded),
+                      color: color,
+                      tooltip: _turnMode == ReadingTurnMode.cover
+                          ? '翻页：覆盖（点击改为无动画）'
+                          : '翻页：无动画（点击改为覆盖）',
+                    ),
+                    IconButton(
                       onPressed: _openCatalog,
                       icon: const Icon(Icons.list_rounded),
                       color: color,
@@ -691,13 +721,82 @@ class _ReadingModePageState extends State<ReadingModePage> {
     );
   }
 
+  /// 从本地偏好恢复翻页动效
+  Future<void> _restoreTurnMode() async {
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    final String? saved = prefs.getString(_turnModePrefKey);
+    if (!mounted || saved == null) return;
+    final ReadingTurnMode mode =
+        saved == 'cover' ? ReadingTurnMode.cover : ReadingTurnMode.none;
+    if (mode != _turnMode) setState(() => _turnMode = mode);
+  }
+
+  /// 切换翻页动效并持久化
+  Future<void> _toggleTurnMode() async {
+    final ReadingTurnMode next = _turnMode == ReadingTurnMode.cover
+        ? ReadingTurnMode.none
+        : ReadingTurnMode.cover;
+    setState(() => _turnMode = next);
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      _turnModePrefKey,
+      next == ReadingTurnMode.cover ? 'cover' : 'none',
+    );
+    if (!mounted) return;
+    SnackBarService.show(
+      context,
+      next == ReadingTurnMode.cover ? '翻页方式：覆盖' : '翻页方式：无动画',
+    );
+  }
+
+  /// 翻到指定页：无动画模式直接跳页，覆盖模式滑入覆盖
+  void _goToPage(int target) {
+    if (_turnMode == ReadingTurnMode.none) {
+      _pageController.jumpToPage(target);
+      return;
+    }
+    _pageController.animateToPage(
+      target,
+      duration: const Duration(milliseconds: 260),
+      curve: Curves.easeOutCubic,
+    );
+  }
+
+  /// 包装单页：覆盖翻页时把已翻过的页固定原位，形成新页压上去的效果
+  Widget _buildPageWithTurnEffect(BuildContext context, int index) {
+    final Widget page = _buildPage(context, index);
+    if (_turnMode == ReadingTurnMode.none) return page;
+    final Widget shadowed = DecoratedBox(
+      decoration: const BoxDecoration(
+        boxShadow: <BoxShadow>[
+          BoxShadow(color: Colors.black26, blurRadius: 16, offset: Offset(-3, 0)),
+        ],
+      ),
+      child: page,
+    );
+    return AnimatedBuilder(
+      animation: _pageController,
+      builder: (BuildContext context, Widget? child) {
+        double progress = _pageIndex.toDouble();
+        if (_pageController.hasClients && _pageController.position.haveDimensions) {
+          progress = _pageController.page ?? progress;
+        }
+        // PageView 原生会把旧页左移，这里补偿回原位，新页就压在上面滑入
+        final double covered = (progress - index).clamp(0.0, 1.0);
+        if (covered <= 0) return child!;
+        return Transform.translate(
+          offset: Offset(covered * MediaQuery.sizeOf(context).width, 0),
+          child: child,
+        );
+      },
+      child: shadowed,
+    );
+  }
+
   /// 上一页：首页时回到上一章的最后一页
   void _turnBack() {
     if (_pageIndex > 0) {
-      _pageController.previousPage(
-        duration: const Duration(milliseconds: 240),
-        curve: Curves.easeOut,
-      );
+      _goToPage(_pageIndex - 1);
       return;
     }
     if (_chapterIndex == 0) {
@@ -710,10 +809,7 @@ class _ReadingModePageState extends State<ReadingModePage> {
   /// 下一页：章末页时进入下一章
   void _turnForward() {
     if (_pageIndex < _pages.length - 1) {
-      _pageController.nextPage(
-        duration: const Duration(milliseconds: 240),
-        curve: Curves.easeOut,
-      );
+      _goToPage(_pageIndex + 1);
       return;
     }
     if (_chapterIndex + 1 >= widget.chapters.length) {

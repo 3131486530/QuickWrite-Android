@@ -151,33 +151,59 @@ class ReaderPaginator {
         ),
       );
       final double measured = measureSpan(span, maxWidth: maxWidth);
+      final double separator = showSeparator ? separatorHeight : 0;
 
-      // 常规段落：整体放入当前页，放不下则换页
-      if (measured <= pageHeight) {
-        final double height = measured + (showSeparator ? separatorHeight : 0);
-        if (blocks.isNotEmpty && used + height > pageHeight) flush();
-        blocks.add(ReaderBlock(paragraphIndex: i, start: 0, end: raw.length, height: height));
-        used += height;
+      // 整段能放进当前页剩余空间时直接整段放置，避免无谓的行级切分
+      if (measured + separator <= pageHeight - used + 0.01) {
+        blocks.add(ReaderBlock(
+          paragraphIndex: i,
+          start: 0,
+          end: raw.length,
+          height: measured + separator,
+        ));
+        used += measured + separator;
         continue;
       }
 
-      // 超长段落：按实际排行切块，逐块填充页面
-      final List<ReaderBlock> split = _splitByLine(
+      // 剩余空间放不下整段：按行切块，把当前页剩余空间填满后再翻页
+      final _LineLayout layout = _layoutLines(
         text: text,
-        paragraphIndex: i,
         startOffset: starts[i],
         ranges: ranges,
         bodyStyle: bodyStyle,
         maxWidth: maxWidth,
-        pageHeight: pageHeight,
-        showSeparator: showSeparator,
-        separatorHeight: separatorHeight,
-        firstLineIndent: firstLineIndent,
+        firstLineIndent: raw.isEmpty ? '' : firstLineIndent,
       );
-      for (final ReaderBlock block in split) {
-        if (blocks.isNotEmpty && used + block.height > pageHeight) flush();
-        blocks.add(block);
-        used += block.height;
+      int lineIndex = 0;
+      while (lineIndex < layout.heights.length) {
+        final double remaining = pageHeight - used;
+        int lineEnd = lineIndex;
+        double chunkHeight = 0;
+        while (lineEnd < layout.heights.length &&
+            chunkHeight + layout.heights[lineEnd] <= remaining + 0.01) {
+          chunkHeight += layout.heights[lineEnd];
+          lineEnd++;
+        }
+        if (lineEnd == lineIndex) {
+          // 一行都放不下：本页已有内容则换页重来，否则强制放一行防止死循环
+          if (blocks.isNotEmpty) {
+            flush();
+            continue;
+          }
+          chunkHeight = layout.heights[lineIndex];
+          lineEnd = lineIndex + 1;
+        }
+        final bool reachesEnd = lineEnd >= layout.heights.length;
+        final double blockHeight = chunkHeight + (reachesEnd ? separator : 0);
+        blocks.add(ReaderBlock(
+          paragraphIndex: i,
+          start: layout.starts[lineIndex],
+          end: reachesEnd ? raw.length : layout.starts[lineEnd],
+          height: blockHeight,
+        ));
+        used += blockHeight;
+        lineIndex = lineEnd;
+        if (lineIndex < layout.heights.length) flush();
       }
     }
 
@@ -185,17 +211,16 @@ class ReaderPaginator {
     return pages;
   }
 
-  /// 把单个超长段落按行切分为若干块
-  static List<ReaderBlock> _splitByLine({
+  /// 实测段落每一行的排版高度与行首字符偏移
+  ///
+  /// [LineMetrics] 不含字符偏移，行首偏移由行垂直中心处的字符位置经
+  /// [TextPainter.getLineBoundary] 收缩到视觉行范围后，再扣掉首行缩进前缀长度得到。
+  static _LineLayout _layoutLines({
     required String text,
-    required int paragraphIndex,
     required int startOffset,
     required List<HighlightRange> ranges,
     required TextStyle bodyStyle,
     required double maxWidth,
-    required double pageHeight,
-    required bool showSeparator,
-    required double separatorHeight,
     required String firstLineIndent,
   }) {
     final TextPainter painter = TextPainter(
@@ -215,66 +240,44 @@ class ReaderPaginator {
     )..layout(maxWidth: maxWidth);
 
     final List<LineMetrics> lines = painter.computeLineMetrics();
-    // LineMetrics 不提供 startIndex，需自行换算每行在段落内的字符起点：
-    // 取行垂直中心处的字符位置，再用 getLineBoundary 收缩为该视觉行范围，
-    // 最后减掉首行缩进前缀长度，得到相对段落原文的偏移。
     final int prefixLength = firstLineIndent.length;
-    final List<int> lineStarts = <int>[];
+    final List<double> heights = <double>[];
+    final List<int> starts = <int>[];
     double topEdge = 0;
     for (int i = 0; i < lines.length; i++) {
       final LineMetrics line = lines[i];
+      heights.add(line.height);
       if (i == 0) {
-        lineStarts.add(0);
+        starts.add(0);
       } else {
         final double centerY = topEdge + line.height / 2;
-        final TextPosition pos =
-            painter.getPositionForOffset(Offset(0, centerY));
+        final TextPosition pos = painter.getPositionForOffset(Offset(0, centerY));
         final TextRange range = painter.getLineBoundary(pos);
         final int rawStart = range.start < 0 ? pos.offset : range.start;
-        lineStarts.add((rawStart - prefixLength).clamp(0, text.length));
+        starts.add((rawStart - prefixLength).clamp(0, text.length));
       }
       topEdge += line.height;
     }
-    // 防御：行起点必须单调不减，异常时回退到上一行起点
-    for (int i = 1; i < lineStarts.length; i++) {
-      if (lineStarts[i] < lineStarts[i - 1]) {
-        lineStarts[i] = lineStarts[i - 1];
-      }
-    }
-
-    final List<ReaderBlock> blocks = <ReaderBlock>[];
-    int blockStart = 0;
-    double accumulated = 0;
-
-    for (int i = 0; i < lines.length; i++) {
-      final double lineHeight = lines[i].height;
-      if (accumulated > 0 && accumulated + lineHeight > pageHeight) {
-        final int blockEnd = lineStarts[i];
-        if (blockEnd > blockStart) {
-          blocks.add(ReaderBlock(
-            paragraphIndex: paragraphIndex,
-            start: blockStart,
-            end: blockEnd,
-            height: accumulated + (showSeparator ? separatorHeight : 0),
-          ));
-        }
-        accumulated = 0;
-      }
-      if (accumulated == 0) blockStart = lineStarts[i];
-      accumulated += lineHeight;
-    }
-
-    if (accumulated > 0) {
-      blocks.add(ReaderBlock(
-        paragraphIndex: paragraphIndex,
-        start: blockStart,
-        end: text.length,
-        height: accumulated + (showSeparator ? separatorHeight : 0),
-      ));
+    // 行首偏移必须单调不减，异常时回退到上一行
+    for (int i = 1; i < starts.length; i++) {
+      if (starts[i] < starts[i - 1]) starts[i] = starts[i - 1];
     }
     painter.dispose();
-    return blocks;
+    return _LineLayout(heights: heights, starts: starts, textLength: text.length);
   }
+}
+
+/// 段落按行拆解后的行高与行首偏移
+class _LineLayout {
+  const _LineLayout({
+    required this.heights,
+    required this.starts,
+    required this.textLength,
+  });
+
+  final List<double> heights;
+  final List<int> starts;
+  final int textLength;
 }
 
 /// 页内文本块
