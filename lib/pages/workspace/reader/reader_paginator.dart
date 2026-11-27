@@ -120,6 +120,17 @@ class ReaderPaginator {
     }
     onParagraphsResolved(starts);
 
+    // 正文末尾的空段落不参与分页。
+    //
+    // 空段落按一整行高度排版，当正文刚好占满一页时，末尾的空行就会被推到
+    // 下一页，形成"只有章节标题、没有正文"的空白页；而尾部空行本身在视觉上
+    // 不可见，参与分页没有任何意义。这里只跳过尾部连续的空段落，中间的空行
+    // （段落间距）照常占位。
+    int lastParagraph = paragraphs.length - 1;
+    while (lastParagraph > 0 && paragraphs[lastParagraph].trim().isEmpty) {
+      lastParagraph--;
+    }
+
     // 章节标题在每一页都显示，因此它的高度要在每一页扣掉
     final bool titleShown = showTitle && chapterTitle.trim().isNotEmpty;
     final double titleHeight = titleShown ? titleTopMargin + measureSpan(TextSpan(text: chapterTitle, style: titleStyle), maxWidth: maxWidth) : 0;
@@ -136,6 +147,8 @@ class ReaderPaginator {
     }
 
     for (int i = 0; i < paragraphs.length; i++) {
+      // 尾部空段落已在上方裁掉：不生成文本块，也就不会占据新的一页
+      if (i > lastParagraph) break;
       final String raw = paragraphs[i];
       final String text = raw.isEmpty ? blankLine : raw;
       final String prefix = raw.isEmpty ? '' : firstLineIndent;
