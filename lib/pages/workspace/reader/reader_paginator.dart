@@ -122,15 +122,13 @@ class ReaderPaginator {
 
     // 章节标题在每一页都显示，因此它的高度要在每一页扣掉
     final bool titleShown = showTitle && chapterTitle.trim().isNotEmpty;
-    final double titleHeight = titleShown
-        ? titleTopMargin +
-            measureSpan(TextSpan(text: chapterTitle, style: titleStyle), maxWidth: maxWidth)
-        : 0;
-
+    final double titleHeight = titleShown ? titleTopMargin + measureSpan(TextSpan(text: chapterTitle, style: titleStyle), maxWidth: maxWidth) : 0;
+    // 可用高度向下取整到整像素：文本行的实际绘制高度会按设备像素对齐，
+    // 若预算带小数，逐行累加后就会比真实渲染少几个像素，末行被挤出页面。
+    final double pageLimit = pageHeight.floorToDouble();
     final List<ReaderPageSlice> pages = <ReaderPageSlice>[];
     List<ReaderBlock> blocks = <ReaderBlock>[];
-    double used = titleHeight;
-
+    used = titleHeight;
     void flush() {
       pages.add(ReaderPageSlice(blocks: blocks, hasTitle: titleShown));
       blocks = <ReaderBlock>[];
@@ -140,6 +138,8 @@ class ReaderPaginator {
     for (int i = 0; i < paragraphs.length; i++) {
       final String raw = paragraphs[i];
       final String text = raw.isEmpty ? blankLine : raw;
+      final String prefix = raw.isEmpty ? '' : firstLineIndent;
+      final double separator = showSeparator ? separatorHeight : 0;
       final InlineSpan span = TextSpan(
         style: bodyStyle,
         children: buildSpans(
@@ -147,100 +147,103 @@ class ReaderPaginator {
           startOffset: starts[i],
           ranges: ranges,
           baseStyle: bodyStyle,
-          indentPrefix: raw.isEmpty ? '' : firstLineIndent,
+          indentPrefix: prefix,
         ),
       );
       final double measured = measureSpan(span, maxWidth: maxWidth);
-      final double separator = showSeparator ? separatorHeight : 0;
-
-      // 整段能放进当前页剩余空间时直接整段放置，避免无谓的行级切分
-      if (measured + separator <= pageHeight - used + 0.01) {
-        blocks.add(ReaderBlock(
-          paragraphIndex: i,
-          start: 0,
-          end: raw.length,
-          height: measured + separator,
-        ));
+      if (measured + separator <= pageLimit - used) {
+        blocks.add(ReaderBlock(paragraphIndex: i, start: 0, end: raw.length, height: measured + separator));
         used += measured + separator;
         continue;
       }
 
-      // 剩余空间放不下整段：按行切块，把当前页剩余空间填满后再翻页
+      // 整段放不下：按行切块，把本页剩余空间填满后再翻页。
+      //
+      // 主流阅读软件的通用做法，这里照此实现：
+      //   1. 切块边界一律落在行首，永远不把一行切成两半；
+      //   2. 每个候选切块都按真实排版重新实测高度（切块单独渲染时折行、末行宽度
+      //      都可能与整段排版不同），只有实测装得下才放置；
+      //   3. 宁可少排一行，也不许内容超出页面——超出的整行留给下一页。
       final _LineLayout layout = _layoutLines(
         text: text,
         startOffset: starts[i],
         ranges: ranges,
         bodyStyle: bodyStyle,
         maxWidth: maxWidth,
-        firstLineIndent: raw.isEmpty ? '' : firstLineIndent,
+        firstLineIndent: prefix,
+      );
+      final int lineCount = layout.heights.length;
+      double measureChunk(int from, int to) => measureSpan(
+        TextSpan(
+          style: bodyStyle,
+          children: buildSpans(
+            text: text.substring(from, to),
+            startOffset: starts[i] + from,
+            ranges: ranges,
+            baseStyle: bodyStyle,
+            indentPrefix: from == 0 ? prefix : '',
+          ),
+        ),
+        maxWidth: maxWidth,
       );
 
-      // 实测某个字符区间的排版高度
-      //
-      // 按行累加得到的高度只是「整段一次性排版」时的行高之和，切块后单独渲染会
-      // 重新换行，行数与高度可能不同；这里对切块文本做一次实测，保证分页高度与
-      // 实际渲染高度一致，避免页面底部内容超出可视区而陷入屏幕外。
-      double measureChunk(int from, int to) => measureSpan(
-            TextSpan(
-              style: bodyStyle,
-              children: buildSpans(
-                text: text.substring(from, to),
-                startOffset: starts[i] + from,
-                ranges: ranges,
-                baseStyle: bodyStyle,
-                indentPrefix: from == 0 && raw.isNotEmpty ? firstLineIndent : '',
-              ),
-            ),
-            maxWidth: maxWidth,
-          );
-
       int lineIndex = 0;
-      while (lineIndex < layout.heights.length) {
-        final double remaining = pageHeight - used;
-        int lineEnd = lineIndex;
-        double chunkHeight = 0;
-        while (lineEnd < layout.heights.length &&
-            chunkHeight + layout.heights[lineEnd] <= remaining + 0.01) {
-          chunkHeight += layout.heights[lineEnd];
-          lineEnd++;
+      while (lineIndex < lineCount) {
+        final double remaining = pageLimit - used;
+        // 先按整段行高做一次乐观估算，得到候选行数上限（估算偏高时由实测回退纠正）
+        int candidate = lineIndex;
+        double estimate = 0;
+        while (candidate < lineCount) {
+          final bool last = candidate + 1 >= lineCount;
+          final double add = layout.heights[candidate] + (last ? separator : 0);
+          if (estimate + add > remaining) break;
+          estimate += add;
+          candidate++;
         }
-        if (lineEnd == lineIndex) {
-          // 一行都放不下：本页已有内容则换页重来，否则强制放一行防止死循环
+        if (candidate == lineIndex) {
+          // 一行都放不下
           if (blocks.isNotEmpty) {
             flush();
             continue;
           }
-          chunkHeight = layout.heights[lineIndex];
-          lineEnd = lineIndex + 1;
-        } else {
-          // 按实测高度校正切块：超出剩余空间时逐行回退
-          int end = lineEnd;
-          double measured = chunkHeight;
-          while (end > lineIndex + 1) {
-            final int chunkEnd =
-                end >= layout.heights.length ? raw.length : layout.starts[end];
-            final double height =
-                measureChunk(layout.starts[lineIndex], chunkEnd);
-            if (height <= remaining + 0.01) {
-              measured = height;
-              break;
-            }
-            end--;
-          }
-          lineEnd = end;
-          chunkHeight = measured;
+          candidate = lineIndex + 1;
         }
-        final bool reachesEnd = lineEnd >= layout.heights.length;
-        final double blockHeight = chunkHeight + (reachesEnd ? separator : 0);
+
+        // 从候选行数开始逐行回退，实测直到装得下
+        int chosen = candidate;
+        double chosenHeight = 0;
+        bool placed = false;
+        for (int end = candidate; end > lineIndex; end--) {
+          final bool last = end >= lineCount;
+          final int chunkEnd = last ? raw.length : layout.starts[end];
+          final double height = measureChunk(layout.starts[lineIndex], chunkEnd) + (last ? separator : 0);
+          if (used + height <= pageLimit) {
+            chosen = end;
+            chosenHeight = height;
+            placed = true;
+            break;
+          }
+        }
+        if (!placed) {
+          // 空页也放不下：强制放一行，避免死循环
+          final bool last = lineIndex + 1 >= lineCount;
+          final int chunkEnd = last ? raw.length : layout.starts[lineIndex + 1];
+          chosen = lineIndex + 1;
+          chosenHeight = measureChunk(layout.starts[lineIndex], chunkEnd) + (last ? separator : 0);
+        }
+
+        final bool reachesEnd = chosen >= lineCount;
         blocks.add(ReaderBlock(
           paragraphIndex: i,
           start: layout.starts[lineIndex],
-          end: reachesEnd ? raw.length : layout.starts[lineEnd],
-          height: blockHeight,
+          end: reachesEnd ? raw.length : layout.starts[chosen],
+          height: chosenHeight,
         ));
-        used += blockHeight;
-        lineIndex = lineEnd;
-        if (lineIndex < layout.heights.length) flush();
+        used += chosenHeight;
+        lineIndex = chosen;
+        if (lineIndex < lineCount) {
+          flush();
+        }
       }
     }
 

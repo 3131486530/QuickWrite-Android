@@ -544,7 +544,9 @@ class _ReadingModePageState extends State<ReadingModePage> {
       ),
     );
 
-    if (!settings.showLineSeparator) return textWidget;
+    // 分隔线属于段落之间的元素：段落被分页切开时，续块不再画分隔线，
+    // 否则页内实际高度会比分页测量多出一条线，累积后把末行顶出页面。
+    if (!settings.showLineSeparator || block.end < paragraph.length) return textWidget;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: <Widget>[
