@@ -215,22 +215,52 @@ class ReaderPaginator {
     )..layout(maxWidth: maxWidth);
 
     final List<LineMetrics> lines = painter.computeLineMetrics();
+    // LineMetrics 不提供 startIndex，需自行换算每行在段落内的字符起点：
+    // 取行垂直中心处的字符位置，再用 getLineBoundary 收缩为该视觉行范围，
+    // 最后减掉首行缩进前缀长度，得到相对段落原文的偏移。
+    final int prefixLength = firstLineIndent.length;
+    final List<int> lineStarts = <int>[];
+    double topEdge = 0;
+    for (int i = 0; i < lines.length; i++) {
+      final LineMetrics line = lines[i];
+      if (i == 0) {
+        lineStarts.add(0);
+      } else {
+        final double centerY = topEdge + line.height / 2;
+        final TextPosition pos =
+            painter.getPositionForOffset(Offset(0, centerY));
+        final TextRange range = painter.getLineBoundary(pos);
+        final int rawStart = range.start < 0 ? pos.offset : range.start;
+        lineStarts.add((rawStart - prefixLength).clamp(0, text.length));
+      }
+      topEdge += line.height;
+    }
+    // 防御：行起点必须单调不减，异常时回退到上一行起点
+    for (int i = 1; i < lineStarts.length; i++) {
+      if (lineStarts[i] < lineStarts[i - 1]) {
+        lineStarts[i] = lineStarts[i - 1];
+      }
+    }
+
     final List<ReaderBlock> blocks = <ReaderBlock>[];
     int blockStart = 0;
     double accumulated = 0;
 
-    for (final LineMetrics line in lines) {
-      final double lineHeight = line.height;
+    for (int i = 0; i < lines.length; i++) {
+      final double lineHeight = lines[i].height;
       if (accumulated > 0 && accumulated + lineHeight > pageHeight) {
-        blocks.add(ReaderBlock(
-          paragraphIndex: paragraphIndex,
-          start: blockStart,
-          end: line.startIndex,
-          height: accumulated + (showSeparator ? separatorHeight : 0),
-        ));
+        final int blockEnd = lineStarts[i];
+        if (blockEnd > blockStart) {
+          blocks.add(ReaderBlock(
+            paragraphIndex: paragraphIndex,
+            start: blockStart,
+            end: blockEnd,
+            height: accumulated + (showSeparator ? separatorHeight : 0),
+          ));
+        }
         accumulated = 0;
       }
-      if (accumulated == 0) blockStart = line.startIndex;
+      if (accumulated == 0) blockStart = lineStarts[i];
       accumulated += lineHeight;
     }
 
