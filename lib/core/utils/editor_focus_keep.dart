@@ -29,6 +29,9 @@ class EditorFocusKeep {
   /// 打开中的弹层层数
   static int _overlayDepth = 0;
 
+  /// 因弹层打开而被挂起取焦能力的输入节点
+  static final Set<FocusNode> _suspended = <FocusNode>{};
+
   /// 登记编辑器正文输入节点
   ///
   /// 节点每次获得焦点时更新「最近聚焦」记录：点击顶部快捷键或左右抽屉时
@@ -63,6 +66,7 @@ class EditorFocusKeep {
   /// 编辑器销毁时调用，避免已卸载的节点残留在登记表与「最近聚焦」记录里。
   static void untrackTitleInput(FocusNode node) {
     _titleInputs.remove(node);
+    _suspended.remove(node);
     if (identical(_lastTitleFocus, node)) _lastTitleFocus = null;
   }
 
@@ -138,6 +142,47 @@ class EditorFocusKeep {
     return FocusManager.instance.primaryFocus;
   }
 
+  /// 让当前输入框主动失焦
+  ///
+  /// 打开底部面板期间调用：工具卡片弹层销毁时 Flutter 会把焦点还给原来的
+  /// 输入框，标准 TextField 一获得焦点就重建输入法连接，键盘随即弹出把面板
+  /// 顶起。这里把输入框按下去，键盘就不会被重新拉起；最近聚焦记录仍然保留，
+  /// 面板关闭后照样能把光标还回原位、把名字插到正确位置。
+  static void releaseInputFocus() {
+    final FocusNode? title = lastTitleFocus;
+    if (title != null && title.hasFocus) title.unfocus();
+    final FocusNode? editor = lastEditorFocus;
+    if (editor != null && editor.hasFocus) editor.unfocus();
+  }
+
+  /// 弹层打开期间挂起输入框的取焦能力
+  ///
+  /// 只把焦点挪走并不能阻止弹层路由销毁、编辑器帧末补焦点等逻辑再次请求焦点：
+  /// 标准 TextField 一拿到焦点就重建输入法连接，键盘重新弹出把底部面板顶起。
+  /// 这里直接把已登记输入节点的 [FocusNode.canRequestFocus] 置为 false，
+  /// 期间任何 requestFocus 都不会生效，面板位置因此不会再抖动。
+  static void suspendInputFocus() {
+    final List<FocusNode?> nodes = <FocusNode?>[lastTitleFocus, lastEditorFocus];
+    for (final FocusNode? node in nodes) {
+      if (node == null) continue;
+      if (node.hasFocus) node.unfocus();
+      if (node.canRequestFocus) {
+        node.canRequestFocus = false;
+        _suspended.add(node);
+      }
+    }
+  }
+
+  /// 弹层关闭后恢复输入框的取焦能力
+  ///
+  /// 与 [suspendInputFocus] 成对调用，必须早于归还焦点的动作，否则请求会被吞掉。
+  static void resumeInputFocus() {
+    for (final FocusNode node in _suspended) {
+      node.canRequestFocus = true;
+    }
+    _suspended.clear();
+  }
+
   /// 弹层关闭后恢复焦点
   ///
   /// 节点已从组件树卸载、或弹层仍在打开时跳过，避免对已废弃节点请求焦点
@@ -146,7 +191,7 @@ class EditorFocusKeep {
     if (overlayOpen) return;
     // 最近一次输入落在标题上时优先还回标题：[capture] 记录的节点可能已被
     // 弹层路由还给了正文，照它恢复会把光标落到正文，后续插入也会插错位置
-    final title = lastTitleFocus;
+    final FocusNode? title = lastTitleFocus;
     if (title != null && titleIsMostRecent) {
       if (!title.hasFocus) title.requestFocus();
       return;

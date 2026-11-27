@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -36,39 +37,39 @@ const int _batchCount = 7;
 Future<String?> showMobileNameGeneratorDialog({required BuildContext context}) async {
   // 面板打开会接管焦点，先记录编辑器光标，关闭后恢复以便继续输入
   final FocusNode? previousFocus = EditorFocusKeep.capture();
-  // 面板打开期间屏蔽编辑器自动抢回焦点：否则编辑器在大纲等场景会重新唤起
-  // 输入法，把刚滑出的面板顶起来，随后面板夺回焦点输入法又收起，面板回落
+  // 面板打开期间屏蔽编辑器自动抢回焦点，否则输入法会被反复唤起
   EditorFocusKeep.beginOverlay();
-  // 先收起输入法，避免键盘占位高度参与面板布局使面板位置跳变
-  SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
-  // 工具卡片弹层在此刻仍在播放关闭动画，其路由销毁时会把焦点还给编辑器并
-  // 唤起输入法；等动画走完再弹面板，键盘的这次闪现就不会落在面板上
-  await Future<void>.delayed(const Duration(milliseconds: 200));
-  if (!context.mounted) {
-    EditorFocusKeep.endOverlay();
-    return null;
-  }
-  // 收起输入法是渐变动画，占位高度归零前面板仍会被顶起，等到归零再弹
-  for (int i = 0; i < 8 && MediaQuery.viewInsetsOf(context).bottom > 0; i++) {
-    await Future<void>.delayed(const Duration(milliseconds: 40));
-    if (!context.mounted) {
-      EditorFocusKeep.endOverlay();
-      return null;
+  try {
+    // 工具卡片弹层刚销毁时，Flutter 会把焦点还给原来的输入框。章节标题、
+    // 大纲标题、大纲正文都是标准 TextField，一拿到焦点就重建输入法连接，
+    // 键盘弹出把面板顶起、随后又落下；章节正文是自绘编辑器，不重建连接，
+    // 所以只有它不跳。这里直接挂起这些输入框的取焦能力，等面板关闭再恢复。
+    EditorFocusKeep.suspendInputFocus();
+    SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
+    // 键盘收起是渐变动画，占位高度归零前面板仍会被顶起，等到归零再弹
+    for (int i = 0;
+        i < 12 && MediaQuery.viewInsetsOf(context).bottom > 0;
+        i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+      if (!context.mounted) return null;
     }
+    final String? result = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      showDragHandle: true,
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      builder: (context) => const _MobileNameGeneratorDialog(),
+    );
+    // 面板关闭动画尚未结束时恢复焦点会被路由的焦点作用域吞掉，等动画结束后再归还
+    await Future<void>.delayed(const Duration(milliseconds: 260));
+    return result;
+  } finally {
+    // 先恢复取焦能力再归还焦点，顺序反了请求会被丢弃
+    EditorFocusKeep.resumeInputFocus();
+    EditorFocusKeep.endOverlay();
+    EditorFocusKeep.restore(previousFocus);
   }
-  final String? result = await showModalBottomSheet<String>(
-    context: context,
-    isScrollControlled: true,
-    useSafeArea: true,
-    showDragHandle: true,
-    backgroundColor: Theme.of(context).colorScheme.surface,
-    builder: (context) => const _MobileNameGeneratorDialog(),
-  );
-  // 面板关闭动画尚未结束时恢复焦点会被路由的焦点作用域吞掉，等动画结束后再归还
-  await Future<void>.delayed(const Duration(milliseconds: 260));
-  EditorFocusKeep.endOverlay();
-  EditorFocusKeep.restore(previousFocus);
-  return result;
 }
 
 /// 移动端随机取名弹窗内容
@@ -115,9 +116,23 @@ class _MobileNameGeneratorDialogState extends State<_MobileNameGeneratorDialog> 
   /// 本次生成结果
   List<String> _results = const [];
 
+  /// 面板刚弹出时的焦点守护定时器
+  Timer? _focusGuard;
+
   @override
   void initState() {
     super.initState();
+    // 面板弹出后短时间内仍可能有路由销毁把焦点还给编辑器输入框，输入框一拿到
+    // 焦点就重建输入法连接，把面板顶起又回落；这里持续按住一小会儿
+    int guardTicks = 0;
+    _focusGuard = Timer.periodic(const Duration(milliseconds: 80), (timer) {
+      if (!mounted || ++guardTicks >= 6) {
+        timer.cancel();
+        _focusGuard = null;
+        return;
+      }
+      EditorFocusKeep.suspendInputFocus();
+    });
     _reloadDictionaries();
     // 打开弹窗时立即生成一次结果
     _results = _generateNames();
@@ -130,6 +145,8 @@ class _MobileNameGeneratorDialogState extends State<_MobileNameGeneratorDialog> 
 
   @override
   void dispose() {
+    _focusGuard?.cancel();
+    _focusGuard = null;
     _syncService.removeListener(_onCloudSyncChanged);
     super.dispose();
   }
