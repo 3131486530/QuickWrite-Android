@@ -169,6 +169,9 @@ class _ReadingModePageState extends State<ReadingModePage> with WidgetsBindingOb
   /// 分页还没完成时先记下要显形的段落，分页后落到它所在的页
   int? _pendingRevealParagraph;
 
+  /// 听书控制条是否可见（听书开启且顶栏可见）
+  bool get _ttsBarVisible => _ttsEnabled && _chromeVisible;
+
   @override
   void initState() {
     super.initState();
@@ -257,6 +260,8 @@ class _ReadingModePageState extends State<ReadingModePage> with WidgetsBindingOb
                             : _buildPages(context),
                       ),
                       // 页码固定在页面右侧的底部不可见区域内，正文不越过该区域，页码不参与点击
+                      // 听书控制条占据同一块底部区域时页码改由控制条显示，避免被盖住
+                      if (!_ttsBarVisible)
                       Positioned(
                         bottom: _pageNumberBottomOffset,
                         right: _horizontalPadding,
@@ -860,7 +865,7 @@ class _ReadingModePageState extends State<ReadingModePage> with WidgetsBindingOb
   Widget _buildTtsBar(BuildContext context, Color background) {
     final Color color = ColorUtils.getFontColorForTheme(context);
     final Color accent = Theme.of(context).colorScheme.primary;
-    final bool visible = _ttsEnabled && _chromeVisible;
+    final bool visible = _ttsBarVisible;
     return Positioned(
       left: 0,
       right: 0,
@@ -884,6 +889,7 @@ class _ReadingModePageState extends State<ReadingModePage> with WidgetsBindingOb
                       onPressed: () => _skipTtsParagraph(-1),
                       icon: const Icon(Icons.skip_previous_rounded),
                       color: color,
+                      visualDensity: VisualDensity.compact,
                       tooltip: '上一段',
                     ),
                     IconButton(
@@ -895,17 +901,33 @@ class _ReadingModePageState extends State<ReadingModePage> with WidgetsBindingOb
                       ),
                       iconSize: 40,
                       color: accent,
+                      visualDensity: VisualDensity.compact,
                       tooltip: _ttsPlaying ? '暂停朗读' : '继续朗读',
                     ),
                     IconButton(
                       onPressed: () => _skipTtsParagraph(1),
                       icon: const Icon(Icons.skip_next_rounded),
                       color: color,
+                      visualDensity: VisualDensity.compact,
                       tooltip: '下一段',
                     ),
                     const Spacer(),
+                    Text(
+                      '${_pageIndex + 1}/${_pages.isEmpty ? 1 : _pages.length}',
+                      style: TextStyle(
+                        fontFamily: SettingsService.instance.fontFamily,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                        color: color.withValues(alpha: 0.6),
+                      ),
+                    ),
                     TextButton(
                       onPressed: _cycleTtsRate,
+                      style: TextButton.styleFrom(
+                        minimumSize: const Size(0, 36),
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
                       child: Text(
                         '语速 · ${_tts.rateLabel}',
                         style: TextStyle(
@@ -921,6 +943,7 @@ class _ReadingModePageState extends State<ReadingModePage> with WidgetsBindingOb
                         Icons.repeat_one_rounded,
                         color: _tts.loopChapter ? accent : color.withValues(alpha: 0.55),
                       ),
+                      visualDensity: VisualDensity.compact,
                       tooltip: _tts.loopChapter ? '单章循环：开' : '单章循环：关',
                     ),
                     const SizedBox(width: 4),
