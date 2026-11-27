@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 5.2.7+39
+version: 5.3.0+40
 
 environment:
   sdk: ^3.11.0
@@ -44,6 +44,7 @@ dependencies:
   isar: ^3.1.0+1  # 用于本地数据库存储
   isar_flutter_libs: ^3.1.0+1  
   shared_preferences: ^2.5.4  # 用于存储和检索应用的偏好设置
+  flutter_tts: ^4.0.2  # 阅读模式听书：调用系统 TTS 引擎朗读章节正文
   uuid: ^4.5.3  # 生成UUID
   screen_retriever: ^0.2.0  # 检索屏幕大小、显示、光标位置等信息
   desktop_multi_window: ^0.3.1  # 多窗口

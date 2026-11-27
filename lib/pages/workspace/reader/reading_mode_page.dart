@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:quick_write/core/services/reader/reader_tts_service.dart';
 import 'package:quick_write/core/services/settings_service.dart';
 import 'package:quick_write/core/models/outline_keyword.dart';
 import 'package:quick_write/core/services/workspace/custom_highlight_service.dart';
@@ -92,7 +93,7 @@ class ReadingModePage extends StatefulWidget {
   State<ReadingModePage> createState() => _ReadingModePageState();
 }
 
-class _ReadingModePageState extends State<ReadingModePage> {
+class _ReadingModePageState extends State<ReadingModePage> with WidgetsBindingObserver {
   /// 正文左右留白
   static const double _horizontalPadding = 20;
 
@@ -150,6 +151,24 @@ class _ReadingModePageState extends State<ReadingModePage> {
   /// 分页完成后是否停在最后一页正文（用于「上一章」回退）
   bool _pendingChapterEnd = false;
 
+  /// 语音朗读服务
+  final ReaderTtsService _tts = ReaderTtsService();
+
+  /// 听书模式是否开启
+  bool _ttsEnabled = false;
+
+  /// 是否正在朗读
+  bool _ttsPlaying = false;
+
+  /// 当前朗读段落序号（用于段落选中态，null 表示无朗读锚点）
+  int? _speakingParagraph;
+
+  /// 下一段待读的段落序号
+  int _ttsCursor = 0;
+
+  /// 分页还没完成时先记下要显形的段落，分页后落到它所在的页
+  int? _pendingRevealParagraph;
+
   @override
   void initState() {
     super.initState();
@@ -158,6 +177,12 @@ class _ReadingModePageState extends State<ReadingModePage> {
     // 关键词索引变化（新增、改色、删除关键词或删除整个设定项）后，
     // 需要立即按新索引重新解析高亮并重新分页，不能等下一次进入阅读模式
     widget.outlineKeywordService?.addListener(_onKeywordIndexChanged);
+    // 退到后台时停止朗读，回到前台由用户自行继续
+    WidgetsBinding.instance.addObserver(this);
+    // 语速与单章循环是本地持久化偏好，读到后刷新一次按钮状态
+    _tts.loadPreferences().then((_) {
+      if (mounted) setState(() {});
+    });
     _loadChapter(_chapterIndex);
   }
 
@@ -180,8 +205,21 @@ class _ReadingModePageState extends State<ReadingModePage> {
   @override
   void dispose() {
     widget.outlineKeywordService?.removeListener(_onKeywordIndexChanged);
+    WidgetsBinding.instance.removeObserver(this);
+    _tts.dispose();
     _pageController.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.resumed) return;
+    if (!_ttsPlaying) return;
+    // 退到后台或被其他应用覆盖时停止朗读，避免后台持续发声
+    _tts.stop();
+    if (!mounted) return;
+    setState(() => _ttsPlaying = false);
   }
 
   /// 章名
@@ -242,6 +280,7 @@ class _ReadingModePageState extends State<ReadingModePage> {
               ),
             ),
             _buildTopBar(context, background),
+            _buildTtsBar(context, background),
           ],
           ),
         ),
@@ -273,6 +312,9 @@ class _ReadingModePageState extends State<ReadingModePage> {
   /// 加载指定章节的正文
   Future<void> _loadChapter(int index) async {
     final int target = index.clamp(0, widget.chapters.length - 1);
+    // 换章后旧的朗读锚点与段落序号都失效，听书续读时由新章章首重新给锚点
+    _speakingParagraph = null;
+    _pendingRevealParagraph = null;
     String? cached = _contentCache[target];
     if (cached == null) {
       setState(() {
@@ -297,6 +339,203 @@ class _ReadingModePageState extends State<ReadingModePage> {
       _pages = const <ReaderPageSlice>[];
       _paginationSignature = '';
       _pageIndex = 0;
+    });
+  }
+
+  /// 听书开关：首次开启时准备引擎并从当前页首段开始朗读
+  Future<void> _toggleTts() async {
+    if (_ttsEnabled) {
+      await _stopTts();
+      return;
+    }
+    final bool ready = await _tts.ensureReady();
+    if (!mounted) return;
+    if (!ready) {
+      SnackBarService.show(context, '当前设备没有可用的语音朗读引擎');
+      return;
+    }
+    _tts.onComplete = _onParagraphSpoken;
+    _tts.onError = _onTtsError;
+    setState(() {
+      _ttsEnabled = true;
+      // 开启后先把控制条摆出来，方便立即暂停或切换循环
+      _chromeVisible = true;
+    });
+    _speakFrom(_speakingParagraph ?? _firstParagraphOfPage(_pageIndex));
+  }
+
+  /// 关闭听书
+  Future<void> _stopTts() async {
+    _tts.onComplete = null;
+    _tts.onError = null;
+    await _tts.stop();
+    if (!mounted) return;
+    setState(() {
+      _ttsEnabled = false;
+      _ttsPlaying = false;
+      _speakingParagraph = null;
+      _pendingRevealParagraph = null;
+    });
+  }
+
+  /// 播放/暂停：暂停后再播放从当前段落重新读起
+  Future<void> _toggleTtsPlay() async {
+    if (!_ttsEnabled) return;
+    if (_ttsPlaying) {
+      await _tts.stop();
+      if (!mounted) return;
+      setState(() => _ttsPlaying = false);
+      return;
+    }
+    final bool ready = await _tts.ensureReady();
+    if (!mounted || !ready) return;
+    _tts.onComplete = _onParagraphSpoken;
+    _tts.onError = _onTtsError;
+    _speakFrom(_speakingParagraph ?? _firstParagraphOfPage(_pageIndex));
+  }
+
+  /// 手动切换朗读段落
+  Future<void> _skipTtsParagraph(int delta) async {
+    if (!_ttsEnabled || _paragraphs.isEmpty) return;
+    await _tts.stop();
+    if (!mounted) return;
+    final int base = _speakingParagraph ?? _ttsCursor;
+    final int target = (base + delta).clamp(0, _paragraphs.length - 1);
+    _speakFrom(target, direction: delta < 0 ? -1 : 1);
+  }
+
+  /// 单章循环开关
+  Future<void> _toggleTtsLoop() async {
+    await _tts.setLoopChapter(!_tts.loopChapter);
+    if (mounted) setState(() {});
+  }
+
+  /// 语速档位切换
+  Future<void> _cycleTtsRate() async {
+    await _tts.cycleRate();
+    if (mounted) setState(() {});
+  }
+
+  void _onTtsError(Object error) {
+    if (!mounted) return;
+    SnackBarService.show(context, '语音朗读出错：$error');
+    _stopTts();
+  }
+
+  /// 一段读完：接着读下一段，读完本章交给 [_onChapterSpokenOut]
+  void _onParagraphSpoken() {
+    if (!mounted || !_ttsEnabled || !_ttsPlaying) return;
+    _speakFrom(_ttsCursor + 1);
+  }
+
+  /// 本章读完：单章循环回章首，否则续读下一章，已是最后一章则结束
+  void _onChapterSpokenOut() {
+    if (!mounted || !_ttsEnabled) return;
+    if (_tts.loopChapter) {
+      _pendingRevealParagraph = 0;
+      _speakFrom(0);
+      return;
+    }
+    if (_chapterIndex + 1 >= widget.chapters.length) {
+      _stopTts();
+      SnackBarService.show(context, '全书已朗读完毕');
+      return;
+    }
+    _continueToNextChapter();
+  }
+
+  /// 续读下一章：正文与分页在下一帧才可用，届时从章首开始
+  Future<void> _continueToNextChapter() async {
+    await _loadChapter(_chapterIndex + 1);
+    if (!mounted || !_ttsEnabled) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_ttsEnabled) return;
+      _pendingRevealParagraph = 0;
+      _speakFrom(0);
+    });
+  }
+
+  /// 朗读指定段落（自动跳过空行），朗读前把该段落所在页翻到眼前
+  void _speakFrom(int paragraphIndex, {int direction = 1}) {
+    if (!_ttsEnabled) return;
+    if (_paragraphs.isEmpty) {
+      // 章节正文还没加载完，等这一帧过去再试，避免读到上一章的残留段落
+      if (_content == null) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted || !_ttsEnabled) return;
+          _speakFrom(paragraphIndex, direction: direction);
+        });
+        return;
+      }
+      _onChapterSpokenOut();
+      return;
+    }
+    final int? target = _nextSpeakable(
+      paragraphIndex.clamp(0, _paragraphs.length - 1),
+      direction,
+    );
+    if (target == null) {
+      _onChapterSpokenOut();
+      return;
+    }
+    _ttsCursor = target;
+    setState(() {
+      _speakingParagraph = target;
+      _ttsPlaying = true;
+    });
+    _revealParagraph(target);
+    _tts.speak(_paragraphs[target]);
+  }
+
+  /// 从 [from] 起沿 [direction] 找到第一个非空段落
+  int? _nextSpeakable(int from, int direction) {
+    int cursor = from;
+    while (cursor >= 0 && cursor < _paragraphs.length) {
+      if (_paragraphs[cursor].trim().isNotEmpty) return cursor;
+      cursor += direction;
+    }
+    return null;
+  }
+
+  /// 把指定段落所在的页翻到眼前
+  ///
+  /// 分页还没完成时（刚切章）先记下来，由 [_ensurePaginated] 落位。
+  void _revealParagraph(int paragraphIndex) {
+    final int pageIndex = _pageIndexForParagraph(paragraphIndex);
+    if (pageIndex < 0) {
+      _pendingRevealParagraph = paragraphIndex;
+      return;
+    }
+    _pendingRevealParagraph = null;
+    if (pageIndex == _pageIndex) return;
+    _pageIndex = pageIndex;
+    if (_pageController.hasClients) _pageController.jumpToPage(pageIndex);
+  }
+
+  /// 段落所属页序号，找不到返回 -1
+  int _pageIndexForParagraph(int paragraphIndex) {
+    for (int i = 0; i < _pages.length; i++) {
+      for (final ReaderBlock block in _pages[i].blocks) {
+        if (block.paragraphIndex == paragraphIndex) return i;
+      }
+    }
+    return -1;
+  }
+
+  /// 某页首段序号，无正文时返回 0
+  int _firstParagraphOfPage(int pageIndex) {
+    if (pageIndex < 0 || pageIndex >= _pages.length) return 0;
+    final int index = _pages[pageIndex].firstParagraphIndex;
+    return index < 0 ? 0 : index;
+  }
+
+  /// 手动翻页时暂停朗读，朗读锚点交还给新的可见页
+  void _pauseForManualTurn() {
+    if (!_ttsEnabled || !_ttsPlaying) return;
+    _tts.stop();
+    setState(() {
+      _ttsPlaying = false;
+      _speakingParagraph = null;
     });
   }
 
@@ -356,6 +595,14 @@ class _ReadingModePageState extends State<ReadingModePage> {
       _pageIndex = math.max(0, _pages.length - 1);
     }
     _pageIndex = _pageIndex.clamp(0, _pages.length - 1);
+
+    // 听书时刚切章、分页此刻才完成：把等待朗读的段落所在页翻出来
+    final int? reveal = _pendingRevealParagraph;
+    if (reveal != null) {
+      _pendingRevealParagraph = null;
+      final int revealPage = _pageIndexForParagraph(reveal);
+      if (revealPage >= 0) _pageIndex = revealPage;
+    }
 
     final int target = _pageIndex;
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -572,13 +819,25 @@ class _ReadingModePageState extends State<ReadingModePage> {
       ),
     );
 
+    // 听书时当前朗读段落铺一层底色作为选中态。
+    // 只画背景、不加内外边距，分页测量不受影响，正文不会被挤出页面。
+    final Widget bodyWidget = _ttsEnabled && block.paragraphIndex == _speakingParagraph
+        ? DecoratedBox(
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.16),
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: textWidget,
+          )
+        : textWidget;
+
     // 分隔线属于段落之间的元素：段落被分页切开时，续块不再画分隔线，
     // 否则页内实际高度会比分页测量多出一条线，累积后把末行顶出页面。
-    if (!settings.showLineSeparator || block.end < paragraph.length) return textWidget;
+    if (!settings.showLineSeparator || block.end < paragraph.length) return bodyWidget;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: <Widget>[
-        textWidget,
+        bodyWidget,
         _buildLineSeparator(context, settings),
       ],
     );
@@ -592,6 +851,87 @@ class _ReadingModePageState extends State<ReadingModePage> {
         ? CustomPaint(painter: _DashedLinePainter(color: color))
         : ColoredBox(color: color);
     return SizedBox(height: _separatorHeight, child: line);
+  }
+
+  /// 听书控制条：上一段、播放/暂停、下一段、语速、单章循环
+  ///
+  /// 只在听书开启且顶部栏可见时出现（点屏幕中间可显隐），
+  /// 以浮层方式贴在底部，不参与正文排版，不会压住页面文字。
+  Widget _buildTtsBar(BuildContext context, Color background) {
+    final Color color = ColorUtils.getFontColorForTheme(context);
+    final Color accent = Theme.of(context).colorScheme.primary;
+    final bool visible = _ttsEnabled && _chromeVisible;
+    return Positioned(
+      left: 0,
+      right: 0,
+      bottom: 0,
+      child: IgnorePointer(
+        ignoring: !visible,
+        child: AnimatedOpacity(
+          opacity: visible ? 1 : 0,
+          duration: const Duration(milliseconds: 180),
+          child: Material(
+            color: background,
+            elevation: visible ? 3 : 0,
+            child: SafeArea(
+              top: false,
+              child: SizedBox(
+                height: 56,
+                child: Row(
+                  children: <Widget>[
+                    const SizedBox(width: 4),
+                    IconButton(
+                      onPressed: () => _skipTtsParagraph(-1),
+                      icon: const Icon(Icons.skip_previous_rounded),
+                      color: color,
+                      tooltip: '上一段',
+                    ),
+                    IconButton(
+                      onPressed: _toggleTtsPlay,
+                      icon: Icon(
+                        _ttsPlaying
+                            ? Icons.pause_circle_filled_rounded
+                            : Icons.play_circle_fill_rounded,
+                      ),
+                      iconSize: 40,
+                      color: accent,
+                      tooltip: _ttsPlaying ? '暂停朗读' : '继续朗读',
+                    ),
+                    IconButton(
+                      onPressed: () => _skipTtsParagraph(1),
+                      icon: const Icon(Icons.skip_next_rounded),
+                      color: color,
+                      tooltip: '下一段',
+                    ),
+                    const Spacer(),
+                    TextButton(
+                      onPressed: _cycleTtsRate,
+                      child: Text(
+                        '语速 · ${_tts.rateLabel}',
+                        style: TextStyle(
+                          fontFamily: SettingsService.instance.fontFamily,
+                          fontSize: 12,
+                          color: color.withValues(alpha: 0.8),
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: _toggleTtsLoop,
+                      icon: Icon(
+                        Icons.repeat_one_rounded,
+                        color: _tts.loopChapter ? accent : color.withValues(alpha: 0.55),
+                      ),
+                      tooltip: _tts.loopChapter ? '单章循环：开' : '单章循环：关',
+                    ),
+                    const SizedBox(width: 4),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   /// 顶部栏：返回、书名与章名、目录
@@ -649,6 +989,14 @@ class _ReadingModePageState extends State<ReadingModePage> {
                           ),
                         ],
                       ),
+                    ),
+                    IconButton(
+                      onPressed: _toggleTts,
+                      icon: Icon(
+                        _ttsEnabled ? Icons.headphones_rounded : Icons.headphones_outlined,
+                      ),
+                      color: _ttsEnabled ? Theme.of(context).colorScheme.primary : color,
+                      tooltip: _ttsEnabled ? '关闭听书' : '听书',
                     ),
                     IconButton(
                       onPressed: _openCatalog,
@@ -726,6 +1074,7 @@ class _ReadingModePageState extends State<ReadingModePage> {
                               )
                             : null,
                         onTap: () {
+                          _pauseForManualTurn();
                           Navigator.of(sheetContext).pop();
                           if (index != _chapterIndex) _loadChapter(index);
                         },
@@ -743,6 +1092,7 @@ class _ReadingModePageState extends State<ReadingModePage> {
 
   /// 上一页：首页时回到上一章的最后一页
   void _turnBack() {
+    _pauseForManualTurn();
     if (_pageIndex > 0) {
       _pageController.jumpToPage(_pageIndex - 1);
       return;
@@ -756,6 +1106,7 @@ class _ReadingModePageState extends State<ReadingModePage> {
 
   /// 下一页：本章最后一页时直接进入下一章，无下一章则不翻页
   void _turnForward() {
+    _pauseForManualTurn();
     if (_pageIndex < _pages.length - 1) {
       _pageController.jumpToPage(_pageIndex + 1);
       return;

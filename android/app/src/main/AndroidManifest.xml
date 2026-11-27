@@ -56,5 +56,9 @@
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
         </intent>
+        <!-- 听书朗读需要发现并绑定系统 TTS 引擎（Android 11+ 必须显式声明） -->
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE"/>
+        </intent>
     </queries>
 </manifest>
