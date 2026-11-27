@@ -85,11 +85,8 @@ class _ReadingModePageState extends State<ReadingModePage> {
   /// 正文左右留白
   static const double _horizontalPadding = 20;
 
-  /// 正文顶部留白
-  static const double _topPadding = 8;
-
-  /// 页脚高度（章节名与页码）
-  static const double _footerHeight = 34;
+  /// 正文顶部留白（含右上角页码所需空间）
+  static const double _topPadding = 26;
 
   /// 行分隔线高度
   static const double _separatorHeight = 1;
@@ -164,18 +161,33 @@ class _ReadingModePageState extends State<ReadingModePage> {
                       math.max(80.0, constraints.maxWidth - _horizontalPadding * 2);
                   final double contentHeight = math.max(
                     80.0,
-                    constraints.maxHeight - _topPadding - _footerHeight - 16,
+                    constraints.maxHeight - _topPadding - 8,
                   );
                   _ensurePaginated(context, contentWidth, contentHeight);
 
-                  return Column(
+                  return Stack(
                     children: <Widget>[
-                      Expanded(
+                      Positioned.fill(
                         child: _loading
                             ? const Center(child: CircularProgressIndicator())
                             : _buildPages(context),
                       ),
-                      _buildFooter(context),
+                      // 页码常显在右上角、章节标题上方区域，不参与点击
+                      Positioned(
+                        top: 4,
+                        right: _horizontalPadding,
+                        child: IgnorePointer(
+                          child: Text(
+                            '${_pageIndex + 1}/${_pages.isEmpty ? 1 : _pages.length}',
+                            style: TextStyle(
+                              fontFamily: SettingsService.instance.fontFamily,
+                              fontSize: 11,
+                              color: ColorUtils.getFontColorForTheme(context)
+                                  .withValues(alpha: 0.45),
+                            ),
+                          ),
+                        ),
+                      ),
                     ],
                   );
                 },
@@ -478,30 +490,6 @@ class _ReadingModePageState extends State<ReadingModePage> {
         ? CustomPaint(painter: _DashedLinePainter(color: color))
         : ColoredBox(color: color);
     return SizedBox(height: _separatorHeight, child: line);
-  }
-
-  /// 页脚：章节名与当前页码
-  Widget _buildFooter(BuildContext context) {
-    final Color color = ColorUtils.getFontColorForTheme(context).withValues(alpha: 0.45);
-    final TextStyle style = TextStyle(
-      fontFamily: SettingsService.instance.fontFamily,
-      fontSize: 11,
-      color: color,
-    );
-    return SizedBox(
-      height: _footerHeight,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: _horizontalPadding),
-        child: Row(
-          children: <Widget>[
-            Expanded(
-              child: Text(_chapterTitle, maxLines: 1, overflow: TextOverflow.ellipsis, style: style),
-            ),
-            Text('${_pageIndex + 1}/${_pages.isEmpty ? 1 : _pages.length}', style: style),
-          ],
-        ),
-      ),
-    );
   }
 
   /// 顶部栏：返回、书名与章名、目录

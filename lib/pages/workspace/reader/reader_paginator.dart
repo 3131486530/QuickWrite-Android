@@ -94,8 +94,8 @@ class ReaderPaginator {
 
   /// 把整章正文切分为若干页
   ///
-  /// [content] 为原始正文（段落以换行分隔），[pageHeight] 为可容纳正文的高度，
-  /// 不含页脚等固定 UI；返回结果不包含章末过渡页，由调用方自行追加。
+  /// [content] 为原始正文（段落以换行分隔），[pageHeight] 为可容纳正文的高度；
+  /// 每页顶部都会渲染章节标题，故每页可用高度都已扣掉标题高度。
   static List<ReaderPageSlice> paginate({
     required String chapterTitle,
     required String content,
@@ -120,21 +120,21 @@ class ReaderPaginator {
     }
     onParagraphsResolved(starts);
 
+    // 章节标题在每一页都显示，因此它的高度要在每一页扣掉
+    final bool titleShown = showTitle && chapterTitle.trim().isNotEmpty;
+    final double titleHeight = titleShown
+        ? titleTopMargin +
+            measureSpan(TextSpan(text: chapterTitle, style: titleStyle), maxWidth: maxWidth)
+        : 0;
+
     final List<ReaderPageSlice> pages = <ReaderPageSlice>[];
     List<ReaderBlock> blocks = <ReaderBlock>[];
-    bool pageHasTitle = showTitle && chapterTitle.trim().isNotEmpty;
-    double used = 0;
+    double used = titleHeight;
 
     void flush() {
-      pages.add(ReaderPageSlice(blocks: blocks, hasTitle: pageHasTitle));
+      pages.add(ReaderPageSlice(blocks: blocks, hasTitle: titleShown));
       blocks = <ReaderBlock>[];
-      pageHasTitle = false;
-      used = 0;
-    }
-
-    if (pageHasTitle) {
-      used = titleTopMargin +
-          measureSpan(TextSpan(text: chapterTitle, style: titleStyle), maxWidth: maxWidth);
+      used = titleHeight;
     }
 
     for (int i = 0; i < paragraphs.length; i++) {
