@@ -209,6 +209,10 @@ class EditorFocusKeep {
   /// 把刚还给标题的焦点又抢回正文。
   static void restoreAfterOverlay(FocusNode? previous) {
     if (overlayOpen) return;
+    // 打开弹层前最近一次输入落在标题上时优先还回标题：
+    // capture 记录的节点可能已被弹层路由还给了正文，
+    // 照它恢复会把光标落到正文，后续操作也会作用到正文
+    if (titleIsMostRecent && restoreLastTitleFocus()) return;
     if (previous != null && previous is! FocusScopeNode && previous.context != null) {
       if (!previous.hasFocus) previous.requestFocus();
       return;
