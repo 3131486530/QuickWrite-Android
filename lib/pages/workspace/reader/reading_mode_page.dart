@@ -105,6 +105,8 @@ class _ReadingModePageState extends State<ReadingModePage> {
   static const double _bottomPadding = 8;
 
   /// 行分隔线高度
+  ///
+  /// 与编辑器保持一致：每段正文后额外占 1 像素，分页时按块累加。
   static const double _separatorHeight = 1;
 
   /// 已加载的章节正文（按章节序号缓存）
