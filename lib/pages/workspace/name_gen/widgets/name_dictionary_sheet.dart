@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:quick_write/core/utils/bottom_overlay.dart';
 import 'package:quick_write/core/constants/material_icons.dart';
 import 'package:quick_write/core/models/name_gen/name_dictionary.dart';
 import 'package:quick_write/core/services/cache_services/name_gen_cache_service.dart';
@@ -49,7 +50,8 @@ Future<NameDictionarySheetAction?> showNameDictionarySheet({
 }) {
   final colorScheme = Theme.of(context).colorScheme;
 
-  return showModalBottomSheet<NameDictionarySheetAction>(
+  // 统一走底部面板焦点保护，避免面板被输入法顶起、关闭后焦点被正文抢走
+  return showFocusSafeBottomSheet<NameDictionarySheetAction>(
     context: context,
     backgroundColor: colorScheme.surface,
     // 允许弹窗超出默认高度上限，由内容自行约束，便于词典较多时完整展示

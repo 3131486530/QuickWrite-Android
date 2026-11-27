@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:quick_write/core/utils/bottom_overlay.dart';
 import 'package:quick_write/core/utils/editor_focus_keep.dart';
 import 'package:quick_write/core/utils/ime_cursor_fixer.dart';
 import 'package:quick_write/core/utils/platform_capabilities.dart';
@@ -89,8 +90,11 @@ Future<T?> showDialogBase<T>({
   final FocusNode? previousFocus = EditorFocusKeep.capture();
 
   // 移动端统一改为底部操作面板：从屏幕底部滑出，单手可达，关闭后光标归位
+  // 所有底部面板统一走焦点保护：先挂起输入框的取焦能力、收起输入法并等
+  // 键盘占位真正归零再弹，否则面板会被输入法顶起又落下；关闭后按打开前的
+  // 节点归还焦点，避免退回正文把标题刚拿到的焦点抢走。
   if (PlatformCapabilities.isMobile) {
-    final T? sheetResult = await showModalBottomSheet<T>(
+    return showFocusSafeBottomSheet<T>(
       context: context,
       isScrollControlled: true,
       useSafeArea: true,
@@ -113,8 +117,6 @@ Future<T?> showDialogBase<T>({
         dialogInteractiveNotifier: dialogInteractiveNotifier,
       ),
     );
-    _restoreFocusAfterDialog(previousFocus);
-    return sheetResult;
   }
 
   final T? result = await showDialog<T>(
@@ -141,19 +143,8 @@ Future<T?> showDialogBase<T>({
       dialogInteractiveNotifier: dialogInteractiveNotifier,
     ),
   );
-  EditorFocusKeep.restore(previousFocus);
+  EditorFocusKeep.restoreAfterOverlay(previousFocus);
   return result;
-}
-
-/// 弹层关闭后恢复编辑器焦点
-///
-/// 优先把焦点还给打开弹层前的节点；该节点已卸载或本就非编辑器节点时，
-/// 退回到最近一次聚焦的编辑器输入节点，避免关闭面板后光标与输入法一并丢失。
-void _restoreFocusAfterDialog(FocusNode? previousFocus) {
-  EditorFocusKeep.restore(previousFocus);
-  if (previousFocus == null || !previousFocus.hasFocus) {
-    EditorFocusKeep.restoreLastEditorFocus();
-  }
 }
 
 /// 移动端底部操作面板外壳

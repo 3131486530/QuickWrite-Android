@@ -200,4 +200,21 @@ class EditorFocusKeep {
     if (node.context == null) return;
     node.requestFocus();
   }
+
+  /// 弹层关闭后按打开前的焦点节点归还焦点
+  ///
+  /// 只按「节点是否还挂在界面上」判断能否归还，不能看 hasFocus：
+  /// requestFocus 要到帧末才生效，紧接着判 hasFocus 必然为 false，
+  /// 会被误判成「没还上」而退回最近一次聚焦的正文输入框，
+  /// 把刚还给标题的焦点又抢回正文。
+  static void restoreAfterOverlay(FocusNode? previous) {
+    if (overlayOpen) return;
+    if (previous != null && previous is! FocusScopeNode && previous.context != null) {
+      if (!previous.hasFocus) previous.requestFocus();
+      return;
+    }
+    // 打开弹层前焦点不在任何输入框上（如停在作用域节点），按最近一次输入位置归还
+    if (restoreLastTitleFocus()) return;
+    restoreLastEditorFocus();
+  }
 }

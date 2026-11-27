@@ -37,8 +37,8 @@ Future<String?> showNameGeneratorDialog({
 /// 左侧为类别切换与词典管理，右侧为参数配置与生成结果。
 /// 每次生成的名字数量
 ///
-/// 结果区一行一个名字，固定生成七条，不再提供自定义数量。
-const int _batchCount = 7;
+/// 结果区一行一个名字，固定生成五条，不再提供自定义数量。
+const int _batchCount = 5;
 
 class _NameGeneratorDialog extends StatefulWidget {
   const _NameGeneratorDialog();

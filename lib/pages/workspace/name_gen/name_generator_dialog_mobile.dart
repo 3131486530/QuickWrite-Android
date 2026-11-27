@@ -9,6 +9,7 @@ import 'package:quick_write/core/services/cache_services/name_gen_cache_service.
 import 'package:quick_write/core/services/cloud_sync/cloud_sync_service.dart';
 import 'package:quick_write/core/services/name_gen/name_generator.dart';
 import 'package:quick_write/core/services/settings_service.dart';
+import 'package:quick_write/core/utils/bottom_overlay.dart';
 import 'package:quick_write/core/utils/editor_focus_keep.dart';
 import 'package:quick_write/core/utils/typography_extension.dart';
 import 'package:quick_write/pages/workspace/name_gen/widgets/name_dictionary_editor_dialog.dart';
@@ -23,8 +24,8 @@ const double _chipHorizontalPadding = 8;
 
 /// 每次生成的名字数量
 ///
-/// 结果区一行一个名字，固定生成七条，不再提供自定义数量。
-const int _batchCount = 7;
+/// 结果区一行一个名字，固定生成五条，不再提供自定义数量。
+const int _batchCount = 5;
 
 /// 显示移动端随机取名面板
 ///
@@ -34,52 +35,16 @@ const int _batchCount = 7;
 ///
 /// 点击任意名字即复制到剪贴板并关闭面板，被点击的名字作为返回值返回；
 /// 面板被取消时返回 null，由调用方决定是否插入编辑器。
-Future<String?> showMobileNameGeneratorDialog({required BuildContext context}) async {
-  // 面板打开会接管焦点，先记录编辑器光标，关闭后恢复以便继续输入
-  final FocusNode? previousFocus = EditorFocusKeep.capture();
-  // 面板打开期间屏蔽编辑器自动抢回焦点，否则输入法会被反复唤起
-  EditorFocusKeep.beginOverlay();
-  try {
-    // 工具卡片弹层刚销毁时，Flutter 会把焦点还给原来的输入框。章节标题、
-    // 大纲标题、大纲正文都是标准 TextField，一拿到焦点就重建输入法连接，
-    // 键盘弹出把面板顶起、随后又落下；章节正文是自绘编辑器，不重建连接，
-    // 所以只有它不跳。这里直接挂起这些输入框的取焦能力，等面板关闭再恢复。
-    EditorFocusKeep.suspendInputFocus();
-    SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
-    // 键盘收起是渐变动画，占位高度归零前面板仍会被顶起，等到归零再弹。
-    // 这里必须读视图的原始输入法占位：Scaffold 开启 resizeToAvoidBottomInset 后
-    // 会把底部输入法占位从子树 MediaQuery 中剥离，底部快捷输入栏等位于 body 内的
-    // 上下文永远读到 0，等待会被直接跳过，面板就会在键盘仍在上推的瞬间弹出再掉下来。
-    final view = View.maybeOf(context);
-    // 叫起方可能在等待期间被移除（如快捷输入栏随键盘收起而销毁），
-    // 用 Navigator 的上下文弹出面板，避免叫起方消失后面板弹不出来。
-    final BuildContext sheetContext = Navigator.of(context).context;
-    double keyboardInset() {
-      if (view == null) return 0;
-      return view.viewInsets.bottom / view.devicePixelRatio;
-    }
-
-    for (int i = 0; i < 20 && keyboardInset() > 0; i++) {
-      await Future<void>.delayed(const Duration(milliseconds: 40));
-      if (!sheetContext.mounted) return null;
-    }
-    final String? result = await showModalBottomSheet<String>(
-      context: sheetContext,
-      isScrollControlled: true,
-      useSafeArea: true,
-      showDragHandle: true,
-      backgroundColor: Theme.of(sheetContext).colorScheme.surface,
-      builder: (context) => const _MobileNameGeneratorDialog(),
-    );
-    // 面板关闭动画尚未结束时恢复焦点会被路由的焦点作用域吞掉，等动画结束后再归还
-    await Future<void>.delayed(const Duration(milliseconds: 260));
-    return result;
-  } finally {
-    // 先恢复取焦能力再归还焦点，顺序反了请求会被丢弃
-    EditorFocusKeep.resumeInputFocus();
-    EditorFocusKeep.endOverlay();
-    EditorFocusKeep.restore(previousFocus);
-  }
+Future<String?> showMobileNameGeneratorDialog({required BuildContext context}) {
+  // 统一走底部面板焦点保护：挂起输入框取焦能力、收起输入法并等键盘占位
+  // 归零再弹；关闭后按打开前的节点归还焦点。三者缺一都会让面板被顶起。
+  return showFocusSafeBottomSheet<String>(
+    context: context,
+    useSafeArea: true,
+    showDragHandle: true,
+    backgroundColor: Theme.of(context).colorScheme.surface,
+    builder: (context) => const _MobileNameGeneratorDialog(),
+  );
 }
 
 /// 移动端随机取名弹窗内容

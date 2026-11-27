@@ -30,6 +30,20 @@ class _CodeInputController extends ChangeNotifier implements DeltaTextInputClien
   /// 关闭请求随之失效，键盘保持不动。
   Timer? _deferredCloseTimer;
 
+  /// 延迟断连已轮询等待的时长
+  int _deferredCloseElapsed = 0;
+
+  /// 延迟断连的轮询步长
+  static const int _deferredCloseStepMs = 16;
+
+  /// 判定焦点悬空后连续确认的次数，避免一次误判就断连
+  int _deferredClosePendingTicks = 0;
+
+  /// 延迟断连的最长等待时长：
+  /// 点击另一个输入框时，失焦发生在按下、对方取焦点发生在抬起，
+  /// 这段时间主焦点为空或停在路由作用域上，需要多等一会儿再判定。
+  static const int _deferredCloseMaxWaitMs = 400;
+
   /// 改写发生后输入法可能仍持有改写前的文本，标记下一次增量是否需要校验失配并重建输入会话
   bool _pendingImeResync = false;
 
@@ -689,22 +703,55 @@ class _CodeInputController extends ChangeNotifier implements DeltaTextInputClien
       return;
     }
     _cancelDeferredClose();
-    _deferredCloseTimer = Timer(const Duration(milliseconds: 32), () {
+    _deferredCloseElapsed = 0;
+    _deferredClosePendingTicks = 0;
+    _pollDeferredClose();
+  }
+
+  /// 轮询等待焦点落定后再断连
+  ///
+  /// 只等一帧不够：点击另一个输入框时，失焦发生在按下，对方取焦点发生在
+  /// 抬起，中间这段时间主焦点是空的或停在路由作用域上。此时断连会先收起
+  /// 输入法，等对方接上再拉起，表现为键盘闪关又回弹。故按「焦点是否还在
+  /// 转移中」轮询，直到确认没人接手才断连。
+  void _pollDeferredClose() {
+    _deferredCloseTimer = Timer(const Duration(milliseconds: _deferredCloseStepMs), () {
       _deferredCloseTimer = null;
+      _deferredCloseElapsed += _deferredCloseStepMs;
       if (_focusNode.hasFocus) {
+        // 焦点回到正文，取消断连
+        _deferredClosePendingTicks = 0;
         return;
       }
-      // 焦点若已交给另一个输入框，键盘由它接管：
+      // 焦点已交给另一个输入框，键盘由它接管：
       // 此时调用 close 会让引擎先收起输入法、再由对方重新拉起，键盘会闪一下。
       if (_focusTakenByOtherTextInput()) {
         // 只丢弃引用，不发关闭指令，键盘保持不动；
         // 下次本编辑器获焦时连接为空，会重新 attach。
         _textInputConnection = null;
+        _deferredClosePendingTicks = 0;
+        return;
+      }
+      if (_focusInTransition()) {
+        // 焦点仍在转移中：继续等，超时后仍无人接手才判定为真正失焦
+        if (_deferredCloseElapsed < _deferredCloseMaxWaitMs) {
+          _pollDeferredClose();
+          return;
+        }
+      } else if (++_deferredClosePendingTicks < 2) {
+        // 焦点落到确定的非输入节点：再确认一次，避免瞬时抖动误断
+        _pollDeferredClose();
         return;
       }
       _closeInputConnectionIfNeeded();
       _controller.clearComposing();
     });
+  }
+
+  /// 主焦点是否还悬在转移过程中（没有节点接手）
+  bool _focusInTransition() {
+    final FocusNode? next = FocusManager.instance.primaryFocus;
+    return next == null || next is FocusScopeNode || next.context == null;
   }
 
   /// 当前焦点是否落在另一个文本输入框里
@@ -728,6 +775,8 @@ class _CodeInputController extends ChangeNotifier implements DeltaTextInputClien
   void _cancelDeferredClose() {
     _deferredCloseTimer?.cancel();
     _deferredCloseTimer = null;
+    _deferredCloseElapsed = 0;
+    _deferredClosePendingTicks = 0;
   }
 
   void _openInputConnection() {

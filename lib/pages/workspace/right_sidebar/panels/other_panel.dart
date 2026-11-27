@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:quick_write/core/utils/bottom_overlay.dart';
 import 'package:quick_write/core/constants/material_icons.dart';
 import 'package:quick_write/core/constants/quick_input_action.dart';
 import 'package:quick_write/core/constants/word_count_floating_mode.dart';
@@ -717,7 +718,8 @@ class _OtherPanelState extends State<OtherPanel> {
   Future<void> _showCursorColorSheet(BuildContext context, Color previewColor, bool isCustom) async {
     final colorScheme = Theme.of(context).colorScheme;
 
-    await showModalBottomSheet<void>(
+    // 统一走底部面板焦点保护，避免面板被输入法顶起、关闭后焦点被正文抢走
+    await showFocusSafeBottomSheet<void>(
       context: context,
       showDragHandle: true,
       builder: (sheetContext) {
