@@ -349,6 +349,8 @@ Future<void> handleMobileToolAction(BuildContext context, MobileToolAction actio
     case MobileToolAction.copyChapter:
       // 复制当前章节正文到剪贴板
       await _copyCurrentChapter(context, provider);
+      // 复制不改变编辑位置，把工具卡片弹层夺走的光标焦点还给编辑器
+      provider.restoreEditorFocus();
       break;
     case MobileToolAction.randomName:
       // 打开随机取名弹窗，原本在正文输入时回插取到的名字
@@ -358,6 +360,8 @@ Future<void> handleMobileToolAction(BuildContext context, MobileToolAction actio
         if (name != null && editorHadFocus) {
           provider.insertTextToCurrentEditor(name);
         }
+        // 移动端插入后不会主动唤起输入法，需显式归还焦点，光标才不会丢
+        if (editorHadFocus) provider.restoreEditorFocus();
       }
       break;
     case MobileToolAction.sensitiveWordCheck:

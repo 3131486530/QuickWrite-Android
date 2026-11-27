@@ -4,7 +4,6 @@ import 'package:quick_write/core/constants/quick_input_action.dart';
 import 'package:quick_write/core/constants/word_count_floating_mode.dart';
 import 'package:quick_write/core/services/backup_service.dart';
 import 'package:quick_write/core/services/settings_service.dart';
-import 'package:quick_write/core/services/workspace/sensitive_word_service.dart';
 import 'package:quick_write/core/utils/color_utils.dart';
 import 'package:quick_write/core/utils/platform_capabilities.dart';
 import 'package:quick_write/shared/dialogs/color_picker_dialog.dart';
@@ -49,15 +48,12 @@ class _OtherPanelState extends State<OtherPanel> {
     super.initState();
     // 监听设置变化
     SettingsService.instance.addListener(_onSettingsChanged);
-    // 监听敏感词检测开关变化（可能由弹窗内开关改动）
-    SensitiveWordService.instance.addListener(_onSettingsChanged);
   }
 
   @override
   void dispose() {
     // 取消监听设置变化
     SettingsService.instance.removeListener(_onSettingsChanged);
-    SensitiveWordService.instance.removeListener(_onSettingsChanged);
     super.dispose();
   }
 
@@ -161,12 +157,6 @@ class _OtherPanelState extends State<OtherPanel> {
                       wordCountFloatingWordCountEnabled,
                       wordCountFloatingMode,
                     ),
-                  ],
-
-                  // 写作辅助设置区块（「备份设置」入口下隐藏）
-                  if (widget.scope != OtherPanelScope.backup) ...[
-                    const SizedBox(height: 20),
-                    _buildWritingAssistSection(context),
                   ],
 
                   // 快捷键设置区块（移动端没有物理键盘，不适用）
@@ -769,27 +759,6 @@ class _OtherPanelState extends State<OtherPanel> {
           ),
         );
       },
-    );
-  }
-
-  /// 构建写作辅助设置区块
-  Widget _buildWritingAssistSection(BuildContext context) {
-    final sensitiveWordEnabled = SensitiveWordService.instance.highlightEnabled;
-
-    return SettingsSection(
-      title: '写作辅助',
-      icon: MaterialIcons.select_check_box,
-      children: [
-        SwitchSettingItem(
-          icon: Icons.gpp_bad_outlined,
-          label: '敏感词检测',
-          value: sensitiveWordEnabled,
-          onChanged: (value) {
-            SensitiveWordService.instance.setHighlightEnabled(value);
-            setState(() {});
-          },
-        ),
-      ],
     );
   }
 
