@@ -984,6 +984,11 @@ class _WorkspaceContentState extends State<_WorkspaceContent> with WidgetsBindin
       descriptionTemplate: '有 {n} 个标签页的修改尚未保存，是否在返回前保存？',
     );
     if (!shouldReturn || !mounted) return;
+
+    // 返回前补齐节流窗口内尚未推送的书架刷新，
+    // 保证书架上的最近编辑时间与字数立刻是最新的
+    context.read<WorkspaceProvider>().flushBookshelfRefresh();
+
     // 移动端工作台以 push 方式打开，返回时弹出当前页面以播放反向切换动效；
     // 工作台为唯一页面时无页面可弹出，直接跳转到书架
     if (PlatformCapabilities.isMobile && context.canPop()) {

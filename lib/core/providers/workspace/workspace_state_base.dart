@@ -49,6 +49,47 @@ abstract class WorkspaceStateBase extends ChangeNotifier {
     }
   }
 
+  /// 书架刷新节流定时器
+  Timer? _bookshelfRefreshTimer;
+
+  /// 节流窗口内是否还有未推送给书架的变更
+  bool _bookshelfRefreshDirty = false;
+
+  /// 合并书架刷新请求（trailing 节流）
+  ///
+  /// 自动保存持续输入时每秒都会落盘一次，若每次都让书架重查数据库并重建列表，
+  /// 会在看不见书架的情况下反复白耗主 isolate 的时间片。这里把窗口内的多次
+  /// 请求合并为一次；云同步的安排不等节流，仍按每次落盘即时通知。
+  /// 退出工作台时由 [flushBookshelfRefresh] 补齐最后一次刷新，保证最近编辑不滞后。
+  void _scheduleBookshelfRefresh({bool contentChanged = true}) {
+    if (_isDisposed) return;
+
+    // 云同步需要按每次落盘即时判断是否安排同步，不能被 UI 节流拖延
+    if (contentChanged) CloudSyncService.instance.notifyLocalChange();
+
+    _bookshelfRefreshDirty = true;
+    if (_bookshelfRefreshTimer != null) return;
+
+    _bookshelfRefreshTimer = Timer(const Duration(milliseconds: 1200), () {
+      _bookshelfRefreshTimer = null;
+      if (_isDisposed || !_bookshelfRefreshDirty) return;
+      _bookshelfRefreshDirty = false;
+      // 云同步已在上面的每次调用中通知过，这里只负责刷新书架界面
+      _notifyBookshelfRefresh(contentChanged: false);
+    });
+  }
+
+  /// 立即补齐尚未推送的书架刷新（工作台关闭/释放前调用）
+  ///
+  /// 必须在 [_isDisposed] 置位之前调用，否则会被 [_notifyBookshelfRefresh] 拦掉。
+  void flushBookshelfRefresh() {
+    _bookshelfRefreshTimer?.cancel();
+    _bookshelfRefreshTimer = null;
+    if (!_bookshelfRefreshDirty) return;
+    _bookshelfRefreshDirty = false;
+    _notifyBookshelfRefresh(contentChanged: false);
+  }
+
   // ================= 文件夹与迁移服务 =================
 
   /// 书籍文件夹路径服务（负责书籍文件夹结构维护与路径计算）

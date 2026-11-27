@@ -211,7 +211,10 @@ mixin BookDataMixin on WorkspaceStateBase {
       }
 
       // 通知刷新书架（更新最近编辑显示）
-      _notifyBookshelfRefresh();
+      //
+      // 自动保存每秒都会走到这里，改为节流合并：持续输入时不会反复触发
+      // 书架的数据库查询与列表重建，退出工作台前会由 flush 补齐最后一次。
+      _scheduleBookshelfRefresh();
 
       // 保存当前章节的光标位置到缓存（用于下次打开时恢复）
       await saveChapterCursorPositionIfAny(chapter.uuid);

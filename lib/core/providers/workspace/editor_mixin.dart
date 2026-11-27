@@ -45,6 +45,12 @@ mixin EditorMixin on WorkspaceStateBase, BookDataMixin {
   /// 避免每个按键都扫描一遍全文并触发整页重建。
   Timer? _findRefreshTimer;
 
+  /// 挂起的查找更新是否来自关键词输入
+  ///
+  /// 关键词变化的合并刷新除了重算匹配，还要从查找起点重新定位并选中首个匹配；
+  /// 而正文变化触发的合并刷新只重算匹配，靠该标记区分两种收尾动作。
+  bool _pendingFindFromKeyword = false;
+
   // ================= 全文搜索状态 =================
 
   /// 全文搜索关键词
@@ -406,6 +412,8 @@ mixin EditorMixin on WorkspaceStateBase, BookDataMixin {
     // 结果与逐次重建一致，但把「全文扫描 + 整页重建」的次数
     // 从每键一次降到每 120ms 一次。
     if (_findRefreshTimer != null) return;
+    // 正文变化只重算匹配，不再执行「选中首个匹配」那一步
+    _pendingFindFromKeyword = false;
     _findRefreshTimer = Timer(const Duration(milliseconds: 120), () {
       _findRefreshTimer = null;
       if (!_isFindReplaceVisible || _findText.isEmpty) return;
@@ -420,8 +428,20 @@ mixin EditorMixin on WorkspaceStateBase, BookDataMixin {
   /// 必须先执行，否则会按旧正文的偏移量定位或替换。
   void _flushFindRefresh() {
     if (_findRefreshTimer == null) return;
+    // 关键词挂起的刷新还带着「从查找起点选中首个匹配」的收尾动作，
+    // 必须在定时器取消前记下来，否则导航会落在未选中的匹配列表上。
+    final fromKeyword = _pendingFindFromKeyword;
     _cancelFindRefreshTimer();
+    _pendingFindFromKeyword = false;
     if (!_isFindReplaceVisible || _findText.isEmpty) return;
+    if (fromKeyword) {
+      _performFind();
+      if (_findMatches.isNotEmpty) {
+        _currentMatchIndex = _findFirstMatchIndexFromAnchor();
+        _selectCurrentMatch();
+      }
+      return;
+    }
     _rebuildMatches();
   }
 
@@ -442,21 +462,48 @@ mixin EditorMixin on WorkspaceStateBase, BookDataMixin {
 
   /// 更新查找文本并执行搜索
   void updateFindText(String text) {
-    // 关键词变化后会立即全量重算，挂起的合并刷新已无意义
-    _cancelFindRefreshTimer();
     // 从空文本开始输入时，以当前光标位置作为查找起点
     if (_findText.isEmpty && text.isNotEmpty) {
       _captureFindAnchor();
     }
 
     _findText = text;
-    _performFind();
-    // 优先从查找起点向后选中最近的匹配项，避免每次都回到文件开头
-    if (_findMatches.isNotEmpty) {
-      _currentMatchIndex = _findFirstMatchIndexFromAnchor();
-      _selectCurrentMatch();
+
+    // 关键词被清空：立刻清掉旧匹配，无需再等合并窗口
+    if (text.isEmpty) {
+      _cancelFindRefreshTimer();
+      _pendingFindFromKeyword = false;
+      _findMatches.clear();
+      _currentMatchIndex = -1;
+      notifyListeners();
+      return;
     }
+
+    // 逐字输入关键词时，若每个按键都全文扫描一遍，
+    // 长文档下的扫描开销会直接压在输入帧上。
+    // 这里合并 120ms 内的连续输入，只按最终关键词扫描一次。
+    _scheduleKeywordSearch();
     notifyListeners();
+  }
+
+  /// 关键词变化后的合并查找
+  ///
+  /// 到期时重算全部匹配，并从查找起点向后选中最近的匹配项，
+  /// 避免每次都把视图拉回文件开头。
+  void _scheduleKeywordSearch() {
+    _cancelFindRefreshTimer();
+    _pendingFindFromKeyword = true;
+    _findRefreshTimer = Timer(const Duration(milliseconds: 120), () {
+      _findRefreshTimer = null;
+      _pendingFindFromKeyword = false;
+      if (!_isFindReplaceVisible || _findText.isEmpty) return;
+      _performFind();
+      if (_findMatches.isNotEmpty) {
+        _currentMatchIndex = _findFirstMatchIndexFromAnchor();
+        _selectCurrentMatch();
+      }
+      notifyListeners();
+    });
   }
 
   /// 更新替换文本
@@ -468,6 +515,7 @@ mixin EditorMixin on WorkspaceStateBase, BookDataMixin {
   void setFindCaseSensitive(bool value) {
     // 切换后立即全量重算，挂起的合并刷新已无意义
     _cancelFindRefreshTimer();
+    _pendingFindFromKeyword = false;
     _findCaseSensitive = value;
     _performFind();
     notifyListeners();
@@ -665,18 +713,22 @@ mixin EditorMixin on WorkspaceStateBase, BookDataMixin {
     try {
       final searchText =
           _findCaseSensitive ? _findText : _findText.toLowerCase();
-      final searchTextLength = _findText.length;
+      // 长度取实际参与匹配的字符串：少数文字（如土耳其语 İ）转小写后
+      // 长度会变化，若用原文长度会让选中区间偏移甚至越出正文末尾。
+      final searchTextLength = searchText.length;
       final sourceText = _findCaseSensitive ? text : text.toLowerCase();
 
       int startIndex = 0;
       while (startIndex < sourceText.length) {
         final index = sourceText.indexOf(searchText, startIndex);
         if (index == -1) break;
+        // 结尾偏移必须夹在正文长度内，否则会给编辑器一个非法的选区
+        final matchEnd = (index + searchTextLength).clamp(index, text.length);
         _findMatches.add(TextSelection(
           baseOffset: index,
-          extentOffset: index + searchTextLength,
+          extentOffset: matchEnd,
         ));
-        startIndex = index + searchTextLength;
+        startIndex = matchEnd > index ? matchEnd : index + 1;
       }
     } catch (e) {
       _findMatches.clear();
@@ -726,18 +778,22 @@ mixin EditorMixin on WorkspaceStateBase, BookDataMixin {
       // 普通文本匹配
       final searchText =
           _findCaseSensitive ? _findText : _findText.toLowerCase();
-      final searchTextLength = _findText.length;
+      // 长度取实际参与匹配的字符串：少数文字（如土耳其语 İ）转小写后
+      // 长度会变化，若用原文长度会让选中区间偏移甚至越出正文末尾。
+      final searchTextLength = searchText.length;
       final sourceText = _findCaseSensitive ? text : text.toLowerCase();
 
       int startIndex = 0;
       while (startIndex < sourceText.length) {
         final index = sourceText.indexOf(searchText, startIndex);
         if (index == -1) break;
+        // 结尾偏移必须夹在正文长度内，否则会给编辑器一个非法的选区
+        final matchEnd = (index + searchTextLength).clamp(index, text.length);
         _findMatches.add(TextSelection(
           baseOffset: index,
-          extentOffset: index + searchTextLength,
+          extentOffset: matchEnd,
         ));
-        startIndex = index + searchTextLength;
+        startIndex = matchEnd > index ? matchEnd : index + 1;
       }
     } catch (e) {
       // 匹配失败时，清空匹配结果

@@ -54,6 +54,12 @@ abstract class CacheService<T> {
   bool _isInitialized = false;
   bool get isInitialized => _isInitialized;
 
+  /// 上一次成功写入磁盘的 JSON 内容
+  ///
+  /// 用于跳过内容完全相同的重复写盘（切换标签、重复保存等场景），
+  /// 文件被删除或重写后需要置空，避免误判为「已落盘」。
+  String? _lastSavedJsonContent;
+
   // ================= 构造函数 =================
 
   /// 创建缓存服务实例
@@ -161,10 +167,19 @@ abstract class CacheService<T> {
     try {
       // 调用数据的 toJson 方法获取 JSON Map
       final jsonData = (data as dynamic).toJson() as Map<String, dynamic>;
-      
+
       final cacheFile = File(_cacheFilePath!);
-      final jsonContent = const JsonEncoder.withIndent('  ').convert(jsonData);
+
+      // 缓存文件只供程序读取，使用紧凑 JSON：
+      // 相较两空格缩进格式可减少三成以上体积，序列化与落盘都更快。
+      final jsonContent = jsonEncode(jsonData);
+
+      // 与上次写盘内容一致时直接跳过，避免重复写同一份数据
+      // （例如在多个标签页间切换时反复保存相同的光标位置）
+      if (jsonContent == _lastSavedJsonContent) return true;
+
       await cacheFile.writeAsString(jsonContent);
+      _lastSavedJsonContent = jsonContent;
       // debugPrint('CacheService [$_fileName]: 缓存已保存');
       return true;
     } catch (e) {
@@ -186,6 +201,10 @@ abstract class CacheService<T> {
 
     try {
       final cacheFile = File(_cacheFilePath!);
+
+      // 文件即将消失（或已被外部删除），写盘记录必须失效，
+      // 否则后续相同内容会被误判为已落盘而不再写文件。
+      _lastSavedJsonContent = null;
 
       if (!await cacheFile.exists()) {
         debugPrint('CacheService [$_fileName]: 缓存文件不存在，无需删除');

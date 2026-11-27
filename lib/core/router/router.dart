@@ -51,6 +51,9 @@ final GoRouter appRouter = GoRouter(
           bookId: bookId,
           onBookSaved: () {
             // 通过顶层 MultiProvider 获取 BookshelfProvider 并刷新数据
+            // 工作台关闭时可能仍在收尾（如释放前补齐一次刷新），
+            // 此时页面上下文已失效，跳过以免触发未挂载上下文的查找异常
+            if (!context.mounted) return;
             context.read<BookshelfProvider>().refresh();
           },
         );

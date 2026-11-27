@@ -426,6 +426,10 @@ class WorkspaceProvider extends WorkspaceStateBase
   /// 会话追踪器、备份计时器、所有标签页控制器），最后调用父类 dispose。
   @override
   void dispose() {
+    // 退出工作台前把尚未推送的书架刷新补齐，避免最近编辑时间/字数滞后
+    // （必须在 _isDisposed 置位之前调用，否则会被通知保护拦掉）
+    flushBookshelfRefresh();
+
     // 标记为已释放，防止后续操作
     _isDisposed = true;
 
