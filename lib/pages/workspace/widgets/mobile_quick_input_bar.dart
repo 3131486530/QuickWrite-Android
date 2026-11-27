@@ -306,18 +306,9 @@ class _MobileQuickInputBarState extends State<MobileQuickInputBar> with WidgetsB
         // 仅用于穷举枚举：none 的 icon 为 null，上方已返回
         return const SizedBox.shrink();
       case QuickInputAction.keywordToggle:
-        if (!editorState.hasOutlineKeywords) return const SizedBox.shrink();
-        return ValueListenableBuilder<bool>(
-          valueListenable: editorState.keywordHighlightNotifier,
-          builder: (context, enabled, _) => PressScaleIconButton(
-            icon: icon,
-            tooltip: action.label,
-            isSelected: enabled,
-            size: _buttonSize,
-            iconSize: _iconSize,
-            onPressed: editorState.toggleKeywordHighlight,
-          ),
-        );
+        // 关键词高亮已改为移动端常驻开启，不再提供开关入口；
+        // 枚举仍保留以兼容旧配置文件中的持久化取值，此处直接占位不渲染
+        return const SizedBox.shrink();
       case QuickInputAction.settings:
         return _buildSmallActionButton(action, icon, _handleSettingsTap);
       case QuickInputAction.findReplace:

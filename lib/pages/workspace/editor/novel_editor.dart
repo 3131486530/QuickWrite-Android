@@ -8,7 +8,6 @@ import 'package:quick_write/core/constants/constants.dart';
 import 'package:quick_write/core/models/outline_keyword.dart';
 import 'package:quick_write/core/providers/window_provider.dart';
 import 'package:quick_write/core/providers/workspace_provider.dart';
-import 'package:quick_write/core/services/cache_services/misc_cache_service.dart';
 import 'package:quick_write/core/services/settings_service.dart';
 import 'package:quick_write/core/services/workspace/custom_highlight_service.dart';
 import 'package:quick_write/core/services/workspace/outline_keyword_service.dart';
@@ -196,19 +195,12 @@ class NovelEditorState extends State<NovelEditor> with WidgetsBindingObserver {
   /// 并启用悬停卡片与修饰键点击跳转。
   bool _keywordModifierPressed = false;
 
-  /// 移动端是否常驻开启关键词高亮
-  ///
-  /// 移动端没有悬停与修饰键，改由工具栏开关控制，开启后点按关键词弹出预览卡片。
-  bool _keywordHighlightPinned = false;
-
-  /// 移动端关键词预览开关状态通知器
-  ///
-  /// 供快捷输入栏与底部状态栏的开关入口保持同步，避免切换后各入口显示不一致。
-  final ValueNotifier<bool> keywordHighlightNotifier = ValueNotifier<bool>(false);
-
   /// 大纲关键词高亮当前是否生效
+  ///
+  /// 移动端没有悬停与修饰键，关键词高亮常驻开启，点按关键词即弹出预览卡片；
+  /// 桌面端仅在按住修饰键时叠加显示。
   bool get _keywordHighlightActive =>
-      _keywordModifierPressed || _keywordHighlightPinned;
+      PlatformCapabilities.isMobile || _keywordModifierPressed;
 
   /// 当前悬停的大纲关键词
   String? _hoveredKeyword;
@@ -395,16 +387,16 @@ class NovelEditorState extends State<NovelEditor> with WidgetsBindingObserver {
 
     // 监听关键词修饰键状态，按住时叠加大纲关键词高亮
     _keywordModifierPressed = _readKeywordModifierPressed();
-    // 移动端恢复上次的常驻关键词高亮开关状态
-    if (PlatformCapabilities.isMobile) {
-      _keywordHighlightPinned = MiscCacheService.instance.isKeywordHighlightEnabled();
-      keywordHighlightNotifier.value = _keywordHighlightPinned;
-    }
     HardwareKeyboard.instance.addHandler(_onHardwareKeyEvent);
     _bindKeywordCallbacks();
 
     // 滚动时悬停位置已失效，收起关键词悬浮卡片
     _scrollController.addListener(_hideKeywordCardOnScroll);
+
+    // 移动端关键词高亮常驻开启，首帧后同步给样式构建器，无需等待用户操作
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _applyKeywordHighlightState();
+    });
 
     // 如果初始化时处于激活状态，请求焦点
     if (widget.isActive) {
@@ -467,7 +459,6 @@ class NovelEditorState extends State<NovelEditor> with WidgetsBindingObserver {
     _scrollController.dispose();
     _codeScrollController.dispose();
     _focusNode.dispose();
-    keywordHighlightNotifier.dispose();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -630,18 +621,6 @@ class NovelEditorState extends State<NovelEditor> with WidgetsBindingObserver {
   /// 当前书籍是否已绑定关键词
   bool get hasOutlineKeywords =>
       _outlineKeywordService != null && _outlineKeywordService!.keywords.isNotEmpty;
-
-  /// 切换移动端关键词高亮
-  ///
-  /// 开启后正文常驻关键词高亮，点按关键词弹出预览卡片。
-  void toggleKeywordHighlight() {
-    _keywordHighlightPinned = !_keywordHighlightPinned;
-    keywordHighlightNotifier.value = _keywordHighlightPinned;
-    // 开关状态持久化到缓存，切换章节或重启应用后保持
-    MiscCacheService.instance.saveKeywordHighlightEnabled(_keywordHighlightPinned);
-    _applyKeywordHighlightState();
-    if (!_keywordHighlightActive) _hideKeywordCard();
-  }
 
   /// 设置变化时刷新样式并重绘
   void _onSettingsChanged() {
@@ -924,7 +903,7 @@ class NovelEditorState extends State<NovelEditor> with WidgetsBindingObserver {
   /// 卡片展示期间点按空白处同样由本方法接管，只关闭卡片，
   /// 不会顺带移动光标或唤起输入法。
   bool _interceptMobileKeywordTap(Offset position, CodeLineSelection? caret, bool isTapUp) {
-    if (!PlatformCapabilities.isMobile || !_keywordHighlightPinned) return false;
+    if (!PlatformCapabilities.isMobile) return false;
 
     // 按下阶段只记录命中的关键词，避免长按或拖动时提前弹卡
     if (!isTapUp) {

@@ -859,16 +859,34 @@ class SettingsService extends ChangeNotifier {
   bool get pairedSymbolEnterJumpEnabled => _settings.pairedSymbolEnterJumpEnabled;
 
   /// 获取快捷输入栏右侧操作区左侧图标的动作
-  QuickInputAction get quickInputBarLeftAction => QuickInputAction.fromId(
-        _settings.quickInputBarLeftAction,
+  ///
+  /// 关键词高亮开关已下线（改为常驻开启），旧配置中残留该项时回退到默认动作，
+  /// 避免快捷输入栏出现空白图标位。
+  QuickInputAction get quickInputBarLeftAction => _normalizeQuickInputAction(
+        QuickInputAction.fromId(
+          _settings.quickInputBarLeftAction,
+          fallback: QuickInputAction.defaultLeft,
+        ),
         fallback: QuickInputAction.defaultLeft,
       );
 
   /// 获取快捷输入栏右侧操作区右侧图标的动作
-  QuickInputAction get quickInputBarRightAction => QuickInputAction.fromId(
-        _settings.quickInputBarRightAction,
+  QuickInputAction get quickInputBarRightAction => _normalizeQuickInputAction(
+        QuickInputAction.fromId(
+          _settings.quickInputBarRightAction,
+          fallback: QuickInputAction.defaultRight,
+        ),
         fallback: QuickInputAction.defaultRight,
       );
+
+  /// 过滤已下线的快捷动作
+  QuickInputAction _normalizeQuickInputAction(
+    QuickInputAction action, {
+    required QuickInputAction fallback,
+  }) {
+    if (action == QuickInputAction.keywordToggle) return fallback;
+    return action;
+  }
 
   /// 获取快捷输入栏当前的符号列表
   /// 用户未自定义或自定义文本中无有效符号时，为内置默认列表

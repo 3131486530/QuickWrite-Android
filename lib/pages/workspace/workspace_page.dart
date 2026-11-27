@@ -805,9 +805,6 @@ class _WorkspaceContentState extends State<_WorkspaceContent> with WidgetsBindin
                 const SizedBox(width: 12),
               ],
 
-              // 正文标签页在字数左侧提供关键词预览开关，大纲标签页无此功能
-              _buildMobileKeywordToggle(context, workspaceProvider, currentTab),
-
               // 右侧：字数统计
               _buildWordCountIndicator(context, workspaceProvider, currentTab),
             ],
@@ -878,59 +875,6 @@ class _WorkspaceContentState extends State<_WorkspaceContent> with WidgetsBindin
   /// 构建移动端关键词预览开关
   ///
   /// 仅在正文标签页且当前书籍已绑定关键词时显示；
-  /// 监听关键词索引与开关状态，使开关在索引加载完成或切换后同步刷新。
-  Widget _buildMobileKeywordToggle(
-    BuildContext context,
-    WorkspaceProvider provider,
-    EditorTab? currentTab,
-  ) {
-    if (currentTab == null || currentTab.usesOutlineEditor || currentTab.isReadOnly) {
-      return const SizedBox.shrink();
-    }
-
-    return ListenableBuilder(
-      listenable: provider.outlineKeywordService,
-      builder: (context, _) {
-        final state = currentTab.editorKey.currentState;
-        if (state is! NovelEditorState || !state.hasOutlineKeywords) {
-          return const SizedBox.shrink();
-        }
-        return ValueListenableBuilder<bool>(
-          valueListenable: state.keywordHighlightNotifier,
-          builder: (context, enabled, _) => _buildMobileKeywordToggleButton(context, state, enabled),
-        );
-      },
-    );
-  }
-
-  /// 构建关键词预览开关按钮
-  ///
-  /// 开启时图标以主色高亮；点击切换正文关键词高亮与点按预览。
-  Widget _buildMobileKeywordToggleButton(
-    BuildContext context,
-    NovelEditorState state,
-    bool enabled,
-  ) {
-    final colorScheme = Theme.of(context).colorScheme;
-
-    return Tooltip(
-      message: enabled ? '关闭关键词预览' : '开启关键词预览',
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: state.toggleKeywordHighlight,
-        child: Padding(
-          // 图标尺寸较小，四周留出点击余量，纵向撑满状态栏高度
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 7),
-          child: Icon(
-            Icons.sell_outlined,
-            size: 14,
-            color: enabled ? colorScheme.primary : colorScheme.onSurfaceVariant,
-          ),
-        ),
-      ),
-    );
-  }
-
   /// 构建字数统计指示（点击可打开详细字数统计弹窗）
   ///
   /// 通过 ListenableBuilder 监听专用的字数通知器，编辑器内容变化时仅重建此区域；

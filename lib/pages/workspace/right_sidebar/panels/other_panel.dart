@@ -401,7 +401,11 @@ class _OtherPanelState extends State<OtherPanel> {
   }
 
   /// 快捷输入栏右侧操作区图标的候选项（由动作枚举统一生成，含「无」）
+  ///
+  /// 关键词高亮已改为常驻开启且不再提供开关，故从候选项中剔除该项，
+  /// 避免用户选中后得到空白图标位（枚举仍保留以兼容旧配置的持久化取值）。
   static final List<DropdownItem> _quickInputActionItems = QuickInputAction.values
+      .where((action) => action != QuickInputAction.keywordToggle)
       .map((action) => DropdownItem(displayText: action.label, value: action.id))
       .toList();
 

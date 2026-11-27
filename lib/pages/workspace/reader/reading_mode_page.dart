@@ -102,7 +102,9 @@ class _ReadingModePageState extends State<ReadingModePage> {
   /// 正文底部安全留白
   ///
   /// 分页高度按可用高度扣除该值，避免末行文字紧贴屏幕底边或被系统手势区遮挡。
-  static const double _bottomPadding = 8;
+  /// 取 16：约等于正文半行高，末行与屏幕底部/手势区拉开呼吸距离，
+  /// 又不至于明显减少每页行数（8 在部分机型上仍显局促）。
+  static const double _bottomPadding = 16;
 
   /// 行分隔线高度
   ///
@@ -401,12 +403,14 @@ class _ReadingModePageState extends State<ReadingModePage> {
         );
         if (overlapped) continue;
         accepted.add((start: match.start, end: match.end));
+        // 阅读模式只做底色高亮，不叠加字重：分页按基础样式测量行宽，
+        // 若渲染时加粗会让关键词所在行更宽、多折一行，页面高度超过可容纳区域，
+        // 导致末行被页面底部裁掉（表现为正文被遮挡）
         ranges.add(HighlightRange(
           match.start,
           match.end,
           binding.color,
           HighlightRangeResolver.outlineKeywordPriority,
-          fontWeight: FontWeight.w500,
         ));
       }
     }
