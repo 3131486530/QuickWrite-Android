@@ -442,6 +442,7 @@ Future<void> _openReadingMode(BuildContext context, WorkspaceProvider provider) 
     chapters: readerChapters,
     initialChapterIndex: initialIndex,
     customHighlightService: provider.customHighlightService,
+    outlineKeywordService: provider.outlineKeywordService,
   );
 }
 

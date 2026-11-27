@@ -3,7 +3,9 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:quick_write/core/services/settings_service.dart';
+import 'package:quick_write/core/models/outline_keyword.dart';
 import 'package:quick_write/core/services/workspace/custom_highlight_service.dart';
+import 'package:quick_write/core/services/workspace/outline_keyword_service.dart';
 import 'package:quick_write/core/utils/color_utils.dart';
 import 'package:quick_write/core/utils/custom_highlight_regex.dart';
 import 'package:quick_write/core/utils/highlight_range_resolver.dart';
@@ -33,6 +35,7 @@ Future<void> showReadingMode(
   required List<ReaderChapter> chapters,
   int initialChapterIndex = 0,
   CustomHighlightService? customHighlightService,
+  OutlineKeywordService? outlineKeywordService,
 }) {
   if (chapters.isEmpty) return Future<void>.value();
   return Navigator.of(context).push(
@@ -42,6 +45,7 @@ Future<void> showReadingMode(
         chapters: chapters,
         initialChapterIndex: initialChapterIndex.clamp(0, chapters.length - 1),
         customHighlightService: customHighlightService,
+        outlineKeywordService: outlineKeywordService,
       ),
     ),
   );
@@ -63,6 +67,7 @@ class ReadingModePage extends StatefulWidget {
     required this.chapters,
     required this.initialChapterIndex,
     this.customHighlightService,
+    this.outlineKeywordService,
   });
 
   /// 书名
@@ -77,6 +82,12 @@ class ReadingModePage extends StatefulWidget {
   /// 自定义关键词高亮服务（与编辑器共用同一份配置）
   final CustomHighlightService? customHighlightService;
 
+  /// 大纲节点关键词服务（与编辑器共用同一份索引）
+  ///
+  /// 阅读模式没有修饰键与工具栏开关，节点关键词始终参与着色，
+  /// 与写作页开启关键词高亮后的正文观感保持一致。
+  final OutlineKeywordService? outlineKeywordService;
+
   @override
   State<ReadingModePage> createState() => _ReadingModePageState();
 }
@@ -85,8 +96,8 @@ class _ReadingModePageState extends State<ReadingModePage> {
   /// 正文左右留白
   static const double _horizontalPadding = 20;
 
-  /// 正文顶部留白（含右上角页码所需空间）
-  static const double _topPadding = 26;
+  /// 正文顶部留白
+  static const double _topPadding = 8;
 
   /// 行分隔线高度
   static const double _separatorHeight = 1;
@@ -174,7 +185,7 @@ class _ReadingModePageState extends State<ReadingModePage> {
                       ),
                       // 页码常显在右上角、章节标题上方区域，不参与点击
                       Positioned(
-                        top: 4,
+                        top: 2,
                         right: _horizontalPadding,
                         child: IgnorePointer(
                           child: Text(
@@ -275,6 +286,8 @@ class _ReadingModePageState extends State<ReadingModePage> {
       '${settings.chapterTitleTopMargin}|${settings.isChapterTitleLeftAligned}',
       '${settings.showLineSeparator}|${settings.lineSeparatorStyle}|${settings.lineSeparatorOpacity}',
       '${settings.dialogueHighlightEnabled}|${Theme.of(context).brightness}',
+      // 关键词索引变化（新增、改色、删除）后需重新解析高亮再分页
+      '${widget.outlineKeywordService?.revision ?? -1}',
       _firstLineIndent,
     ].join('#');
     if (signature == _paginationSignature) return;
@@ -316,7 +329,7 @@ class _ReadingModePageState extends State<ReadingModePage> {
     });
   }
 
-  /// 解析整章高亮范围：对话高亮与自定义关键词高亮，与编辑器同源
+  /// 解析整章高亮范围：对话高亮、自定义关键词与大纲节点关键词，与编辑器同源
   List<HighlightRange> _resolveRanges(BuildContext context, String text) {
     final SettingsService settings = SettingsService.instance;
     final List<HighlightRange> ranges = <HighlightRange>[];
@@ -342,7 +355,54 @@ class _ReadingModePageState extends State<ReadingModePage> {
       }
     }
 
+    _addOutlineKeywordRanges(text, ranges);
     return HighlightRangeResolver.mergeRanges(ranges);
+  }
+
+  /// 叠加大纲节点关键词着色
+  ///
+  /// 与编辑器一致：长词优先，命中区间互不重叠，字重略加粗以示强调。
+  void _addOutlineKeywordRanges(String text, List<HighlightRange> ranges) {
+    final OutlineKeywordService? service = widget.outlineKeywordService;
+    if (service == null) return;
+
+    final List<String> keywords = service.keywords.toList()
+      ..sort((a, b) => b.length.compareTo(a.length));
+    final List<({int start, int end})> accepted = <({int start, int end})>[];
+
+    for (final keyword in keywords) {
+      final OutlineKeywordEntry? entry = service.entryForKeyword(keyword);
+      if (entry == null) continue;
+      OutlineKeyword? binding;
+      for (final item in entry.keywords) {
+        if (item.keyword == keyword) {
+          binding = item;
+          break;
+        }
+      }
+      if (binding == null) continue;
+
+      final List<HighlightRange> matches = HighlightRangeResolver.parseKeywordRanges(
+        text,
+        keyword,
+        binding.color,
+        priority: HighlightRangeResolver.outlineKeywordPriority,
+      );
+      for (final match in matches) {
+        final bool overlapped = accepted.any(
+          (segment) => match.start < segment.end && match.end > segment.start,
+        );
+        if (overlapped) continue;
+        accepted.add((start: match.start, end: match.end));
+        ranges.add(HighlightRange(
+          match.start,
+          match.end,
+          binding.color,
+          HighlightRangeResolver.outlineKeywordPriority,
+          fontWeight: FontWeight.w500,
+        ));
+      }
+    }
   }
 
   /// 段首缩进前缀
