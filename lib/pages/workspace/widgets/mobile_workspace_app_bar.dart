@@ -269,6 +269,9 @@ class _MobileWorkspaceAppBarState extends State<MobileWorkspaceAppBar> {
     // 点遮罩仅关闭卡片：光标归位；选中动作则由动作自身决定焦点去向
     if (action == null || !context.mounted) {
       _restoreEditorFocus();
+      // 卡片关闭动画未结束时请求的焦点会被路由吞掉，稍后补一次
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      if (mounted) _restoreEditorFocus();
       return;
     }
     await handleMobileToolAction(context, action);

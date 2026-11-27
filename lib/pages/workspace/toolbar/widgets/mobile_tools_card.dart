@@ -7,6 +7,7 @@ import 'package:quick_write/core/models/chapter.dart';
 import 'package:quick_write/core/providers/workspace_provider.dart';
 import 'package:quick_write/core/utils/clipboard_state_cache.dart';
 import 'package:quick_write/core/utils/code_line_selection_utils.dart';
+import 'package:quick_write/core/utils/editor_focus_keep.dart';
 import 'package:quick_write/core/utils/paragraph_formatter.dart';
 import 'package:quick_write/pages/workspace/editor/novel_editor.dart';
 import 'package:quick_write/pages/workspace/name_gen/name_generator_dialog_mobile.dart';
@@ -350,18 +351,21 @@ Future<void> handleMobileToolAction(BuildContext context, MobileToolAction actio
       // 复制当前章节正文到剪贴板
       await _copyCurrentChapter(context, provider);
       // 复制不改变编辑位置，把工具卡片弹层夺走的光标焦点还给编辑器
-      provider.restoreEditorFocus();
+      await _restoreEditorFocusAfterOverlay(provider);
       break;
     case MobileToolAction.randomName:
       // 打开随机取名弹窗，原本在正文输入时回插取到的名字
       {
-        final bool editorHadFocus = provider.currentEditorHasFocus;
+        // 工具卡片本身会先抢走焦点，故不能只看「此刻是否聚焦」，
+        // 还要看编辑器是否曾是最近一次聚焦的输入节点（大纲走的就是这条判断）
+        final bool editorHadFocus = provider.currentEditorHasFocus ||
+            EditorFocusKeep.lastEditorFocus != null;
         final String? name = await showMobileNameGeneratorDialog(context: context);
         if (name != null && editorHadFocus) {
           provider.insertTextToCurrentEditor(name);
         }
         // 移动端插入后不会主动唤起输入法，需显式归还焦点，光标才不会丢
-        if (editorHadFocus) provider.restoreEditorFocus();
+        if (editorHadFocus) await _restoreEditorFocusAfterOverlay(provider);
       }
       break;
     case MobileToolAction.sensitiveWordCheck:
@@ -385,6 +389,16 @@ Future<void> handleMobileToolAction(BuildContext context, MobileToolAction actio
       provider.openRightSidebar(RightSidebarType.other);
       break;
   }
+}
+
+/// 把焦点还给编辑器（弹层关闭后再归还）
+///
+/// 弹层关闭动画尚未结束时请求焦点会被路由的焦点作用域吞掉，
+/// 章节编辑器因此表现为「点了工具就丢光标」，故短延时后补一次。
+Future<void> _restoreEditorFocusAfterOverlay(WorkspaceProvider provider) async {
+  provider.restoreEditorFocus();
+  await Future<void>.delayed(const Duration(milliseconds: 300));
+  if (!provider.currentEditorHasFocus) provider.restoreEditorFocus();
 }
 
 /// 复制当前章节正文到剪贴板
