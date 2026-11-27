@@ -128,7 +128,7 @@ class ReaderPaginator {
     final double pageLimit = pageHeight.floorToDouble();
     final List<ReaderPageSlice> pages = <ReaderPageSlice>[];
     List<ReaderBlock> blocks = <ReaderBlock>[];
-    used = titleHeight;
+    double used = titleHeight;
     void flush() {
       pages.add(ReaderPageSlice(blocks: blocks, hasTitle: titleShown));
       blocks = <ReaderBlock>[];
