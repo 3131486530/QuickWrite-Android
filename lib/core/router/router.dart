@@ -8,7 +8,6 @@ import 'package:quick_write/core/services/settings_service.dart';
 import 'package:quick_write/core/utils/platform_capabilities.dart';
 import 'package:quick_write/pages/home/home_page.dart';
 import 'package:quick_write/pages/workspace/workspace_page.dart';
-import 'package:quick_write/shared/widgets/mobile_page_transition.dart';
 
 /// 应用根导航器的键
 ///
@@ -58,15 +57,11 @@ final GoRouter appRouter = GoRouter(
           },
         );
 
-        // 移动端：工作台从右侧滑入，返回书架时向右侧滑出
+        // 移动端：工作台无过渡动画，从书架点击小说直接切换到编辑界面
         if (PlatformCapabilities.isMobile) {
-          return CustomTransitionPage(
+          return NoTransitionPage(
             key: state.pageKey,
             child: page,
-            transitionDuration: mobilePageTransitionDuration,
-            reverseTransitionDuration: mobilePageTransitionDuration,
-            transitionsBuilder: (context, animation, secondaryAnimation, child) =>
-                buildMobileSlideTransition(animation, child),
           );
         }
 
