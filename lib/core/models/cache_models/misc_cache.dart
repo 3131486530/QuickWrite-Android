@@ -58,7 +58,7 @@ class MiscCacheData {
     this.isSettingReversed = false,
     this.toolsFunctionOrder = const ['nameGen', 'sensitiveWord'],
     this.toolsSectionOrder = const ['bookInfo', 'stats'],
-    this.keywordHighlightEnabled = false,
+    this.keywordHighlightEnabled = true,
     this.sensitiveWordHighlightEnabled = false,
     this.books = const {},
   });
@@ -85,7 +85,7 @@ class MiscCacheData {
               ?.map((e) => e as String)
               .toList() ??
           const ['bookInfo', 'stats'],
-      keywordHighlightEnabled: json['keywordHighlightEnabled'] as bool? ?? false,
+      keywordHighlightEnabled: json['keywordHighlightEnabled'] as bool? ?? true,
       sensitiveWordHighlightEnabled:
           json['sensitiveWordHighlightEnabled'] as bool? ?? false,
       books: books,

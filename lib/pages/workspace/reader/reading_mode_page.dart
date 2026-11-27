@@ -97,7 +97,12 @@ class _ReadingModePageState extends State<ReadingModePage> {
   static const double _horizontalPadding = 20;
 
   /// 正文顶部留白
-  static const double _topPadding = 8;
+  static const double _topPadding = 1;
+
+  /// 正文底部安全留白
+  ///
+  /// 分页高度按可用高度扣除该值，避免末行文字紧贴屏幕底边或被系统手势区遮挡。
+  static const double _bottomPadding = 8;
 
   /// 行分隔线高度
   static const double _separatorHeight = 1;
@@ -172,7 +177,7 @@ class _ReadingModePageState extends State<ReadingModePage> {
                       math.max(80.0, constraints.maxWidth - _horizontalPadding * 2);
                   final double contentHeight = math.max(
                     80.0,
-                    constraints.maxHeight - _topPadding - 8,
+                    constraints.maxHeight - _topPadding - _bottomPadding,
                   );
                   _ensurePaginated(context, contentWidth, contentHeight);
 
@@ -486,6 +491,7 @@ class _ReadingModePageState extends State<ReadingModePage> {
         left: _horizontalPadding,
         right: _horizontalPadding,
         top: _topPadding,
+        bottom: _bottomPadding,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,

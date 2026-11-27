@@ -174,6 +174,26 @@ class ReaderPaginator {
         maxWidth: maxWidth,
         firstLineIndent: raw.isEmpty ? '' : firstLineIndent,
       );
+
+      // 实测某个字符区间的排版高度
+      //
+      // 按行累加得到的高度只是「整段一次性排版」时的行高之和，切块后单独渲染会
+      // 重新换行，行数与高度可能不同；这里对切块文本做一次实测，保证分页高度与
+      // 实际渲染高度一致，避免页面底部内容超出可视区而陷入屏幕外。
+      double measureChunk(int from, int to) => measureSpan(
+            TextSpan(
+              style: bodyStyle,
+              children: buildSpans(
+                text: text.substring(from, to),
+                startOffset: starts[i] + from,
+                ranges: ranges,
+                baseStyle: bodyStyle,
+                indentPrefix: from == 0 && raw.isNotEmpty ? firstLineIndent : '',
+              ),
+            ),
+            maxWidth: maxWidth,
+          );
+
       int lineIndex = 0;
       while (lineIndex < layout.heights.length) {
         final double remaining = pageHeight - used;
@@ -192,6 +212,23 @@ class ReaderPaginator {
           }
           chunkHeight = layout.heights[lineIndex];
           lineEnd = lineIndex + 1;
+        } else {
+          // 按实测高度校正切块：超出剩余空间时逐行回退
+          int end = lineEnd;
+          double measured = chunkHeight;
+          while (end > lineIndex + 1) {
+            final int chunkEnd =
+                end >= layout.heights.length ? raw.length : layout.starts[end];
+            final double height =
+                measureChunk(layout.starts[lineIndex], chunkEnd);
+            if (height <= remaining + 0.01) {
+              measured = height;
+              break;
+            }
+            end--;
+          }
+          lineEnd = end;
+          chunkHeight = measured;
         }
         final bool reachesEnd = lineEnd >= layout.heights.length;
         final double blockHeight = chunkHeight + (reachesEnd ? separator : 0);

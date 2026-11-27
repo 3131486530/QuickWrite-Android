@@ -442,6 +442,10 @@ class NovelEditorState extends State<NovelEditor> with WidgetsBindingObserver {
       _sensitiveWordService = newSensitiveService;
       _sensitiveWordService!.addListener(_onSettingsChanged);
     }
+
+    // spanBuilder 可能在 initState 之后才由父组件注入，此处重新绑定关键词回调，
+    // 确保移动端开关与桌面修饰键都能触发节点关键词着色
+    _bindKeywordCallbacks();
   }
 
   @override
@@ -471,6 +475,15 @@ class NovelEditorState extends State<NovelEditor> with WidgetsBindingObserver {
   @override
   void didUpdateWidget(NovelEditor oldWidget) {
     super.didUpdateWidget(oldWidget);
+    // 父组件重建时注入新的样式构建器，需重新绑定关键词回调与当前高亮状态；
+    // 更新会通知控制器重绘，延后到帧末执行，避免在构建阶段触发重建
+    if (!identical(widget.spanBuilder, oldWidget.spanBuilder)) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _bindKeywordCallbacks();
+        _applyKeywordHighlightState();
+      });
+    }
     // 当标签页由不可见变为可见时，自动请求焦点
     if (widget.isActive && !oldWidget.isActive) {
       // 开启滚动保护（锁定当前滚动位置，防止 requestFocus 导致的自动滚动）
