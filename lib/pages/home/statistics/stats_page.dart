@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:quick_write/core/providers/bookshelf_provider.dart';
+import 'package:quick_write/core/providers/home_state_provider.dart';
 import 'package:quick_write/core/providers/writing_stats_provider.dart';
+import 'package:quick_write/core/services/chapter_word_count_service.dart';
 import 'package:quick_write/core/utils/platform_capabilities.dart';
 import 'package:quick_write/core/utils/typography_extension.dart';
 import 'package:quick_write/core/utils/word_count_utils.dart';
@@ -19,14 +21,56 @@ class StatsPage extends StatefulWidget {
   State<StatsPage> createState() => _StatsPageState();
 }
 
-class _StatsPageState extends State<StatsPage> {
+class _StatsPageState extends State<StatsPage> with WidgetsBindingObserver {
+  /// 首页导航状态，用于感知页面是否被切换到前台
+  HomeStateProvider? _homeState;
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     // 页面初始化后加载数据
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<WritingStatsProvider>().refresh();
-    });
+    WidgetsBinding.instance.addPostFrameCallback((_) => _refreshIfActive());
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // 首页以 IndexedStack 保留各页状态，切回本页不会重新触发 initState，
+    // 因此监听导航索引变化，切到码字统计时主动拉取一次最新数据
+    final homeState = context.read<HomeStateProvider>();
+    if (!identical(homeState, _homeState)) {
+      _homeState?.removeListener(_onHomeStateChanged);
+      _homeState = homeState..addListener(_onHomeStateChanged);
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // 从后台回到前台时数据可能已被其他写入更新，重新拉取一次
+    if (state == AppLifecycleState.resumed) {
+      _refreshIfActive();
+    }
+  }
+
+  void _onHomeStateChanged() {
+    _refreshIfActive();
+  }
+
+  /// 仅在码字统计页为当前选中页时刷新，避免其它页面切换引发无谓查询
+  void _refreshIfActive() {
+    if (!mounted) return;
+    if (_homeState?.selectedIndex != HomePageEnum.stats.pageIndex) return;
+    context.read<WritingStatsProvider>().refresh();
+    // 今日章节字数由独立服务缓存，同步强制重载避免展示旧数据
+    ChapterWordCountService.instance.ensureLoaded(forceNotify: true);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _homeState?.removeListener(_onHomeStateChanged);
+    super.dispose();
   }
 
   @override
