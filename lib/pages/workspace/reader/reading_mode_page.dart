@@ -99,15 +99,18 @@ class _ReadingModePageState extends State<ReadingModePage> {
   /// 正文顶部留白：不留白，正文自 SafeArea 顶部铺排
   static const double _topPadding = 0;
 
-  /// 页码条带高度：页面底部只为页码让出这一条（约半行高），
-  /// 正文排到条带上沿即止，因此不会与右下角页码重叠
-  static const double _pageNumberBandHeight = 15;
+  /// 页面底部不可见的 UI 占位区域：正文排到该区域上沿即止，
+  /// 永不越过，页码安放在这块区域内，因此不会压到正文
+  static const double _bottomSafeArea = 28;
 
-  /// 正文底部留白：等于页码条带高度，正文整体避让页码区域
-  static const double _bottomPadding = _pageNumberBandHeight;
+  /// 正文底部留白：等于底部不可见区域高度
+  static const double _bottomPadding = _bottomSafeArea;
 
-  /// 页码距页面右边距离（垂直方向居中于页码条带内）
-  static const double _pageNumberInset = 0;
+  /// 页码距页面底部距离（在底部不可见区域内上移，不贴底）
+  static const double _pageNumberBottomOffset = 10;
+
+  /// 页码字号：放大以便看清
+  static const double _pageNumberFontSize = 14;
 
   /// 行分隔线高度
   ///
@@ -195,23 +198,20 @@ class _ReadingModePageState extends State<ReadingModePage> {
                             ? const Center(child: CircularProgressIndicator())
                             : _buildPages(context),
                       ),
-                      // 页码常显在页面右下角的页码条带内，正文在其上方避让，不参与点击
+                      // 页码固定在页面右侧的底部不可见区域内，正文不越过该区域，页码不参与点击
                       Positioned(
-                        bottom: _pageNumberInset,
+                        bottom: _pageNumberBottomOffset,
                         right: _horizontalPadding,
-                        height: _pageNumberBandHeight - _pageNumberInset,
                         child: IgnorePointer(
-                          child: Align(
-                            alignment: Alignment.centerRight,
-                            child: Text(
-                              '${_pageIndex + 1}/${_pages.isEmpty ? 1 : _pages.length}',
-                              style: TextStyle(
-                                fontFamily: SettingsService.instance.fontFamily,
-                                fontSize: 11,
-                                height: 1.0,
-                                color: ColorUtils.getFontColorForTheme(context)
-                                    .withValues(alpha: 0.45),
-                              ),
+                          child: Text(
+                            '${_pageIndex + 1}/${_pages.isEmpty ? 1 : _pages.length}',
+                            style: TextStyle(
+                              fontFamily: SettingsService.instance.fontFamily,
+                              fontSize: _pageNumberFontSize,
+                              fontWeight: FontWeight.w500,
+                              height: 1.1,
+                              color: ColorUtils.getFontColorForTheme(context)
+                                  .withValues(alpha: 0.7),
                             ),
                           ),
                         ),
