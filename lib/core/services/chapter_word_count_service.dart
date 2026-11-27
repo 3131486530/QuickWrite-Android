@@ -59,18 +59,62 @@ class ChapterWordCountService extends ChangeNotifier {
 
   Timer? _persistTimer;
 
+  /// 通知合并定时器：把高频变更合并成一次 UI 通知
+  Timer? _notifyTimer;
+
+  /// 是否已释放（释放后不得再 notifyListeners）
+  bool _disposed = false;
+
+  /// 排序后清单缓存（数据变更时置空，避免每次 build 都复制并排序）
+  List<ChapterWordCountItem>? _sortedCache;
+
+  /// 合计字数缓存（数据变更时置空，避免每次 build 都全表累加）
+  int? _totalCache;
+
   /// 今日是否已有章节数据
   bool get isEmpty => _items.isEmpty;
 
   /// 今日章节字数合计
-  int get totalWords =>
-      _items.values.fold(0, (sum, item) => sum + item.words);
+  ///
+  /// 结果带缓存：统计页与侧边栏会在每次 UI 刷新时读取该值，
+  /// 全表累加只应发生在数据真正变化之后。
+  int get totalWords => _totalCache ??= _items.values.fold<int>(0, (sum, item) => sum + item.words);
 
   /// 今日章节字数列表（按字数从多到少）
+  ///
+  /// 返回的列表由服务内部缓存持有，调用方只读，不要就地修改。
   List<ChapterWordCountItem> get items {
-    final list = _items.values.where((item) => item.words != 0).toList();
-    list.sort((a, b) => b.words.compareTo(a.words));
-    return list;
+    final cached = _sortedCache;
+    if (cached != null) return cached;
+    final list = _items.values.where((item) => item.words != 0).toList()
+      ..sort((a, b) => b.words.compareTo(a.words));
+    return _sortedCache = list;
+  }
+
+  /// 数据变更后失效派生缓存
+  void _invalidateCache() {
+    _sortedCache = null;
+    _totalCache = null;
+  }
+
+  /// 合并通知：编辑时每个按键都会累加字数，逐次 notifyListeners 会让
+  /// 统计页卡片（位于 IndexedStack，即使不可见也会重建）随按键重建；
+  /// 这里合并到 120ms 一次，肉眼不可感知且大幅减少重建次数。
+  void _scheduleNotify() {
+    if (_disposed || (_notifyTimer?.isActive ?? false)) return;
+    _notifyTimer = Timer(const Duration(milliseconds: 120), () {
+      _notifyTimer = null;
+      if (_disposed) return;
+      notifyListeners();
+    });
+  }
+
+  /// 立即通知（用于载入、清空等低频且需要即时生效的场景）
+  void _notifyNow() {
+    _notifyTimer?.cancel();
+    _notifyTimer = null;
+    if (_disposed) return;
+    notifyListeners();
   }
 
   static String _todayKey() {
@@ -116,7 +160,8 @@ class ChapterWordCountService extends ChangeNotifier {
     } catch (e) {
       debugPrint('读取今日章节字数失败: $e');
     }
-    notifyListeners();
+    _invalidateCache();
+    _notifyNow();
   }
 
   /// 累加某章节今日字数
@@ -128,15 +173,22 @@ class ChapterWordCountService extends ChangeNotifier {
     required int delta,
   }) async {
     if (chapterId.isEmpty || delta == 0) return;
-    await ensureLoaded();
-    if (_dateKey != _todayKey()) {
-      // 跨天：清空后重新开始
+    // 快路径：已载入且日期未变时直接同步累加，避免每次按键都走 await/异步队列。
+    // 旧实现无条件 await ensureLoaded()，等于把每键一次的字数累加推到微任务里，
+    // 输入高峰（连续快速输入）时会产生大量无意义的异步调度。
+    if (!_loaded || _dateKey != _todayKey()) {
       await ensureLoaded();
+      if (_disposed) return;
     }
     final existing = _items[chapterId];
     final next = (existing?.words ?? 0) + delta;
     if (next <= 0) {
+      if (existing == null) return;
       _items.remove(chapterId);
+    } else if (existing != null) {
+      // 就地更新，避免每次按键都新建对象（List/Map 中的引用保持不变）
+      existing.words = next;
+      if (existing.title != title) existing.title = title;
     } else {
       _items[chapterId] = ChapterWordCountItem(
         chapterId: chapterId,
@@ -144,7 +196,8 @@ class ChapterWordCountService extends ChangeNotifier {
         words: next,
       );
     }
-    notifyListeners();
+    _invalidateCache();
+    _scheduleNotify();
     _schedulePersist();
   }
 
@@ -153,14 +206,24 @@ class ChapterWordCountService extends ChangeNotifier {
     final item = _items[chapterId];
     if (item == null || item.title == title) return;
     item.title = title;
-    notifyListeners();
+    _scheduleNotify();
     _schedulePersist();
   }
 
   /// 清空今日记录
+  ///
+  /// 重置码字统计数据时一并调用：今日章节字数是独立持久化的一份记录，
+  /// 不随 [WritingStatsService.clearAllStats] 一起清空，必须显式重置。
   Future<void> clear() async {
+    // 取消挂起的写盘，避免清空后定时器又把数据写回
+    _persistTimer?.cancel();
+    _persistTimer = null;
     _items.clear();
-    notifyListeners();
+    _invalidateCache();
+    // 视为已载入今日数据：清空后若马上继续码字，无需再从磁盘读取旧值
+    _loaded = true;
+    _dateKey = _todayKey();
+    _notifyNow();
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.remove(_prefKey);
@@ -198,7 +261,11 @@ class ChapterWordCountService extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     _persistTimer?.cancel();
+    _persistTimer = null;
+    _notifyTimer?.cancel();
+    _notifyTimer = null;
     super.dispose();
   }
 }

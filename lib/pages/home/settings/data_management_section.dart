@@ -1,6 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'package:quick_write/core/providers/writing_session_tracker.dart';
+import 'package:quick_write/core/providers/writing_stats_provider.dart';
 import 'package:quick_write/core/services/app_paths.dart';
 import 'package:quick_write/core/services/backup_service.dart';
+import 'package:quick_write/core/services/chapter_word_count_service.dart';
 import 'package:quick_write/core/services/writing_stats_service.dart';
 import 'package:quick_write/core/utils/file_explorer.dart';
 import 'package:quick_write/core/utils/platform_capabilities.dart';
@@ -124,6 +128,17 @@ class DataManagementSection extends StatelessWidget {
       cancelText: '取消',
       onConfirm: () async {
         await WritingStatsService.instance.clearAllStats();
+        // 今日章节字数是一份独立持久化的记录（SharedPreferences），
+        // 不在 clearAllStats 的清理范围内，必须一并清空，否则重置后统计页仍显示旧数据
+        await ChapterWordCountService.instance.clear();
+        // 工作台的会话追踪器在内存中仍持有今日字数与待写盘增量：
+        // 只清数据库会导致侧边栏继续显示旧数值，且防抖落库会把旧增量写回，
+        // 这里把存活实例的今日/会话数据一并归零并丢弃待写盘增量
+        WritingSessionTracker.resetAllLive();
+        // 刷新统计页数据，避免重置后仍展示重置前的缓存结果
+        if (context.mounted) {
+          await context.read<WritingStatsProvider>().refresh();
+        }
         if (!context.mounted) return;
         SnackBarService.showSuccess(context, '码字统计数据已重置');
       },

@@ -14,6 +14,49 @@ import 'package:quick_write/core/services/writing_stats_service.dart';
 ///
 /// 撤销/恢复操作不调用本追踪器，因此不影响今日码字与码字速度。
 class WritingSessionTracker extends ChangeNotifier {
+  WritingSessionTracker() {
+    _liveTrackers.add(this);
+  }
+
+  /// 当前存活的追踪器集合
+  ///
+  /// 重置码字统计数据时，工作台的追踪器在内存中仍持有今日字数与待写盘增量，
+  /// 仅清空数据库会出现"重置后侧边栏仍显示旧数值、且随后被重新写回"的问题，
+  /// 因此通过该集合统一把存活实例的今日/会话数据归零。
+  static final Set<WritingSessionTracker> _liveTrackers = <WritingSessionTracker>{};
+
+  /// 重置所有存活追踪器的今日与本次会话数据（不写盘）
+  static void resetAllLive() {
+    for (final tracker in List<WritingSessionTracker>.of(_liveTrackers)) {
+      tracker.resetTodayStats();
+    }
+  }
+
+  /// 归零今日与会话统计
+  ///
+  /// 丢弃尚未写盘的增量，避免重置完成后防抖定时器又把旧增量写回数据库。
+  void resetTodayStats() {
+    if (_isDisposed) return;
+    _flushTimer?.cancel();
+    _flushTimer = null;
+    _pendingTypedDelta = 0;
+    _pendingPastedDelta = 0;
+    _pendingDurationSeconds = 0;
+
+    _todayWordsAdded = 0;
+    _todayTypedWords = 0;
+    _sessionWordsAdded = 0;
+    _sessionTypedWords = 0;
+    _sessionDurationSeconds = 0;
+    _idleDurationSeconds = 0;
+
+    _hasStartedWriting = false;
+    _lastActivityTime = DateTime.now();
+    _currentDate = _normalizeDate(_lastActivityTime);
+
+    _notifyNow();
+  }
+
   // ================= 会话统计数据 =================
 
   /// 今日净增字数（含粘贴，从数据库加载，随用户码字实时更新）
@@ -92,6 +135,9 @@ class WritingSessionTracker extends ChangeNotifier {
   /// 防抖定时器：累积增量后延迟写入数据库，避免频繁 IO
   Timer? _flushTimer;
 
+  /// 通知合并定时器：把按键级高频变更合并成一次 UI 通知
+  Timer? _notifyTimer;
+
   /// 防抖延迟（毫秒）：停止输入 2 秒后写入统计数据库
   static const int _flushDebounceMs = 2000;
 
@@ -158,6 +204,26 @@ class WritingSessionTracker extends ChangeNotifier {
     _lastActivityTime = DateTime.now();
     _scheduleFlush();
 
+    _scheduleNotify();
+  }
+
+  /// 合并通知：键盘输入每个按键都会调用 [onWordsChanged]，
+  /// 逐次 notifyListeners 会让工具面板统计区块、字数浮窗按每次按键重建，
+  /// 这里合并到 100ms 一次（数值本身已同步更新，只有重建被合并）。
+  void _scheduleNotify() {
+    if (_isDisposed || (_notifyTimer?.isActive ?? false)) return;
+    _notifyTimer = Timer(const Duration(milliseconds: 100), () {
+      _notifyTimer = null;
+      if (_isDisposed) return;
+      notifyListeners();
+    });
+  }
+
+  /// 立即通知（低频且需要即时生效的场景）
+  void _notifyNow() {
+    _notifyTimer?.cancel();
+    _notifyTimer = null;
+    if (_isDisposed) return;
     notifyListeners();
   }
 
@@ -182,9 +248,11 @@ class WritingSessionTracker extends ChangeNotifier {
     final today = _normalizeDate(now);
 
     // 跨天检测
+    var dayChanged = false;
     if (today != _currentDate) {
       _handleDayChange();
       _currentDate = today;
+      dayChanged = true;
     }
 
     // 时长统计：用户开始码字后才计时，活跃时累加码字时长并累积落库，空闲时累加空闲时长
@@ -200,6 +268,10 @@ class WritingSessionTracker extends ChangeNotifier {
         _idleDurationSeconds++;
       }
     }
+
+    // 未开始码字且未跨天时，本次 tick 没有产生任何数值变化：
+    // 直接跳过通知，避免空闲挂起状态下每秒触发一次无意义的 UI 重建。
+    if (!dayChanged && !_hasStartedWriting) return;
 
     notifyListeners();
   }
@@ -274,8 +346,10 @@ class WritingSessionTracker extends ChangeNotifier {
   @override
   void dispose() {
     _isDisposed = true;
+    _liveTrackers.remove(this);
     _timer?.cancel();
     _flushTimer?.cancel();
+    _notifyTimer?.cancel();
     // 释放前强制写入剩余字数与时长，避免数据丢失
     _flushPending();
     _flushDuration();
