@@ -10,6 +10,7 @@ import 'package:quick_write/core/utils/code_line_selection_utils.dart';
 import 'package:quick_write/core/utils/paragraph_formatter.dart';
 import 'package:quick_write/pages/workspace/editor/novel_editor.dart';
 import 'package:quick_write/pages/workspace/name_gen/name_generator_dialog_mobile.dart';
+import 'package:quick_write/pages/workspace/reader/reading_mode_page.dart';
 import 'package:quick_write/pages/workspace/sensitive_word/sensitive_word_check_dialog.dart';
 import 'package:quick_write/shared/dialogs/export_dialog.dart';
 import 'package:quick_write/shared/widgets/widgets.dart';
@@ -28,6 +29,8 @@ enum MobileToolAction {
   exportChapter,
   /// 码字统计
   writingStats,
+  /// 阅读模式
+  readMode,
   /// 复制本章
   copyChapter,
   /// 随机取名
@@ -75,6 +78,7 @@ class MobileToolsCard extends StatelessWidget {
       _ToolEntry(MobileToolAction.history, Icons.history_rounded, '历史版本'),
       _ToolEntry(MobileToolAction.exportChapter, Icons.file_download_outlined, '导出本章'),
       _ToolEntry(MobileToolAction.writingStats, Icons.insights_rounded, '码字统计'),
+      _ToolEntry(MobileToolAction.readMode, Icons.auto_stories_outlined, '阅读模式', chapterOnly: true),
       _ToolEntry(MobileToolAction.copyChapter, Icons.copy_all_rounded, '复制本章', chapterOnly: true),
       _ToolEntry(MobileToolAction.randomName, Icons.casino_rounded, '随机取名'),
       _ToolEntry(MobileToolAction.sensitiveWordCheck, Icons.gpp_bad_outlined, '敏感词检测'),
@@ -352,6 +356,10 @@ Future<void> handleMobileToolAction(BuildContext context, MobileToolAction actio
       // 复制不改变编辑位置，把工具卡片弹层夺走的光标焦点还给编辑器
       await _restoreEditorFocusAfterOverlay(provider);
       break;
+    case MobileToolAction.readMode:
+      // 以翻页方式阅读，排版沿用编辑器的正文与标题样式
+      await _openReadingMode(context, provider);
+      break;
     case MobileToolAction.randomName:
       // 打开随机取名弹窗，原本在正文输入时回插取到的名字
       {
@@ -398,6 +406,58 @@ Future<void> _restoreEditorFocusAfterOverlay(WorkspaceProvider provider) async {
   provider.restoreEditorFocus();
   await Future<void>.delayed(const Duration(milliseconds: 300));
   if (!provider.currentEditorHasFocus) provider.restoreEditorFocus();
+}
+
+/// 以阅读模式打开当前章节
+///
+/// 章节正文按需加载；当前正在编辑的章节直接取编辑器里的文本，
+/// 保证刚写下还没落盘的内容也能立刻读到。
+Future<void> _openReadingMode(BuildContext context, WorkspaceProvider provider) async {
+  final List<ChapterModel> chapters = provider.chapters;
+  if (chapters.isEmpty) {
+    SnackBarService.show(context, '本书还没有章节');
+    return;
+  }
+
+  // 从当前章节开始读，非章节标签页时从第一章开始
+  int initialIndex = 0;
+  final tab = provider.currentTab;
+  if (tab != null && tab.type == EditorTabType.chapter) {
+    final int found = chapters.indexWhere((ChapterModel item) => item.uuid == tab.id);
+    if (found >= 0) initialIndex = found;
+  }
+
+  final List<ReaderChapter> readerChapters = chapters
+      .map((ChapterModel chapter) => ReaderChapter(
+            title: chapter.title.isEmpty ? '未命名章节' : chapter.title,
+            loadContent: () => _readChapterContentForReader(provider, chapter),
+          ))
+      .toList();
+
+  // 阅读模式占满全屏，先收起输入法避免键盘遮住正文
+  FocusManager.instance.primaryFocus?.unfocus();
+  await showReadingMode(
+    context,
+    bookTitle: provider.bookTitle,
+    chapters: readerChapters,
+    initialChapterIndex: initialIndex,
+    customHighlightService: provider.customHighlightService,
+  );
+}
+
+/// 读取供阅读模式渲染的章节正文
+///
+/// 当前编辑中的章节优先取文本控制器内容（含未保存改动），其余章节读文件。
+Future<String> _readChapterContentForReader(
+  WorkspaceProvider provider,
+  ChapterModel chapter,
+) async {
+  final tab = provider.currentTab;
+  if (tab != null && tab.type == EditorTabType.chapter && tab.id == chapter.uuid) {
+    final String? text = tab.textController?.text;
+    if (text != null) return text;
+  }
+  return provider.readChapterContent(chapter);
 }
 
 /// 复制当前章节正文到剪贴板
