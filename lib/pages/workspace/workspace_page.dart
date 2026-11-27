@@ -108,11 +108,14 @@ class _WorkspaceContentState extends State<_WorkspaceContent> with WidgetsBindin
   // 移动端右侧面板抽屉占屏幕宽度的比例
   static const double _mobileRightDrawerWidthFactor = 0.75;
 
-  // 移动端抽屉的浮动边距：四周留白，使投影能从四边溢出，形成浮层观感
-  static const double _mobileDrawerFloatMargin = 8;
+  // 移动端抽屉的浮动边距：与工具卡片的 screenMargin 完全一致（16）
+  static const double _mobileDrawerFloatMargin = 16;
 
-  // 移动端抽屉的圆角半径：与投影配合，呈现类似工具面板弹窗的厚度
-  static const double _mobileDrawerOuterRadius = 16;
+  // 移动端抽屉的圆角半径：与工具卡片 Material 的 borderRadius 完全一致（18）
+  static const double _mobileDrawerOuterRadius = 18;
+
+  // 移动端抽屉的材质抬升高度：与工具卡片 Material 的 elevation 完全一致（8）
+  static const double _mobileDrawerElevation = 8;
 
   // 注册到焦点管理器的按键提前拦截回调
   // 保存同一份引用，便于在 dispose 时精确移除
@@ -408,24 +411,22 @@ class _WorkspaceContentState extends State<_WorkspaceContent> with WidgetsBindin
 
   /// 构建移动端抽屉外壳
   ///
-  /// 面板四周留出浮动边距、四角全圆角，与编辑区之间靠底色差分层；
-  /// 不使用投影，抽屉打开时也不压暗未覆盖区域
+  /// 完全照抄移动端工具卡片（MobileToolsCard）的载体写法：surface 底色 + elevation 8
+  /// 的真实材质投影 + 18 圆角裁切，浮动边距也取工具卡片的 16，
+  /// 不再自定义圆角与投影，保证抽屉与工具面板观感一致
   Widget _buildMobileDrawerShell(BuildContext context, {required Widget child}) {
     final colorScheme = Theme.of(context).colorScheme;
-    final BorderRadius radius = BorderRadius.circular(_mobileDrawerOuterRadius);
 
     return SafeArea(
-      // 浮动边距：面板不贴死在屏幕边缘，四周留白与编辑区分开
+      // 浮动边距：与工具卡片的 screenMargin 保持一致，面板不贴死在屏幕边缘
       minimum: const EdgeInsets.all(_mobileDrawerFloatMargin),
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: colorScheme.surface,
-          borderRadius: radius,
-        ),
-        child: ClipRRect(
-          borderRadius: radius,
-          child: RepaintBoundary(child: child),
-        ),
+      child: Material(
+        color: colorScheme.surface,
+        elevation: _mobileDrawerElevation,
+        borderRadius: BorderRadius.circular(_mobileDrawerOuterRadius),
+        clipBehavior: Clip.antiAlias,
+        // 抽屉内容加绘制隔离：滑出与收回只改变图层位置，可直接复用已缓存的图层
+        child: RepaintBoundary(child: child),
       ),
     );
   }

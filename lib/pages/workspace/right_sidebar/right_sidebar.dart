@@ -129,12 +129,15 @@ class _RightSidebarState extends State<RightSidebar>
             final currentWidth = isExpanded ? width : 0.0;
             final effectiveWidth = currentWidth * animationValue;
 
+            // 移动端抽屉内由外层 Material 外壳提供留白，这里不再额外内缩
+            final double edgeInset = widget.forceExpanded ? 0 : 2 * animationValue;
+
             return Container(
               width: effectiveWidth,
               margin: EdgeInsets.only(
-                right: 2 * animationValue,
-                top: 2 * animationValue,
-                bottom: 2 * animationValue,
+                right: edgeInset,
+                top: edgeInset,
+                bottom: edgeInset,
               ),
               // 使用 ClipRect 和 OverflowBox 避免动画过程中的宽度挤压导致溢出错误
               child: animationValue > 0
@@ -161,10 +164,14 @@ class _RightSidebarState extends State<RightSidebar>
     final workspaceProvider = context.watch<WorkspaceProvider>();
 
     return Container(
-      decoration: BoxDecoration(
-        color: colorScheme.surface,
-        borderRadius: BorderRadius.circular(6),
-      ),
+      // 移动端抽屉内由外层 Material 外壳统一提供底色与圆角，
+      // 这里不再自绘背景与 6 圆角，避免两层圆角嵌套出现直角与色差
+      decoration: widget.forceExpanded
+          ? null
+          : BoxDecoration(
+              color: colorScheme.surface,
+              borderRadius: BorderRadius.circular(6),
+            ),
       child: Column(
         children: [
           // 顶部标题栏

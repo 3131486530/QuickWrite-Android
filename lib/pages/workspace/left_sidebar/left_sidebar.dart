@@ -132,12 +132,10 @@ class _LeftSidebarState extends State<LeftSidebar> with TickerProviderStateMixin
     final workspaceProvider = context.watch<WorkspaceProvider>();
 
     // 强制展开时（移动端以抽屉展示）直接铺满父级约束，
-    // 抽屉宽度与侧边栏配置宽度不一致，无需参与宽度与展开动画
+    // 抽屉宽度与侧边栏配置宽度不一致，无需参与宽度与展开动画；
+    // 外层抽屉外壳已提供底色与圆角，这里不再额外留边距，避免圆角被内层吃掉
     if (widget.forceExpanded) {
-      return Padding(
-        padding: const EdgeInsets.all(2),
-        child: _buildSidebarContent(context, workspaceProvider),
-      );
+      return _buildSidebarContent(context, workspaceProvider);
     }
 
     final isExpanded = workspaceProvider.isLeftSidebarExpanded;
@@ -180,12 +178,16 @@ class _LeftSidebarState extends State<LeftSidebar> with TickerProviderStateMixin
   /// 构建完整的侧边栏内容
   Widget _buildSidebarContent(BuildContext context, WorkspaceProvider workspaceProvider) {
     final colorScheme = Theme.of(context).colorScheme;
-    
+
     return Container(
-      decoration: BoxDecoration(
-        color: colorScheme.surface,
-        borderRadius: BorderRadius.circular(6),
-      ),
+      // 移动端抽屉内由外层 Material 外壳统一提供底色与圆角，
+      // 这里不再自绘背景与 6 圆角，避免两层圆角嵌套导致边缘出现直角与色差
+      decoration: widget.forceExpanded
+          ? null
+          : BoxDecoration(
+              color: colorScheme.surface,
+              borderRadius: BorderRadius.circular(6),
+            ),
       child: Column(
         children: [
           // 左侧边栏顶部切换按钮
