@@ -5,6 +5,7 @@ import 'package:quick_write/core/providers/workspace_provider.dart';
 import 'package:quick_write/core/services/settings_service.dart';
 import 'package:quick_write/core/utils/platform_capabilities.dart';
 import 'package:quick_write/core/utils/typography_extension.dart';
+import 'package:re_editor/re_editor.dart';
 
 /// 字数浮窗
 ///
@@ -94,15 +95,23 @@ class _WordCountFloatingWindowState extends State<WordCountFloatingWindow> {
       right: alignLeft ? null : _edgeMargin,
       child: ListenableBuilder(
         listenable: listenable,
-        builder: (context, _) => GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: widget.onTap,
-          child: _buildWindow(
-            context,
-            tab.wordCount,
-            speedEnabled ? (tracker?.writingSpeed ?? 0) : null,
-            mode,
-            showWordCount,
+        builder: (context, _) => TextFieldTapRegion(
+          // 浮窗压在编辑区之上，点击它不算“点到输入框外面”。
+          // 不声明点击区域时，按下就会触发标题输入框的 tapOutside 失焦逻辑，
+          // 光标与键盘一起被收走，章节标题、大纲标题尤其明显。
+          child: CodeEditorTapRegion(
+            // 正文是自绘编辑器，失焦判定走 re_editor 自己的点击区域
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: widget.onTap,
+              child: _buildWindow(
+                context,
+                tab.wordCount,
+                speedEnabled ? (tracker?.writingSpeed ?? 0) : null,
+                mode,
+                showWordCount,
+              ),
+            ),
           ),
         ),
       ),

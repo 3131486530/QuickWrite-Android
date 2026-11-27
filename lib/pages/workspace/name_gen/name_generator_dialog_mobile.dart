@@ -46,19 +46,29 @@ Future<String?> showMobileNameGeneratorDialog({required BuildContext context}) a
     // 所以只有它不跳。这里直接挂起这些输入框的取焦能力，等面板关闭再恢复。
     EditorFocusKeep.suspendInputFocus();
     SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
-    // 键盘收起是渐变动画，占位高度归零前面板仍会被顶起，等到归零再弹
-    for (int i = 0;
-        i < 12 && MediaQuery.viewInsetsOf(context).bottom > 0;
-        i++) {
+    // 键盘收起是渐变动画，占位高度归零前面板仍会被顶起，等到归零再弹。
+    // 这里必须读视图的原始输入法占位：Scaffold 开启 resizeToAvoidBottomInset 后
+    // 会把底部输入法占位从子树 MediaQuery 中剥离，底部快捷输入栏等位于 body 内的
+    // 上下文永远读到 0，等待会被直接跳过，面板就会在键盘仍在上推的瞬间弹出再掉下来。
+    final FlutterView? view = View.maybeOf(context);
+    // 叫起方可能在等待期间被移除（如快捷输入栏随键盘收起而销毁），
+    // 用 Navigator 的上下文弹出面板，避免叫起方消失后面板弹不出来。
+    final BuildContext sheetContext = Navigator.of(context).context;
+    double keyboardInset() {
+      if (view == null) return 0;
+      return view.viewInsets.bottom / view.devicePixelRatio;
+    }
+
+    for (int i = 0; i < 20 && keyboardInset() > 0; i++) {
       await Future<void>.delayed(const Duration(milliseconds: 40));
-      if (!context.mounted) return null;
+      if (!sheetContext.mounted) return null;
     }
     final String? result = await showModalBottomSheet<String>(
-      context: context,
+      context: sheetContext,
       isScrollControlled: true,
       useSafeArea: true,
       showDragHandle: true,
-      backgroundColor: Theme.of(context).colorScheme.surface,
+      backgroundColor: Theme.of(sheetContext).colorScheme.surface,
       builder: (context) => const _MobileNameGeneratorDialog(),
     );
     // 面板关闭动画尚未结束时恢复焦点会被路由的焦点作用域吞掉，等动画结束后再归还

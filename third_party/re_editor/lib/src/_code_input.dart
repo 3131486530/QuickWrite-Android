@@ -22,6 +22,14 @@ class _CodeInputController extends ChangeNotifier implements DeltaTextInputClien
   TextInputConnection? _textInputConnection;
   TextEditingValue? _remoteEditingValue;
 
+  /// 失焦后延迟断开输入连接的计时器
+  ///
+  /// 焦点在正文与标题等输入框之间转移时，断开连接若抢在下一个输入框
+  /// 建立连接之前执行，引擎会先收起输入法再被重新拉起，表现为键盘闪一下；
+  /// 延后到下一帧之后再断开可让新输入框先接管引擎当前客户端，旧连接的
+  /// 关闭请求随之失效，键盘保持不动。
+  Timer? _deferredCloseTimer;
+
   /// 改写发生后输入法可能仍持有改写前的文本，标记下一次增量是否需要校验失配并重建输入会话
   bool _pendingImeResync = false;
 
@@ -657,13 +665,69 @@ class _CodeInputController extends ChangeNotifier implements DeltaTextInputClien
 
   void _openOrCloseInputConnectionIfNeeded() {
     if (_focusNode.hasFocus && !_readOnly) {
+      _cancelDeferredClose();
       if (_focusNode.consumeKeyboardToken()) {
         _openInputConnection();
       }
     } else {
+      // 不在此刻直接断开：同一帧内焦点往往已交给另一个输入框
+      // （如从正文点到章节标题），立即断开会让引擎先清空客户端收起输入法，
+      // 紧接着新输入框 show 又把键盘拉起，形成“瞬间关闭又回弹”。
+      _scheduleDeferredClose();
+    }
+  }
+
+  /// 失焦后延迟断开输入连接
+  ///
+  /// 延迟到下一帧末之后执行，给接管焦点的新输入框留出建立连接的时机：
+  /// 届时引擎当前客户端已易主，此处的关闭请求不会再影响键盘。
+  /// 若这一帧内没有其他输入框接手（例如点击空白处），
+  /// 断开只是晚一拍，键盘照常收起。
+  void _scheduleDeferredClose() {
+    if (!_hasInputConnection) {
+      _controller.clearComposing();
+      return;
+    }
+    _cancelDeferredClose();
+    _deferredCloseTimer = Timer(const Duration(milliseconds: 32), () {
+      _deferredCloseTimer = null;
+      if (_focusNode.hasFocus) {
+        return;
+      }
+      // 焦点若已交给另一个输入框，键盘由它接管：
+      // 此时调用 close 会让引擎先收起输入法、再由对方重新拉起，键盘会闪一下。
+      if (_focusTakenByOtherTextInput()) {
+        // 只丢弃引用，不发关闭指令，键盘保持不动；
+        // 下次本编辑器获焦时连接为空，会重新 attach。
+        _textInputConnection = null;
+        return;
+      }
       _closeInputConnectionIfNeeded();
       _controller.clearComposing();
+    });
+  }
+
+  /// 当前焦点是否落在另一个文本输入框里
+  ///
+  /// 标准输入框以 [EditableTextState] 判定，自绘编辑器以 [CodeEditor] 判定。
+  bool _focusTakenByOtherTextInput() {
+    final FocusNode? next = FocusManager.instance.primaryFocus;
+    if (next == null || next == _focusNode) {
+      return false;
     }
+    final BuildContext? context = next.context;
+    if (context == null) {
+      return false;
+    }
+    if (context.findAncestorStateOfType<EditableTextState>() != null) {
+      return true;
+    }
+    return context.findAncestorWidgetOfExactType<CodeEditor>() != null;
+  }
+
+  void _cancelDeferredClose() {
+    _deferredCloseTimer?.cancel();
+    _deferredCloseTimer = null;
   }
 
   void _openInputConnection() {
@@ -698,6 +762,7 @@ class _CodeInputController extends ChangeNotifier implements DeltaTextInputClien
   }
 
   void _closeInputConnectionIfNeeded() {
+    _cancelDeferredClose();
     if (_hasInputConnection) {
       _textInputConnection!.close();
     }

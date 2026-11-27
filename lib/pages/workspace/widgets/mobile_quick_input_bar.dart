@@ -202,8 +202,9 @@ class _MobileQuickInputBarState extends State<MobileQuickInputBar> with WidgetsB
   Future<void> _handleRandomNameTap() async {
     final provider = context.read<WorkspaceProvider>();
     final bool editorHadFocus = provider.hasRecentEditorInput;
-    // 先收起输入法，避免键盘遮挡弹窗
-    FocusManager.instance.primaryFocus?.unfocus();
+    // 收起输入法、挂起编辑器取焦、等待键盘占位归零统一由面板内部处理。
+    // 此处若先 unfocus，键盘会先开始下落，面板紧接着弹出仍会被剩余占位顶起一次，
+    // 表现为面板先被顶起再掉下来。
     final String? name = await showMobileNameGeneratorDialog(context: context);
     if (!mounted || name == null) return;
     // 最近聚焦的是标题时写进标题，否则写进正文
