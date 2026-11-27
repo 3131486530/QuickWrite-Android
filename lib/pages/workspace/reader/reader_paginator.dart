@@ -312,7 +312,6 @@ class ReaderPageSlice {
   const ReaderPageSlice({
     required this.blocks,
     required this.hasTitle,
-    this.isChapterEnd = false,
   });
 
   /// 页内文本块
@@ -320,9 +319,6 @@ class ReaderPageSlice {
 
   /// 是否在本页顶部渲染章节标题
   final bool hasTitle;
-
-  /// 是否为章末过渡页
-  final bool isChapterEnd;
 
   /// 本页首个文本块所属段落序号（为空表示无正文）
   int get firstParagraphIndex => blocks.isEmpty ? -1 : blocks.first.paragraphIndex;

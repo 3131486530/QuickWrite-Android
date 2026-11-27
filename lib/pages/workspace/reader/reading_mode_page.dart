@@ -2,7 +2,6 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:quick_write/core/services/settings_service.dart';
 import 'package:quick_write/core/services/workspace/custom_highlight_service.dart';
 import 'package:quick_write/core/utils/color_utils.dart';
@@ -54,17 +53,9 @@ Future<void> showReadingMode(
 /// 下划线、字体颜色、对话高亮、自定义关键词高亮、行分隔线与编辑器背景色，
 /// 以及章节标题的字体、字号、颜色、对齐方式与顶边距，读起来与写作时所见一致。
 ///
-/// 交互：左右滑动或点击屏幕左右三分之一区域翻页，点击中间区域显隐顶部栏，
-/// 每章末尾有一次「本章完」过渡页，点击后进入下一章。
-/// 翻页动效
-enum ReadingTurnMode {
-  /// 直接换页，无过渡动画（默认）
-  none,
-
-  /// 下一页覆盖上一页的覆盖式翻页
-  cover,
-}
-
+/// 交互：点击屏幕左右三分之一区域或按键翻页（无动画直接换页），
+/// 点击中间区域显隐顶部栏；读完一章最后一页后继续翻页即进入下一章，
+/// 已是最后一章时不再翻页。
 class ReadingModePage extends StatefulWidget {
   const ReadingModePage({
     super.key,
@@ -108,12 +99,6 @@ class _ReadingModePageState extends State<ReadingModePage> {
 
   late final PageController _pageController;
 
-  /// 翻页动效，默认无动画
-  ReadingTurnMode _turnMode = ReadingTurnMode.none;
-
-  /// 翻页动效偏好的本地存储 key
-  static const String _turnModePrefKey = 'reader_turn_mode';
-
   int _chapterIndex = 0;
 
   /// 当前章正文，null 表示正在加载
@@ -126,7 +111,7 @@ class _ReadingModePageState extends State<ReadingModePage> {
   List<String> _paragraphs = const <String>[];
   List<int> _paragraphStarts = const <int>[];
 
-  /// 分页结果（末尾含一张章末过渡页）
+  /// 分页结果
   List<ReaderPageSlice> _pages = const <ReaderPageSlice>[];
 
   /// 上一次分页所依据的参数指纹，变化时重新分页
@@ -148,7 +133,6 @@ class _ReadingModePageState extends State<ReadingModePage> {
     _chapterIndex = widget.initialChapterIndex;
     _pageController = PageController();
     _loadChapter(_chapterIndex);
-    _restoreTurnMode();
   }
 
   @override
@@ -303,16 +287,11 @@ class _ReadingModePageState extends State<ReadingModePage> {
         _paragraphStarts = starts;
       },
     );
-    pages.add(const ReaderPageSlice(
-      blocks: <ReaderBlock>[],
-      hasTitle: false,
-      isChapterEnd: true,
-    ));
     _pages = pages;
     if (_pendingChapterEnd) {
       // 由「上一章」触发：分页完成后停在最后一页正文，而不是章首
       _pendingChapterEnd = false;
-      _pageIndex = math.max(0, _pages.length - 2);
+      _pageIndex = math.max(0, _pages.length - 1);
     }
     _pageIndex = _pageIndex.clamp(0, _pages.length - 1);
 
@@ -410,12 +389,11 @@ class _ReadingModePageState extends State<ReadingModePage> {
       },
       child: PageView.builder(
         controller: _pageController,
-        // 翻页只有「无动画」与「覆盖」两种，均靠点击/按键触发，禁用拖动抢占
+        // 翻页只靠点击/按键触发，禁用拖动抢占
         physics: const NeverScrollableScrollPhysics(),
         itemCount: _pages.length,
         onPageChanged: (int index) => setState(() => _pageIndex = index),
-        itemBuilder: (BuildContext context, int index) =>
-            _buildPageWithTurnEffect(context, index),
+        itemBuilder: (BuildContext context, int index) => _buildPage(context, index),
       ),
     );
   }
@@ -423,7 +401,6 @@ class _ReadingModePageState extends State<ReadingModePage> {
   /// 单页内容
   Widget _buildPage(BuildContext context, int index) {
     final ReaderPageSlice page = _pages[index];
-    if (page.isChapterEnd) return _buildChapterEndPage(context);
 
     final SettingsService settings = SettingsService.instance;
     final TextStyle bodyStyle = _bodyStyle(context);
@@ -501,43 +478,6 @@ class _ReadingModePageState extends State<ReadingModePage> {
         ? CustomPaint(painter: _DashedLinePainter(color: color))
         : ColoredBox(color: color);
     return SizedBox(height: _separatorHeight, child: line);
-  }
-
-  /// 章末过渡页
-  Widget _buildChapterEndPage(BuildContext context) {
-    final bool hasNext = _chapterIndex + 1 < widget.chapters.length;
-    final Color color = ColorUtils.getFontColorForTheme(context);
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: <Widget>[
-            Text('本章完', style: _titleStyle(context).copyWith(fontSize: 18)),
-            const SizedBox(height: 12),
-            Text(
-              hasNext ? '下一章 · ${widget.chapters[_chapterIndex + 1].title}' : '已经是最后一章',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                fontFamily: SettingsService.instance.fontFamily,
-                fontSize: 13,
-                color: color.withValues(alpha: 0.6),
-              ),
-            ),
-            const SizedBox(height: 28),
-            hasNext
-                ? FilledButton(
-                    onPressed: () => _loadChapter(_chapterIndex + 1),
-                    child: const Text('继续阅读'),
-                  )
-                : TextButton(
-                    onPressed: () => Navigator.of(context).maybePop(),
-                    child: const Text('退出阅读'),
-                  ),
-          ],
-        ),
-      ),
-    );
   }
 
   /// 页脚：章节名与当前页码
@@ -619,16 +559,6 @@ class _ReadingModePageState extends State<ReadingModePage> {
                           ),
                         ],
                       ),
-                    ),
-                    IconButton(
-                      onPressed: _toggleTurnMode,
-                      icon: Icon(_turnMode == ReadingTurnMode.cover
-                          ? Icons.layers_rounded
-                          : Icons.compare_arrows_rounded),
-                      color: color,
-                      tooltip: _turnMode == ReadingTurnMode.cover
-                          ? '翻页：覆盖（点击改为无动画）'
-                          : '翻页：无动画（点击改为覆盖）',
                     ),
                     IconButton(
                       onPressed: _openCatalog,
@@ -721,82 +651,10 @@ class _ReadingModePageState extends State<ReadingModePage> {
     );
   }
 
-  /// 从本地偏好恢复翻页动效
-  Future<void> _restoreTurnMode() async {
-    final SharedPreferences prefs = await SharedPreferences.getInstance();
-    final String? saved = prefs.getString(_turnModePrefKey);
-    if (!mounted || saved == null) return;
-    final ReadingTurnMode mode =
-        saved == 'cover' ? ReadingTurnMode.cover : ReadingTurnMode.none;
-    if (mode != _turnMode) setState(() => _turnMode = mode);
-  }
-
-  /// 切换翻页动效并持久化
-  Future<void> _toggleTurnMode() async {
-    final ReadingTurnMode next = _turnMode == ReadingTurnMode.cover
-        ? ReadingTurnMode.none
-        : ReadingTurnMode.cover;
-    setState(() => _turnMode = next);
-    final SharedPreferences prefs = await SharedPreferences.getInstance();
-    await prefs.setString(
-      _turnModePrefKey,
-      next == ReadingTurnMode.cover ? 'cover' : 'none',
-    );
-    if (!mounted) return;
-    SnackBarService.show(
-      context,
-      next == ReadingTurnMode.cover ? '翻页方式：覆盖' : '翻页方式：无动画',
-    );
-  }
-
-  /// 翻到指定页：无动画模式直接跳页，覆盖模式滑入覆盖
-  void _goToPage(int target) {
-    if (_turnMode == ReadingTurnMode.none) {
-      _pageController.jumpToPage(target);
-      return;
-    }
-    _pageController.animateToPage(
-      target,
-      duration: const Duration(milliseconds: 260),
-      curve: Curves.easeOutCubic,
-    );
-  }
-
-  /// 包装单页：覆盖翻页时把已翻过的页固定原位，形成新页压上去的效果
-  Widget _buildPageWithTurnEffect(BuildContext context, int index) {
-    final Widget page = _buildPage(context, index);
-    if (_turnMode == ReadingTurnMode.none) return page;
-    final Widget shadowed = DecoratedBox(
-      decoration: const BoxDecoration(
-        boxShadow: <BoxShadow>[
-          BoxShadow(color: Colors.black26, blurRadius: 16, offset: Offset(-3, 0)),
-        ],
-      ),
-      child: page,
-    );
-    return AnimatedBuilder(
-      animation: _pageController,
-      builder: (BuildContext context, Widget? child) {
-        double progress = _pageIndex.toDouble();
-        if (_pageController.hasClients && _pageController.position.haveDimensions) {
-          progress = _pageController.page ?? progress;
-        }
-        // PageView 原生会把旧页左移，这里补偿回原位，新页就压在上面滑入
-        final double covered = (progress - index).clamp(0.0, 1.0);
-        if (covered <= 0) return child!;
-        return Transform.translate(
-          offset: Offset(covered * MediaQuery.sizeOf(context).width, 0),
-          child: child,
-        );
-      },
-      child: shadowed,
-    );
-  }
-
   /// 上一页：首页时回到上一章的最后一页
   void _turnBack() {
     if (_pageIndex > 0) {
-      _goToPage(_pageIndex - 1);
+      _pageController.jumpToPage(_pageIndex - 1);
       return;
     }
     if (_chapterIndex == 0) {
@@ -806,10 +664,10 @@ class _ReadingModePageState extends State<ReadingModePage> {
     _loadChapterWithEnd(_chapterIndex - 1);
   }
 
-  /// 下一页：章末页时进入下一章
+  /// 下一页：本章最后一页时直接进入下一章，无下一章则不翻页
   void _turnForward() {
     if (_pageIndex < _pages.length - 1) {
-      _goToPage(_pageIndex + 1);
+      _pageController.jumpToPage(_pageIndex + 1);
       return;
     }
     if (_chapterIndex + 1 >= widget.chapters.length) {
