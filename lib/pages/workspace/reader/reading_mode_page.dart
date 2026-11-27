@@ -99,11 +99,15 @@ class _ReadingModePageState extends State<ReadingModePage> {
   /// 正文顶部留白：不留白，正文自 SafeArea 顶部铺排
   static const double _topPadding = 0;
 
-  /// 正文底部留白：不留白，正文可排到 SafeArea 底部
-  static const double _bottomPadding = 0;
+  /// 页码条带高度：页面底部只为页码让出这一条（约半行高），
+  /// 正文排到条带上沿即止，因此不会与右下角页码重叠
+  static const double _pageNumberBandHeight = 15;
 
-  /// 页码距页面底边 / 右边的距离
-  static const double _pageNumberInset = 2;
+  /// 正文底部留白：等于页码条带高度，正文整体避让页码区域
+  static const double _bottomPadding = _pageNumberBandHeight;
+
+  /// 页码距页面右边距离（垂直方向居中于页码条带内）
+  static const double _pageNumberInset = 0;
 
   /// 行分隔线高度
   ///
@@ -191,18 +195,23 @@ class _ReadingModePageState extends State<ReadingModePage> {
                             ? const Center(child: CircularProgressIndicator())
                             : _buildPages(context),
                       ),
-                      // 页码常显在页面右下角，不参与点击
+                      // 页码常显在页面右下角的页码条带内，正文在其上方避让，不参与点击
                       Positioned(
                         bottom: _pageNumberInset,
                         right: _horizontalPadding,
+                        height: _pageNumberBandHeight - _pageNumberInset,
                         child: IgnorePointer(
-                          child: Text(
-                            '${_pageIndex + 1}/${_pages.isEmpty ? 1 : _pages.length}',
-                            style: TextStyle(
-                              fontFamily: SettingsService.instance.fontFamily,
-                              fontSize: 11,
-                              color: ColorUtils.getFontColorForTheme(context)
-                                  .withValues(alpha: 0.45),
+                          child: Align(
+                            alignment: Alignment.centerRight,
+                            child: Text(
+                              '${_pageIndex + 1}/${_pages.isEmpty ? 1 : _pages.length}',
+                              style: TextStyle(
+                                fontFamily: SettingsService.instance.fontFamily,
+                                fontSize: 11,
+                                height: 1.0,
+                                color: ColorUtils.getFontColorForTheme(context)
+                                    .withValues(alpha: 0.45),
+                              ),
                             ),
                           ),
                         ),
