@@ -50,7 +50,7 @@ Future<String?> showMobileNameGeneratorDialog({required BuildContext context}) a
     // 这里必须读视图的原始输入法占位：Scaffold 开启 resizeToAvoidBottomInset 后
     // 会把底部输入法占位从子树 MediaQuery 中剥离，底部快捷输入栏等位于 body 内的
     // 上下文永远读到 0，等待会被直接跳过，面板就会在键盘仍在上推的瞬间弹出再掉下来。
-    final FlutterView? view = View.maybeOf(context);
+    final view = View.maybeOf(context);
     // 叫起方可能在等待期间被移除（如快捷输入栏随键盘收起而销毁），
     // 用 Navigator 的上下文弹出面板，避免叫起方消失后面板弹不出来。
     final BuildContext sheetContext = Navigator.of(context).context;
