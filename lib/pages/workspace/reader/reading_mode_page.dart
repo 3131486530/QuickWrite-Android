@@ -96,15 +96,14 @@ class _ReadingModePageState extends State<ReadingModePage> {
   /// 正文左右留白
   static const double _horizontalPadding = 20;
 
-  /// 正文顶部留白
-  static const double _topPadding = 1;
+  /// 正文顶部留白：不留白，正文自 SafeArea 顶部铺排
+  static const double _topPadding = 0;
 
-  /// 正文底部安全留白
-  ///
-  /// 分页高度按可用高度扣除该值，避免末行文字紧贴屏幕底边或被系统手势区遮挡。
-  /// 取 16：约等于正文半行高，末行与屏幕底部/手势区拉开呼吸距离，
-  /// 又不至于明显减少每页行数（8 在部分机型上仍显局促）。
-  static const double _bottomPadding = 16;
+  /// 正文底部留白：不留白，正文可排到 SafeArea 底部
+  static const double _bottomPadding = 0;
+
+  /// 页码距页面底边 / 右边的距离
+  static const double _pageNumberInset = 2;
 
   /// 行分隔线高度
   ///
@@ -192,9 +191,9 @@ class _ReadingModePageState extends State<ReadingModePage> {
                             ? const Center(child: CircularProgressIndicator())
                             : _buildPages(context),
                       ),
-                      // 页码常显在右上角、章节标题上方区域，不参与点击
+                      // 页码常显在页面右下角，不参与点击
                       Positioned(
-                        top: 2,
+                        bottom: _pageNumberInset,
                         right: _horizontalPadding,
                         child: IgnorePointer(
                           child: Text(
