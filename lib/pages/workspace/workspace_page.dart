@@ -872,9 +872,6 @@ class _WorkspaceContentState extends State<_WorkspaceContent> with WidgetsBindin
     );
   }
 
-  /// 构建移动端关键词预览开关
-  ///
-  /// 仅在正文标签页且当前书籍已绑定关键词时显示；
   /// 构建字数统计指示（点击可打开详细字数统计弹窗）
   ///
   /// 通过 ListenableBuilder 监听专用的字数通知器，编辑器内容变化时仅重建此区域；
