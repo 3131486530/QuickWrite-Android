@@ -1359,9 +1359,11 @@ class AppSettings {
         pairedSymbolEnterJumpEnabled,
         quickInputBarLeftAction,
         quickInputBarRightAction,
-        quickInputBarThirdAction,
-        outlineQuickInputPanelOpen,
-        quickInputSymbolsText,
+        Object.hash(
+          quickInputBarThirdAction,
+          outlineQuickInputPanelOpen,
+          quickInputSymbolsText,
+        ),
         Object.hashAll(quickPhrases),
         Object.hash(Object.hashAll(textReplacementRules), autoReplaceEnabled),
         Object.hash(
