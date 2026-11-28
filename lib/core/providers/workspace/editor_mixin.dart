@@ -1,0 +1,2730 @@
+part of '../workspace_provider.dart';
+
+/// 编辑器域 Mixin
+///
+/// 管理标签页、查找替换、全文搜索、自动保存、会话追踪、备份恢复等
+/// 服务于小说编辑器与大纲编辑器的状态与操作。
+///
+/// 依赖 [BookDataMixin]：通过 `on WorkspaceStateBase, BookDataMixin` 约束，
+/// 直接访问 currentBook / chapters / settingItems / saveChapterContent 等，
+/// 并实现 [WorkspaceStateBase] 中声明的 [closeTab] 与
+/// [saveChapterCursorPositionIfAny] 协调方法，供 [BookDataMixin] 反向调用。
+mixin EditorMixin on WorkspaceStateBase, BookDataMixin {
+  // ================= 查找替换状态 =================
+
+  /// 查找替换栏是否可见
+  bool _isFindReplaceVisible = false;
+
+  /// 查找文本
+  String _findText = '';
+
+  /// 替换文本
+  String _replaceText = '';
+
+  /// 大小写敏感
+  bool _findCaseSensitive = false;
+
+  /// 是否显示替换区域
+  bool _showReplace = false;
+
+  /// 匹配结果列表（存储每个匹配的起始和结束偏移量）
+  final List<TextSelection> _findMatches = [];
+
+  /// 当前匹配索引（在 _findMatches 中的位置，-1 表示无选中匹配）
+  int _currentMatchIndex = -1;
+
+  /// 查找起点（相对于文档全文的偏移量）
+  ///
+  /// 打开查找替换栏时记录编辑器光标位置，输入查找词后优先从该位置
+  /// 向后定位首个匹配项，而不是每次都被拉回文件开头。
+  int? _findAnchorOffset;
+
+  /// 查找结果刷新的合并定时器
+  ///
+  /// 正文每敲一个字都会重建全部匹配；连续输入时把多次重建合并成一次，
+  /// 避免每个按键都扫描一遍全文并触发整页重建。
+  Timer? _findRefreshTimer;
+
+  /// 挂起的查找更新是否来自关键词输入
+  ///
+  /// 关键词变化的合并刷新除了重算匹配，还要从查找起点重新定位并选中首个匹配；
+  /// 而正文变化触发的合并刷新只重算匹配，靠该标记区分两种收尾动作。
+  bool _pendingFindFromKeyword = false;
+
+  // ================= 全文搜索状态 =================
+
+  /// 全文搜索关键词
+  String _globalSearchQuery = '';
+
+  /// 全文搜索是否大小写敏感
+  bool _globalSearchCaseSensitive = false;
+
+  /// 全文搜索是否同时搜索大纲文件
+  bool _globalSearchIncludeOutlines = false;
+
+  /// 全文搜索结果列表
+  List<GlobalSearchResult> _globalSearchResults = [];
+
+  /// 全文搜索是否正在进行
+  bool _isGlobalSearching = false;
+
+  /// 等待内容加载完成的标签页（标签页ID -> 完成信号）
+  ///
+  /// 跳转到尚未加载内容的新标签页时，需等编辑器异步读取完章节内容后，
+  /// 才能依据全文搜索记录的偏移量定位匹配位置，此表用于在加载完成时唤醒等待方。
+  final Map<String, Completer<void>> _contentLoadWaiters = {};
+
+  // ================= 多标签页状态 =================
+
+  /// 当前选中的标签页索引
+  int _currentTabIndex = -1;
+
+  // ================= 自动保存状态 =================
+
+  /// 自动保存防抖定时器
+  Timer? _autoSaveTimer;
+
+  // ================= 码字会话追踪器 =================
+
+  /// 当前会话的码字统计追踪器，工作台初始化时创建
+  WritingSessionTracker? _sessionTracker;
+
+  /// 获取码字会话追踪器
+  WritingSessionTracker? get sessionTracker => _sessionTracker;
+
+  // ================= 字数统计通知 =================
+
+  /// 字数/统计更新通知器
+  ///
+  /// 独立于 WorkspaceProvider 的全局 notifyListeners，编辑器内容变化时
+  /// 仅通知底部状态栏等依赖字数的局部 UI 刷新，避免打字时高频触发
+  /// 整棵工作台组件树重建。
+  final ValueNotifier<int> wordCountNotifier = ValueNotifier<int>(0);
+
+  /// 撤销/恢复可用状态通知器
+  ///
+  /// 与 [wordCountNotifier] 同理，独立于全局 notifyListeners，
+  /// 仅通知顶部操作栏刷新撤销与恢复按钮的禁用态。
+  final ValueNotifier<int> editHistoryNotifier = ValueNotifier<int>(0);
+
+  /// 标签页保存状态通知器
+  ///
+  /// 自动保存每秒都会完成一次，把「未保存 → 已保存」的标记变化连同
+  /// 章节字数一起刷新即可；若走全局 notifyListeners，编辑器会随之
+  /// 每秒重建一次。这里改用独立通知器，只让状态栏与同步图标重建。
+  final ValueNotifier<int> tabSavedStateNotifier = ValueNotifier<int>(0);
+
+  // ================= Getters =================
+
+  bool get isFindReplaceVisible => _isFindReplaceVisible;
+  String get findText => _findText;
+  String get replaceText => _replaceText;
+  bool get findCaseSensitive => _findCaseSensitive;
+  bool get showReplace => _showReplace;
+  List<TextSelection> get findMatches => List.unmodifiable(_findMatches);
+  int get currentMatchIndex => _currentMatchIndex;
+  String get globalSearchQuery => _globalSearchQuery;
+  bool get globalSearchCaseSensitive => _globalSearchCaseSensitive;
+  bool get globalSearchIncludeOutlines => _globalSearchIncludeOutlines;
+  List<GlobalSearchResult> get globalSearchResults =>
+      List.unmodifiable(_globalSearchResults);
+  bool get isGlobalSearching => _isGlobalSearching;
+
+  /// 查找替换栏显示时，编辑器需要预留的顶边距高度
+  double get findReplaceBarPadding {
+    if (!_isFindReplaceVisible) return 0.0;
+    // 替换区域展开时高度更大（两行），收起时仅查找行（单行）
+    return _showReplace ? 88.0 : 48.0;
+  }
+
+  /// 当前匹配的序号（从1开始，0表示尚未定位，显示为?）
+  int get currentMatchDisplayIndex =>
+      _findMatches.isEmpty || _currentMatchIndex < 0 ? 0 : _currentMatchIndex + 1;
+
+  /// 总匹配数
+  int get totalMatchCount => _findMatches.length;
+
+  List<EditorTab> get openedTabs => List.unmodifiable(_openedTabs);
+  int get currentTabIndex => _currentTabIndex;
+
+  /// 获取当前选中的标签页
+  EditorTab? get currentTab {
+    if (_currentTabIndex >= 0 && _currentTabIndex < _openedTabs.length) {
+      return _openedTabs[_currentTabIndex];
+    }
+    return null;
+  }
+
+  /// 是否有打开的标签页
+  bool get hasOpenedTabs => _openedTabs.isNotEmpty;
+
+  // ================= 查找替换方法 =================
+
+  /// 获取当前标签页对应的查找替换目标
+  ///
+  /// 大纲编辑器标签页返回 [OutlineEditorState]（直接实现 [FindReplaceTarget]）；
+  /// 小说编辑器标签页返回 [CodeLineFindReplaceTarget]（包装行编辑控制器）。
+  FindReplaceTarget? get _currentFindReplaceTarget {
+    final tab = currentTab;
+    if (tab == null) return null;
+
+    // 大纲编辑器标签页：直接使用编辑器状态作为查找替换目标
+    if (tab.usesOutlineEditor) {
+      final state = tab.editorKey.currentState;
+      if (state is OutlineEditorState) return state;
+      return null;
+    }
+
+    // 小说编辑器标签页：用适配器包装文本控制器
+    if (tab.textController == null) return null;
+    return CodeLineFindReplaceTarget(
+      controller: tab.textController!,
+      onScrollToSelection: () {
+        final editorState = tab.editorKey.currentState;
+        if (editorState is NovelEditorState) editorState.scrollToCursor();
+      },
+      onRequestFocus: () {
+        final editorState = tab.editorKey.currentState;
+        if (editorState is NovelEditorState) editorState.requestEditorFocus();
+      },
+    );
+  }
+
+  /// 当前编辑器是否持有输入焦点
+  ///
+  /// 用于在打开弹窗、切走焦点之前记录编辑器是否处于可插入状态。
+  bool get currentEditorHasFocus {
+    final state = currentTab?.editorKey.currentState;
+    if (state is NovelEditorState) return state.hasEditorFocus;
+    if (state is OutlineEditorState) return state.hasEditorFocus;
+    return false;
+  }
+
+  /// 当前是否有可回插文本的输入位置
+  ///
+  /// 工具面板打开时会先抢走焦点，故不能只看「此刻是否聚焦」：
+  /// 标题输入框与编辑器正文都登记过最近聚焦记录。
+  bool get hasRecentEditorInput =>
+      currentEditorHasFocus ||
+      EditorFocusKeep.lastTitleFocus != null ||
+      EditorFocusKeep.lastEditorFocus != null;
+
+  /// 把输入焦点还给当前编辑器
+  ///
+  /// 用于顶部快捷键、左右抽屉等操作结束后恢复光标：
+  /// 优先按最近一次聚焦的输入节点归还（标题优先于正文），
+  /// 节点已卸载时退回编辑器自身的焦点入口。
+  bool restoreEditorFocus() {
+    if (EditorFocusKeep.titleIsMostRecent && EditorFocusKeep.restoreLastTitleFocus()) {
+      return true;
+    }
+    if (EditorFocusKeep.restoreLastEditorFocus()) return true;
+    final state = currentTab?.editorKey.currentState;
+    if (state is NovelEditorState) {
+      state.requestEditorFocus();
+      return true;
+    }
+    if (state is OutlineEditorState) {
+      state.requestEditorFocus();
+      return true;
+    }
+    return false;
+  }
+
+  /// 把文本插入当前编辑器并恢复编辑器光标
+  ///
+  /// 用于弹窗关闭后回插正文：先写入文本再请求编辑器焦点，
+  /// 没有可编辑的标签页时返回 false。
+  bool insertTextToCurrentEditor(String text) {
+    if (text.isEmpty) return false;
+    final tab = currentTab;
+    if (tab == null) return false;
+
+    final state = tab.editorKey.currentState;
+    if (state is NovelEditorState) {
+      state.insertText(text);
+      state.requestEditorFocus();
+      return true;
+    }
+    if (state is OutlineEditorState) {
+      state.insertPlainText(text);
+      state.requestFocus();
+      return true;
+    }
+    return false;
+  }
+
+  /// 把文本插入最近的输入位置（标题或正文）
+  ///
+  /// 工具面板弹层会先夺走焦点，此时判断插入目标要依据「最近一次聚焦」：
+  /// 最近聚焦的是章节标题或大纲标题时写入标题，否则写入正文，
+  /// 返回是否插入成功。
+  bool insertTextToRecentInput(String text) {
+    if (text.isEmpty) return false;
+    final tab = currentTab;
+    if (tab == null) return false;
+
+    final state = tab.editorKey.currentState;
+    if (EditorFocusKeep.titleIsMostRecent) {
+      if (state is NovelEditorState && state.insertTextToTitle(text)) return true;
+      if (state is OutlineEditorState && state.insertTextToTitle(text)) return true;
+    }
+    return insertTextToCurrentEditor(text);
+  }
+
+  /// 向当前编辑器插入文本
+  ///
+  /// 仅当编辑器正持有输入焦点时才插入，返回是否插入成功：
+  /// 小说编辑器调用 [NovelEditorState.insertText]，大纲编辑器调用
+  /// [OutlineEditorState.insertPlainText]。焦点不在编辑器时返回 false，
+  /// 由调用方退化为仅复制到剪贴板。
+  bool insertTextIfEditorFocused(String text) {
+    if (text.isEmpty) return false;
+    final tab = currentTab;
+    if (tab == null) return false;
+
+    final state = tab.editorKey.currentState;
+    if (state is NovelEditorState) {
+      if (!state.hasEditorFocus) return false;
+      state.insertText(text);
+      return true;
+    }
+    if (state is OutlineEditorState) {
+      if (!state.hasEditorFocus) return false;
+      state.insertPlainText(text);
+      return true;
+    }
+    return false;
+  }
+
+  /// 对小说编辑器标签页应用修改标记和字数统计更新
+  ///
+  /// 大纲编辑器标签页的修改标记和字数统计由 [OutlineEditorState.notifyContentChanged] 通过回调链处理，
+  /// 此方法仅对拥有 textController 的标签页（小说编辑器）生效。
+  void _applyTabModificationAndWordCount() {
+    final tab = currentTab;
+    if (tab == null || tab.textController == null) return;
+    if (!tab.isModified) {
+      tab.isModified = true;
+      notifyTabModified(tab.id);
+    }
+    tab.updateWordCount();
+    notifyWordCountUpdated();
+  }
+
+  /// 记录当前编辑器的光标位置作为查找起点
+  ///
+  /// 无可用选区时清空起点，后续匹配将回退到从文档开头查找。
+  void _captureFindAnchor() {
+    final selection = _currentFindReplaceTarget?.selection;
+    _findAnchorOffset =
+        selection != null && selection.isValid ? selection.extentOffset : null;
+  }
+
+  /// 打开查找替换栏
+  /// [initialText] 初始查找文本（可选，如选中文字后打开）
+  /// [showReplace] 是否展开替换区域（Ctrl+H 时为 true）
+  void openFindReplace({String? initialText, bool showReplace = false}) {
+    // 没有打开的标签页时，不打开查找面板
+    if (!hasOpenedTabs) return;
+
+    _isFindReplaceVisible = true;
+    _showReplace = showReplace;
+
+    final target = _currentFindReplaceTarget;
+
+    // 记录打开面板时的光标位置，作为优先匹配的起点
+    _captureFindAnchor();
+
+    // 如果没有显式传入初始文本，尝试从编辑器选中区域获取
+    String? searchText = initialText;
+    if (target != null && (searchText == null || searchText.isEmpty)) {
+      final sel = target.selection;
+      if (sel.isValid && !sel.isCollapsed) {
+        // 仅处理单行选中（不包含换行符）
+        final selectedText = target.text.substring(sel.start, sel.end);
+        if (!selectedText.contains('\n')) {
+          searchText = selectedText;
+        }
+      }
+    }
+
+    if (searchText != null && searchText.isNotEmpty) {
+      _findText = searchText;
+      _performFind();
+      // 如果是从编辑器选中区域获取的文本，定位到对应的匹配项索引
+      if (initialText == null && _findMatches.isNotEmpty && target != null) {
+        final sel = target.selection;
+        if (sel.isValid && !sel.isCollapsed) {
+          for (int i = 0; i < _findMatches.length; i++) {
+            if (_findMatches[i].start == sel.start &&
+                _findMatches[i].end == sel.end) {
+              _currentMatchIndex = i;
+              break;
+            }
+          }
+        }
+      }
+    } else if (_findText.isNotEmpty) {
+      _performFind();
+    }
+
+    // 已有查找词但尚未定位到匹配项时，从查找起点向后选中最近的匹配
+    if (_currentMatchIndex < 0 && _findMatches.isNotEmpty) {
+      _currentMatchIndex = _findFirstMatchIndexFromAnchor();
+      _selectCurrentMatch();
+    }
+
+    notifyListeners();
+  }
+
+  /// 关闭查找替换栏
+  void closeFindReplace() {
+    _isFindReplaceVisible = false;
+    // 关掉挂起的合并刷新，避免栏已关闭后仍白跑一次全文扫描
+    _cancelFindRefreshTimer();
+    _clearFindMatches();
+    _findAnchorOffset = null;
+    // 关闭后将焦点归还给编辑器
+    requestEditorFocus();
+    notifyListeners();
+  }
+
+  /// 刷新当前标签页的查找结果
+  ///
+  /// [resetIndex] 为 true 时重置索引为 -1（显示 ?），
+  /// 用于标签页切换/打开等场景；false 时保留并校准索引，
+  /// 用于文本内容变化（输入、粘贴、撤销等）
+  void refreshFindIfVisible({bool resetIndex = false}) {
+    if (!_isFindReplaceVisible || _findText.isEmpty) return;
+    if (resetIndex) {
+      // 低频场景（标签页切换、内容重新载入）：丢弃挂起的合并刷新，立即重算
+      _cancelFindRefreshTimer();
+      // 标签页切换或内容重新加载后，以当前光标位置重新确定查找起点
+      _captureFindAnchor();
+      _performFind();
+      notifyListeners();
+      return;
+    }
+
+    // 高频场景：正文每次变化都会走到这里（逐字输入、长按删除、撤销）。
+    // 合并 120ms 内的多次请求，定时器到期时读取的是最新正文，
+    // 结果与逐次重建一致，但把「全文扫描 + 整页重建」的次数
+    // 从每键一次降到每 120ms 一次。
+    if (_findRefreshTimer != null) return;
+    // 正文变化只重算匹配，不再执行「选中首个匹配」那一步
+    _pendingFindFromKeyword = false;
+    _findRefreshTimer = Timer(const Duration(milliseconds: 120), () {
+      _findRefreshTimer = null;
+      if (!_isFindReplaceVisible || _findText.isEmpty) return;
+      _rebuildMatches();
+      notifyListeners();
+    });
+  }
+
+  /// 立即应用尚未执行的合并刷新
+  ///
+  /// 查找导航与替换都基于当前的匹配列表工作，若此时仍有挂起的刷新，
+  /// 必须先执行，否则会按旧正文的偏移量定位或替换。
+  void _flushFindRefresh() {
+    if (_findRefreshTimer == null) return;
+    // 关键词挂起的刷新还带着「从查找起点选中首个匹配」的收尾动作，
+    // 必须在定时器取消前记下来，否则导航会落在未选中的匹配列表上。
+    final fromKeyword = _pendingFindFromKeyword;
+    _cancelFindRefreshTimer();
+    _pendingFindFromKeyword = false;
+    if (!_isFindReplaceVisible || _findText.isEmpty) return;
+    if (fromKeyword) {
+      _performFind();
+      if (_findMatches.isNotEmpty) {
+        _currentMatchIndex = _findFirstMatchIndexFromAnchor();
+        _selectCurrentMatch();
+      }
+      return;
+    }
+    _rebuildMatches();
+  }
+
+  /// 取消挂起的合并刷新
+  void _cancelFindRefreshTimer() {
+    _findRefreshTimer?.cancel();
+    _findRefreshTimer = null;
+  }
+
+  /// 切换查找替换栏显示/隐藏
+  void toggleFindReplace() {
+    if (_isFindReplaceVisible) {
+      closeFindReplace();
+    } else {
+      openFindReplace();
+    }
+  }
+
+  /// 更新查找文本并执行搜索
+  void updateFindText(String text) {
+    // 从空文本开始输入时，以当前光标位置作为查找起点
+    if (_findText.isEmpty && text.isNotEmpty) {
+      _captureFindAnchor();
+    }
+
+    _findText = text;
+
+    // 关键词被清空：立刻清掉旧匹配，无需再等合并窗口
+    if (text.isEmpty) {
+      _cancelFindRefreshTimer();
+      _pendingFindFromKeyword = false;
+      _findMatches.clear();
+      _currentMatchIndex = -1;
+      notifyListeners();
+      return;
+    }
+
+    // 逐字输入关键词时，若每个按键都全文扫描一遍，
+    // 长文档下的扫描开销会直接压在输入帧上。
+    // 这里合并 120ms 内的连续输入，只按最终关键词扫描一次。
+    _scheduleKeywordSearch();
+    notifyListeners();
+  }
+
+  /// 关键词变化后的合并查找
+  ///
+  /// 到期时重算全部匹配，并从查找起点向后选中最近的匹配项，
+  /// 避免每次都把视图拉回文件开头。
+  void _scheduleKeywordSearch() {
+    _cancelFindRefreshTimer();
+    _pendingFindFromKeyword = true;
+    _findRefreshTimer = Timer(const Duration(milliseconds: 120), () {
+      _findRefreshTimer = null;
+      _pendingFindFromKeyword = false;
+      if (!_isFindReplaceVisible || _findText.isEmpty) return;
+      _performFind();
+      if (_findMatches.isNotEmpty) {
+        _currentMatchIndex = _findFirstMatchIndexFromAnchor();
+        _selectCurrentMatch();
+      }
+      notifyListeners();
+    });
+  }
+
+  /// 更新替换文本
+  void updateReplaceText(String text) {
+    _replaceText = text;
+  }
+
+  /// 设置大小写敏感
+  void setFindCaseSensitive(bool value) {
+    // 切换后立即全量重算，挂起的合并刷新已无意义
+    _cancelFindRefreshTimer();
+    _pendingFindFromKeyword = false;
+    _findCaseSensitive = value;
+    _performFind();
+    notifyListeners();
+  }
+
+  /// 设置替换区域显示状态
+  void setShowReplace(bool value) {
+    _showReplace = value;
+    notifyListeners();
+  }
+
+  /// 根据查找起点，找到应优先选中的匹配项索引
+  ///
+  /// 返回包含查找起点或位于其后的第一个匹配的索引；
+  /// 查找起点在所有匹配之后时循环回第一个。
+  int _findFirstMatchIndexFromAnchor() {
+    final anchor = _findAnchorOffset;
+    if (anchor == null) return 0;
+
+    for (int i = 0; i < _findMatches.length; i++) {
+      if (_findMatches[i].end > anchor) {
+        return i;
+      }
+    }
+    // 查找起点在所有匹配之后，循环回第一个
+    return 0;
+  }
+
+  /// 根据当前光标位置，找到最近的匹配项索引
+  ///
+  /// 返回光标位置之后第一个匹配的索引；如果光标在所有匹配之后，则循环回第一个
+  int _findNextMatchIndexFromCursor() {
+    final target = _currentFindReplaceTarget;
+    if (target == null) return 0;
+
+    final cursorEnd = target.selection.extentOffset;
+
+    for (int i = 0; i < _findMatches.length; i++) {
+      if (_findMatches[i].baseOffset >= cursorEnd) {
+        return i;
+      }
+    }
+    // 光标在所有匹配之后，循环回第一个
+    return 0;
+  }
+
+  /// 根据当前光标位置，找到之前最近的匹配项索引
+  ///
+  /// 返回光标位置之前最后一个匹配的索引；如果光标在所有匹配之前，则循环回最后一个
+  int _findPreviousMatchIndexFromCursor() {
+    final target = _currentFindReplaceTarget;
+    if (target == null) return _findMatches.length - 1;
+
+    final cursorStart = target.selection.baseOffset;
+
+    for (int i = _findMatches.length - 1; i >= 0; i--) {
+      if (_findMatches[i].extentOffset <= cursorStart) {
+        return i;
+      }
+    }
+    // 光标在所有匹配之前，循环回最后一个
+    return _findMatches.length - 1;
+  }
+
+  /// 查找下一个匹配
+  void findNext() {
+    _flushFindRefresh();
+    if (_findMatches.isEmpty) return;
+    _currentMatchIndex = _findNextMatchIndexFromCursor();
+    _selectCurrentMatch();
+    notifyListeners();
+  }
+
+  /// 查找上一个匹配
+  void findPrevious() {
+    _flushFindRefresh();
+    if (_findMatches.isEmpty) return;
+    _currentMatchIndex = _findPreviousMatchIndexFromCursor();
+    _selectCurrentMatch();
+    notifyListeners();
+  }
+
+  /// 替换当前匹配项
+  ///
+  /// 判断当前光标是否正好选中了某个查找匹配项
+  /// - 是（selection 非空且与某个 match 完全一致）：直接替换该 match，然后定位到下一个
+  /// - 否（selection 为空 / collapsed / 选中的不是查找项）：仅执行"查找下一个"来定位，不替换
+  void replaceCurrentMatch() {
+    _flushFindRefresh();
+    final target = _currentFindReplaceTarget;
+    if (target == null) return;
+
+    final sel = target.selection;
+
+    // 判断当前 selection 是否恰好选中了某个查找匹配项
+    int? matchedIndex;
+    for (int i = 0; i < _findMatches.length; i++) {
+      if (sel.baseOffset == _findMatches[i].start &&
+          sel.extentOffset == _findMatches[i].end) {
+        matchedIndex = i;
+        break;
+      }
+    }
+
+    // 未选中任何查找匹配项，先执行"查找下一个"来定位，不替换
+    if (matchedIndex == null) {
+      findNext();
+      return;
+    }
+
+    // 已选中某个匹配项，直接替换它
+    _currentMatchIndex = matchedIndex;
+    final match = _findMatches[matchedIndex];
+    final text = target.text;
+
+    if (match.start < 0 || match.end > text.length) return;
+
+    target.replaceRange(match.start, match.end, _replaceText);
+
+    // 将光标定位到替换文本之后，确保后续 _findNextMatchIndexFromCursor 从正确位置开始查找
+    final cursorAfterReplace = match.start + _replaceText.length;
+    target.selection = TextSelection.collapsed(offset: cursorAfterReplace);
+
+    // 通知内容变化（大纲编辑器由此触发自动保存和字数统计）
+    target.notifyContentChanged();
+    // 小说编辑器标签页的修改标记和字数统计由 Provider 处理
+    _applyTabModificationAndWordCount();
+
+    // 重新搜索（文本已变化）
+    _performFind();
+
+    // 定位到下一个匹配项
+    if (_findMatches.isNotEmpty) {
+      _currentMatchIndex = _findNextMatchIndexFromCursor();
+      _selectCurrentMatch();
+    }
+
+    notifyListeners();
+  }
+
+  /// 替换所有匹配项
+  void replaceAllMatches() {
+    _flushFindRefresh();
+    final target = _currentFindReplaceTarget;
+    if (target == null) return;
+    if (_findMatches.isEmpty || _findText.isEmpty) return;
+
+    target.replaceAll(_findMatches, _replaceText);
+
+    // 通知内容变化（大纲编辑器由此触发自动保存和字数统计）
+    target.notifyContentChanged();
+    // 小说编辑器标签页的修改标记和字数统计由 Provider 处理
+    _applyTabModificationAndWordCount();
+
+    // 重新搜索
+    _performFind();
+    notifyListeners();
+  }
+
+  /// 仅重建匹配列表，不重置 _currentMatchIndex
+  ///
+  /// 用于文本内容变化（输入、粘贴、撤销等）后刷新匹配结果，
+  /// 保持用户当前的导航位置不变；仅在索引超出范围时做边界修正
+  void _rebuildMatches() {
+    if (_findText.isEmpty) {
+      _findMatches.clear();
+      _currentMatchIndex = -1;
+      return;
+    }
+
+    final target = _currentFindReplaceTarget;
+    if (target == null) {
+      _findMatches.clear();
+      _currentMatchIndex = -1;
+      return;
+    }
+
+    final text = target.text;
+
+    // 保存旧索引和旧匹配项位置（用于校准）
+    final oldIndex = _currentMatchIndex;
+    int? oldMatchStart;
+
+    if (oldIndex >= 0 && oldIndex < _findMatches.length) {
+      oldMatchStart = _findMatches[oldIndex].baseOffset;
+    }
+
+    _findMatches.clear();
+
+    if (text.isEmpty) {
+      _currentMatchIndex = -1;
+      return;
+    }
+
+    try {
+      final searchText =
+          _findCaseSensitive ? _findText : _findText.toLowerCase();
+      // 长度取实际参与匹配的字符串：少数文字（如土耳其语 İ）转小写后
+      // 长度会变化，若用原文长度会让选中区间偏移甚至越出正文末尾。
+      final searchTextLength = searchText.length;
+      final sourceText = _findCaseSensitive ? text : text.toLowerCase();
+
+      int startIndex = 0;
+      while (startIndex < sourceText.length) {
+        final index = sourceText.indexOf(searchText, startIndex);
+        if (index == -1) break;
+        // 结尾偏移必须夹在正文长度内，否则会给编辑器一个非法的选区
+        final matchEnd = (index + searchTextLength).clamp(index, text.length);
+        _findMatches.add(TextSelection(
+          baseOffset: index,
+          extentOffset: matchEnd,
+        ));
+        startIndex = matchEnd > index ? matchEnd : index + 1;
+      }
+    } catch (e) {
+      _findMatches.clear();
+      _currentMatchIndex = -1;
+      return;
+    }
+
+    // 校准索引：尝试在新的匹配列表中找到与旧索引最接近的匹配项
+    if (_findMatches.isEmpty) {
+      _currentMatchIndex = -1;
+    } else if (oldMatchStart != null && oldIndex >= 0) {
+      // 优先找到起始位置最接近旧位置的匹配项
+      int bestIndex = 0;
+      int bestDiff = (_findMatches[0].baseOffset - oldMatchStart).abs();
+      for (int i = 1; i < _findMatches.length; i++) {
+        final diff = (_findMatches[i].baseOffset - oldMatchStart).abs();
+        if (diff < bestDiff) {
+          bestDiff = diff;
+          bestIndex = i;
+        }
+      }
+      _currentMatchIndex = bestIndex;
+    } else if (_currentMatchIndex >= _findMatches.length) {
+      _currentMatchIndex = _findMatches.length - 1;
+    } else if (_currentMatchIndex < 0) {
+      _currentMatchIndex = 0;
+    }
+  }
+
+  /// 执行查找并重置索引
+  ///
+  /// 用于用户主动触发查找（输入关键词、切换标签页等），
+  /// 会将 _currentMatchIndex 重置为 -1
+  void _performFind() {
+    _findMatches.clear();
+    _currentMatchIndex = -1;
+
+    if (_findText.isEmpty) return;
+
+    final target = _currentFindReplaceTarget;
+    if (target == null) return;
+
+    final text = target.text;
+    if (text.isEmpty) return;
+
+    try {
+      // 普通文本匹配
+      final searchText =
+          _findCaseSensitive ? _findText : _findText.toLowerCase();
+      // 长度取实际参与匹配的字符串：少数文字（如土耳其语 İ）转小写后
+      // 长度会变化，若用原文长度会让选中区间偏移甚至越出正文末尾。
+      final searchTextLength = searchText.length;
+      final sourceText = _findCaseSensitive ? text : text.toLowerCase();
+
+      int startIndex = 0;
+      while (startIndex < sourceText.length) {
+        final index = sourceText.indexOf(searchText, startIndex);
+        if (index == -1) break;
+        // 结尾偏移必须夹在正文长度内，否则会给编辑器一个非法的选区
+        final matchEnd = (index + searchTextLength).clamp(index, text.length);
+        _findMatches.add(TextSelection(
+          baseOffset: index,
+          extentOffset: matchEnd,
+        ));
+        startIndex = matchEnd > index ? matchEnd : index + 1;
+      }
+    } catch (e) {
+      // 匹配失败时，清空匹配结果
+      _findMatches.clear();
+    }
+  }
+
+  /// 清空匹配结果
+  void _clearFindMatches() {
+    _findMatches.clear();
+    _currentMatchIndex = -1;
+  }
+
+  /// 选中当前匹配项
+  void _selectCurrentMatch() {
+    final target = _currentFindReplaceTarget;
+    if (target == null) return;
+    if (_currentMatchIndex < 0 || _currentMatchIndex >= _findMatches.length) {
+      return;
+    }
+
+    final match = _findMatches[_currentMatchIndex];
+    target.selection = match;
+
+    // 通知编辑器滚动到选区位置
+    target.scrollToSelection();
+  }
+
+  /// 请求当前标签页的编辑器获取焦点
+  ///
+  /// 无打开标签页或编辑器尚未挂载时不作处理。
+  void requestEditorFocus() {
+    final target = _currentFindReplaceTarget;
+    if (target == null) return;
+    target.requestFocus();
+  }
+
+  // ================= 全文搜索方法 =================
+
+  /// 更新全文搜索关键词并执行搜索
+  Future<void> updateGlobalSearchQuery(String query) async {
+    _globalSearchQuery = query;
+    if (query.isEmpty) {
+      _globalSearchResults = [];
+      notifyListeners();
+      return;
+    }
+    await _performGlobalSearch();
+  }
+
+  /// 设置全文搜索大小写敏感
+  Future<void> setGlobalSearchCaseSensitive(bool value) async {
+    _globalSearchCaseSensitive = value;
+    if (_globalSearchQuery.isNotEmpty) {
+      await _performGlobalSearch();
+    }
+  }
+
+  /// 设置全文搜索是否同时搜索大纲文件
+  Future<void> setGlobalSearchIncludeOutlines(bool value) async {
+    _globalSearchIncludeOutlines = value;
+    if (_globalSearchQuery.isNotEmpty) {
+      await _performGlobalSearch();
+    } else {
+      // 无关键词时仅切换搜索范围，直接通知 UI 刷新复选框状态
+      notifyListeners();
+    }
+  }
+
+  /// 执行全文搜索
+  /// 遍历当前书籍的所有章节文件，以及可选的大纲文件，搜索关键词
+  /// 勾选包含大纲时，大纲文件的搜索结果排在正文之前
+  ///
+  /// 支持使用 "&&" 连接多个关键词进行交集搜索：
+  /// 文件级筛选要求同时包含所有关键词，行级匹配则展示任意关键词的命中位置，
+  /// 便于用户在通过交集筛选的文件内查看每个关键词的具体出现位置。
+  Future<void> _performGlobalSearch() async {
+    if (_globalSearchQuery.isEmpty || _currentBook == null) return;
+
+    // 解析多关键词，若解析后为空（如仅输入了分隔符）则清空结果
+    final keywords = SearchQueryParser.parse(_globalSearchQuery);
+    if (keywords.isEmpty) {
+      _globalSearchResults = [];
+      _isGlobalSearching = false;
+      notifyListeners();
+      return;
+    }
+
+    _isGlobalSearching = true;
+    notifyListeners();
+
+    final results = <GlobalSearchResult>[];
+
+    // 搜索大纲文件（设定项），结果显示在正文之前
+    if (_globalSearchIncludeOutlines) {
+      for (final item in _settingItems) {
+        try {
+          final content = await readSettingItemContent(item);
+          // 大纲文件为 Markdown 序列化文本，转为节点纯文本行后再匹配，
+          // 使行内容与偏移量与大纲编辑器中的文本保持一致，便于跳转定位
+          final result = _matchGlobalSearchContent(
+            content: OutlineMarkdownCodec.parseContentLines(content).join('\n'),
+            keywords: keywords,
+            targetUuid: item.uuid,
+            title: item.title,
+            groupName: getSettingGroupName(item.groupUuid),
+            isOutline: true,
+          );
+          if (result != null) results.add(result);
+        } catch (e) {
+          debugPrint('全文搜索读取大纲文件失败: ${item.title}, $e');
+        }
+      }
+    }
+
+    // 搜索正文文件（章节）
+    for (final chapter in _chapters) {
+      try {
+        final content = await readChapterContent(chapter);
+        final result = _matchGlobalSearchContent(
+          content: content,
+          keywords: keywords,
+          targetUuid: chapter.uuid,
+          title: chapter.title,
+          groupName: getVolumeName(chapter.volumeUuid),
+          isOutline: false,
+        );
+        if (result != null) results.add(result);
+      } catch (e) {
+        debugPrint('全文搜索读取章节失败: ${chapter.title}, $e');
+      }
+    }
+
+    _globalSearchResults = results;
+    _isGlobalSearching = false;
+    notifyListeners();
+  }
+
+  /// 在单个文件内容中匹配关键词
+  ///
+  /// 先做文件级交集过滤（必须同时包含所有关键词），再收集行级命中；
+  /// 无匹配时返回 null。[content] 的行结构需与目标编辑器中的文本保持一致，
+  /// 以便按行偏移量跳转定位。
+  GlobalSearchResult? _matchGlobalSearchContent({
+    required String content,
+    required List<String> keywords,
+    required String targetUuid,
+    required String title,
+    required String groupName,
+    required bool isOutline,
+  }) {
+    if (content.isEmpty) return null;
+
+    // 文件级交集过滤：必须同时包含所有关键词
+    if (!SearchQueryParser.containsAll(
+      content,
+      keywords,
+      caseSensitive: _globalSearchCaseSensitive,
+    )) {
+      return null;
+    }
+
+    // 收集行级匹配（任意关键词命中即记录该行）
+    final matchLines = <GlobalSearchMatchLine>[];
+    final lines = content.split('\n');
+    int lineStartOffset = 0;
+
+    for (int lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+      final line = lines[lineIndex];
+      final matchCountInLine = SearchQueryParser.countMatches(
+        line,
+        keywords,
+        caseSensitive: _globalSearchCaseSensitive,
+      );
+
+      if (matchCountInLine > 0) {
+        matchLines.add(GlobalSearchMatchLine(
+          lineNumber: lineIndex + 1,
+          lineContent: line,
+          matchCount: matchCountInLine,
+          startOffset: lineStartOffset,
+        ));
+      }
+
+      lineStartOffset += line.length + 1;
+    }
+
+    if (matchLines.isEmpty) return null;
+
+    return GlobalSearchResult(
+      targetUuid: targetUuid,
+      title: title,
+      groupName: groupName,
+      isOutline: isOutline,
+      totalMatches: matchLines.fold<int>(0, (sum, m) => sum + m.matchCount),
+      matchLines: matchLines,
+    );
+  }
+
+  /// 点击全文搜索结果，打开对应文件并定位
+  Future<void> navigateToGlobalSearchResult(
+      GlobalSearchResult result, GlobalSearchMatchLine matchLine) async {
+    final existingIndex =
+        _openedTabs.indexWhere((t) => t.id == result.targetUuid);
+
+    if (existingIndex != -1) {
+      // 目标文件已打开，直接切换标签页
+      _currentTabIndex = existingIndex;
+    } else {
+      // 查找搜索结果对应的章节或设定项；目标已不存在时不跳转
+      final EditorTab? tab;
+      if (result.isOutline) {
+        final item =
+            _settingItems.where((i) => i.uuid == result.targetUuid).firstOrNull;
+        tab = item == null
+            ? null
+            : EditorTab(
+                id: item.uuid,
+                title: item.title,
+                type: EditorTabType.settings,
+                isPreview: true,
+              );
+      } else {
+        final chapter =
+            _chapters.where((c) => c.uuid == result.targetUuid).firstOrNull;
+        tab = chapter == null
+            ? null
+            : EditorTab(
+                id: chapter.uuid,
+                title: chapter.title,
+                type: EditorTabType.chapter,
+                isPreview: true,
+              );
+      }
+      if (tab == null) return;
+
+      await _openSearchResultTab(tab);
+    }
+
+    _locateSearchMatchInTab(result, matchLine);
+    notifyListeners();
+  }
+
+  /// 打开搜索结果的标签页，并等待其内容加载完成
+  ///
+  /// 新标签页的内容由编辑器异步读取，注册完成信号后等待内容就绪，
+  /// 以便随后依据搜索记录的偏移量定位；超时兜底，避免标签页被中途切换导致永久等待。
+  Future<void> _openSearchResultTab(EditorTab tab) async {
+    final completer = Completer<void>();
+    _contentLoadWaiters[tab.id] = completer;
+
+    openTab(tab, isPreview: true);
+
+    try {
+      await completer.future.timeout(const Duration(seconds: 2));
+    } on TimeoutException {
+      _contentLoadWaiters.remove(tab.id);
+    }
+  }
+
+  /// 在已打开的标签页中定位搜索匹配行
+  ///
+  /// 章节标签页通过文本控制器设置选区，大纲标签页通过大纲编辑器设置选区，
+  /// 两者使用相同的全局偏移量（所有文本行以换行拼接后的位置）。
+  void _locateSearchMatchInTab(
+      GlobalSearchResult result, GlobalSearchMatchLine matchLine) {
+    final tab =
+        _openedTabs.where((t) => t.id == result.targetUuid).firstOrNull;
+    if (tab == null) return;
+
+    final text = _searchableTextOf(tab);
+    if (text == null) return;
+
+    final keywords = SearchQueryParser.parse(_globalSearchQuery);
+    final sourceText = _globalSearchCaseSensitive ? text : text.toLowerCase();
+
+    // 在匹配行范围内查找最早出现的关键词位置
+    final lineStart = matchLine.startOffset;
+    final lineEnd = lineStart + matchLine.lineContent.length;
+    final match = SearchQueryParser.findFirstMatch(
+      sourceText,
+      keywords,
+      start: lineStart,
+      caseSensitive: _globalSearchCaseSensitive,
+    );
+    if (match == null || match.start >= lineEnd) return;
+
+    // 按编辑器类型写入选区
+    final controller = tab.textController;
+    final editorState = tab.editorKey.currentState;
+    if (controller != null) {
+      controller.selection = CodeLineSelectionUtils.selectionFromFlat(
+        controller.text,
+        match.start,
+        match.start + match.length,
+      );
+    } else if (editorState is OutlineEditorState) {
+      editorState.selection = TextSelection(
+        baseOffset: match.start,
+        extentOffset: match.start + match.length,
+      );
+    }
+
+    // 通知编辑器滚动到新选区位置（编辑器尚未挂载时延后至挂载完成）
+    _scrollToSelectionWhenReady(tab, 10);
+  }
+
+  /// 取标签页编辑器可搜索的完整文本
+  ///
+  /// 章节标签页取文本控制器内容；大纲标签页取所有节点文本按换行拼接的结果。
+  /// 编辑器尚未加载完成时返回 null。
+  String? _searchableTextOf(EditorTab tab) {
+    final controller = tab.textController;
+    if (controller != null) return controller.text;
+
+    final editorState = tab.editorKey.currentState;
+    if (editorState is OutlineEditorState) return editorState.text;
+    return null;
+  }
+
+  /// 在编辑器挂载完成后滚动到当前选区
+  ///
+  /// 新建标签页的内容加载完成时，编辑器组件要到随后的一帧才创建，
+  /// 此时其状态尚不可用，直接滚动不会生效；此处逐帧等待挂载完成后再滚动定位。
+  /// [maxFrames] 限制最大等待帧数，避免标签页被关闭等情况下无限等待。
+  void _scrollToSelectionWhenReady(EditorTab tab, int maxFrames) {
+    final editorState = tab.editorKey.currentState;
+    if (editorState is NovelEditorState) {
+      editorState.scrollToCursor();
+      return;
+    }
+    if (editorState is OutlineEditorState) {
+      editorState.scrollToSelection();
+      return;
+    }
+    if (maxFrames <= 0 || !_openedTabs.contains(tab)) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scrollToSelectionWhenReady(tab, maxFrames - 1);
+    });
+  }
+
+  // ================= 敏感词检测 =================
+
+  /// 扫描全部章节，列出含有敏感词的章节与命中行
+  ///
+  /// [words] 为当前词库；每个章节读取一次正文，按行收集命中，
+  /// 结果顺序与章节顺序一致，便于用户按目录顺序逐章检查。
+  Future<List<SensitiveWordScanResult>> scanSensitiveWords(List<String> words) async {
+    if (words.isEmpty || _currentBook == null) return const [];
+
+    final results = <SensitiveWordScanResult>[];
+    for (final chapter in _chapters) {
+      try {
+        final String content = await readChapterContent(chapter);
+        final result = _matchSensitiveWordContent(content, words, chapter);
+        if (result != null) results.add(result);
+      } catch (e) {
+        debugPrint('敏感词检测读取章节失败: ${chapter.title}, $e');
+      }
+    }
+    return results;
+  }
+
+  /// 在单个章节内容中收集敏感词命中行
+  ///
+  /// 无命中时返回 null；行偏移量与编辑器文本保持一致，供跳转定位使用。
+  SensitiveWordScanResult? _matchSensitiveWordContent(
+    String content,
+    List<String> words,
+    ChapterModel chapter,
+  ) {
+    if (content.isEmpty) return null;
+
+    final matchLines = <GlobalSearchMatchLine>[];
+    final lines = content.split('\n');
+    int lineStartOffset = 0;
+
+    for (int lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+      final line = lines[lineIndex];
+      final matchCount = _countSensitiveWordsInLine(line, words);
+      if (matchCount > 0) {
+        matchLines.add(GlobalSearchMatchLine(
+          lineNumber: lineIndex + 1,
+          lineContent: line,
+          matchCount: matchCount,
+          startOffset: lineStartOffset,
+        ));
+      }
+      lineStartOffset += line.length + 1;
+    }
+
+    if (matchLines.isEmpty) return null;
+
+    return SensitiveWordScanResult(
+      chapterUuid: chapter.uuid,
+      title: chapter.title,
+      groupName: getVolumeName(chapter.volumeUuid),
+      totalMatches: matchLines.fold<int>(0, (sum, m) => sum + m.matchCount),
+      matchLines: matchLines,
+    );
+  }
+
+  /// 统计一行文本中的敏感词命中次数（不区分大小写）
+  int _countSensitiveWordsInLine(String line, List<String> words) {
+    if (line.isEmpty) return 0;
+    final lowerLine = line.toLowerCase();
+    int total = 0;
+    for (final word in words) {
+      final keyword = word.toLowerCase();
+      if (keyword.isEmpty) continue;
+      int start = 0;
+      while (true) {
+        final index = lowerLine.indexOf(keyword, start);
+        if (index == -1) break;
+        total++;
+        start = index + keyword.length;
+      }
+    }
+    return total;
+  }
+
+  /// 跳转到敏感词检测结果：打开章节并选中命中的敏感词
+  Future<void> navigateToSensitiveWordResult(
+    SensitiveWordScanResult result,
+    GlobalSearchMatchLine matchLine,
+    List<String> words,
+  ) async {
+    final existingIndex =
+        _openedTabs.indexWhere((t) => t.id == result.chapterUuid);
+
+    if (existingIndex != -1) {
+      _currentTabIndex = existingIndex;
+    } else {
+      // 目标章节已被删除时不跳转
+      final chapter =
+          _chapters.where((c) => c.uuid == result.chapterUuid).firstOrNull;
+      if (chapter == null) return;
+      await _openSearchResultTab(EditorTab(
+        id: chapter.uuid,
+        title: chapter.title,
+        type: EditorTabType.chapter,
+        isPreview: true,
+      ));
+    }
+
+    _locateSensitiveWordInTab(result.chapterUuid, matchLine, words);
+    notifyListeners();
+  }
+
+  /// 在已打开的章节标签页中选中指定行内的第一个敏感词
+  void _locateSensitiveWordInTab(
+    String chapterUuid,
+    GlobalSearchMatchLine matchLine,
+    List<String> words,
+  ) {
+    final tab = _openedTabs.where((t) => t.id == chapterUuid).firstOrNull;
+    if (tab == null) return;
+
+    final text = _searchableTextOf(tab);
+    final controller = tab.textController;
+    if (text == null || controller == null) return;
+
+    final match = SearchQueryParser.findFirstMatch(
+      text,
+      words,
+      start: matchLine.startOffset,
+    );
+    final lineEnd = matchLine.startOffset + matchLine.lineContent.length;
+    if (match == null || match.start >= lineEnd) return;
+
+    controller.selection = CodeLineSelectionUtils.selectionFromFlat(
+      text,
+      match.start,
+      match.start + match.length,
+    );
+    _scrollToSelectionWhenReady(tab, 10);
+  }
+
+  // ================= 大纲关键词跳转 =================
+
+  /// 目标节点的稳定键，老记录回退到层级路径
+  String _outlineNodeKey(String nodeId, String nodePath) =>
+      nodeId.isNotEmpty ? nodeId : nodePath;
+
+  /// 跳转到大纲关键词绑定的节点
+  ///
+  /// 目标设定项未打开时以预览标签页打开并等待内容加载完成；
+  /// 随后逐帧等待大纲编辑器就绪，定位并聚焦对应节点。
+  Future<void> navigateToOutlineKeyword(OutlineKeywordEntry entry) async {
+    final int existingIndex = _openedTabs.indexWhere((t) => t.id == entry.settingItemUuid);
+    if (existingIndex != -1) {
+      _currentTabIndex = existingIndex;
+      notifyListeners();
+      _revealOutlineNodeWhenReady(
+        _openedTabs[existingIndex],
+        _outlineNodeKey(entry.nodeId, entry.nodePath),
+        10,
+      );
+      return;
+    }
+
+    // 目标设定项已被删除时不跳转
+    final item = _settingItems.where((i) => i.uuid == entry.settingItemUuid).firstOrNull;
+    if (item == null) return;
+
+    final EditorTab tab = EditorTab(
+      id: item.uuid,
+      title: item.title,
+      type: EditorTabType.settings,
+      isPreview: true,
+    );
+    await _openSearchResultTab(tab);
+    notifyListeners();
+
+    final EditorTab? openedTab = _openedTabs.where((t) => t.id == entry.settingItemUuid).firstOrNull;
+    if (openedTab == null) return;
+    _revealOutlineNodeWhenReady(
+      openedTab,
+      _outlineNodeKey(entry.nodeId, entry.nodePath),
+      10,
+    );
+  }
+
+  /// 在大纲编辑器就绪后定位并聚焦指定节点
+  ///
+  /// 编辑器尚未挂载或内容尚未解析完成时逐帧重试，
+  /// [maxFrames] 用尽后放弃，避免标签页被切换等情况导致无限等待。
+  /// [fallbackText] 为节点定位失效时用于兜底匹配的节点文本。
+  /// [onResult] 在定位结束（成功或失败）时回调，供跳转入口提示用户。
+  void _revealOutlineNodeWhenReady(
+    EditorTab tab,
+    String nodeKey,
+    int maxFrames, {
+    String? fallbackText,
+    void Function(bool)? onResult,
+  }) {
+    final editorState = tab.editorKey.currentState;
+    if (editorState is OutlineEditorState) {
+      // 有关联文本时同时校验目标节点文本，兼容节点被移动或文字被修改的情况
+      final bool revealed = fallbackText == null
+          ? editorState.revealNodeByKey(nodeKey)
+          : editorState.revealLinkedNode(nodeKey: nodeKey, text: fallbackText);
+      if (revealed) {
+        onResult?.call(true);
+        return;
+      }
+      // 内容已加载完成仍找不到目标，说明节点已被删除或结构变化过大，无需继续重试
+      if (editorState.canSave) {
+        onResult?.call(false);
+        return;
+      }
+    }
+    if (maxFrames <= 0 || !_openedTabs.contains(tab)) {
+      onResult?.call(false);
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _revealOutlineNodeWhenReady(
+        tab,
+        nodeKey,
+        maxFrames - 1,
+        fallbackText: fallbackText,
+        onResult: onResult,
+      );
+    });
+  }
+
+  // ================= 大纲关联跳转 =================
+
+  /// 跳转到大纲关联的目标位置
+  ///
+  /// 正文目标打开章节标签页并按段落定位，设定目标打开设定标签页并定位节点。
+  /// 返回 false 表示目标已被删除或无法定位，供调用方提示用户。
+  Future<bool> navigateToOutlineLink(OutlineLinkTarget target) async {
+    if (target.type == OutlineLinkTargetType.setting) {
+      return _navigateToLinkedSetting(target);
+    }
+    return _navigateToLinkedChapter(target);
+  }
+
+  /// 跳转到关联的设定文件节点
+  Future<bool> _navigateToLinkedSetting(OutlineLinkTarget target) async {
+    final int existingIndex = _openedTabs.indexWhere((t) => t.id == target.targetUuid);
+    if (existingIndex != -1) {
+      _currentTabIndex = existingIndex;
+      notifyListeners();
+      final completer = Completer<bool>();
+      _revealOutlineNodeWhenReady(
+        _openedTabs[existingIndex],
+        _outlineNodeKey(target.nodeId, target.nodePath),
+        10,
+        fallbackText: target.anchorText,
+        onResult: (result) {
+          if (!completer.isCompleted) completer.complete(result);
+        },
+      );
+      return completer.future;
+    }
+
+    // 目标设定项已被删除时不跳转
+    final item = _settingItems.where((i) => i.uuid == target.targetUuid).firstOrNull;
+    if (item == null) return false;
+
+    final EditorTab tab = EditorTab(
+      id: item.uuid,
+      title: item.title,
+      type: EditorTabType.settings,
+      isPreview: true,
+    );
+    await _openSearchResultTab(tab);
+    notifyListeners();
+
+    final EditorTab? openedTab = _openedTabs.where((t) => t.id == target.targetUuid).firstOrNull;
+    if (openedTab == null) return false;
+
+    final completer = Completer<bool>();
+    _revealOutlineNodeWhenReady(
+      openedTab,
+      _outlineNodeKey(target.nodeId, target.nodePath),
+      10,
+      fallbackText: target.anchorText,
+      onResult: (result) {
+        if (!completer.isCompleted) completer.complete(result);
+      },
+    );
+    return completer.future;
+  }
+
+  /// 跳转到关联的正文文件段落
+  Future<bool> _navigateToLinkedChapter(OutlineLinkTarget target) async {
+    final int existingIndex = _openedTabs.indexWhere((t) => t.id == target.targetUuid);
+    if (existingIndex != -1) {
+      _currentTabIndex = existingIndex;
+      notifyListeners();
+    } else {
+      // 目标章节已被删除时不跳转
+      final chapter = _chapters.where((c) => c.uuid == target.targetUuid).firstOrNull;
+      if (chapter == null) return false;
+
+      final EditorTab tab = EditorTab(
+        id: chapter.uuid,
+        title: chapter.title,
+        type: EditorTabType.chapter,
+        isPreview: true,
+      );
+      await _openSearchResultTab(tab);
+      notifyListeners();
+    }
+
+    final EditorTab? tab = _openedTabs.where((t) => t.id == target.targetUuid).firstOrNull;
+    if (tab == null) return false;
+
+    final completer = Completer<bool>();
+    _revealChapterParagraphWhenReady(tab, target, 30, (result) {
+      if (!completer.isCompleted) completer.complete(result);
+    });
+    return completer.future;
+  }
+
+  /// 在章节内容就绪后定位到关联段落
+  ///
+  /// 内容尚未载入完成时逐帧重试，[maxFrames] 用尽后放弃；
+  /// 内容已就绪但找不到目标段落时立即回调失败，无需继续等待。
+  void _revealChapterParagraphWhenReady(
+    EditorTab tab,
+    OutlineLinkTarget target,
+    int maxFrames,
+    void Function(bool) onResult,
+  ) {
+    final bool contentReady = tab.textController != null && !tab.isContentLoading;
+    if (contentReady) {
+      if (tab.loadErrorMessage != null || !_locateChapterParagraph(tab, target)) {
+        onResult(false);
+        return;
+      }
+      _scrollToSelectionWhenReady(tab, 10);
+      onResult(true);
+      return;
+    }
+
+    if (maxFrames <= 0 || !_openedTabs.contains(tab)) {
+      onResult(false);
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _revealChapterParagraphWhenReady(tab, target, maxFrames - 1, onResult);
+    });
+  }
+
+  /// 在章节正文中选中关联段落
+  ///
+  /// 返回 false 表示章节内容尚未载入完成或未能定位到目标段落。
+  bool _locateChapterParagraph(EditorTab tab, OutlineLinkTarget target) {
+    final controller = tab.textController;
+    if (controller == null || tab.isContentLoading) return false;
+
+    final String text = controller.text;
+    if (text.isEmpty) return false;
+
+    final ({int start, int end})? range = _resolveChapterParagraphRange(text, target);
+    if (range == null) return false;
+
+    controller.selection = CodeLineSelectionUtils.selectionFromFlat(text, range.start, range.end);
+    return true;
+  }
+
+  /// 计算关联段落在章节正文中的范围
+  ///
+  /// 依次尝试：记录段落序号处的精确文本匹配、全文精确文本匹配、
+  /// 文本相似度模糊匹配，最后回退到记录段落序号。
+  /// 目标段落已被大幅改写且段落序号也失效时返回 null。
+  ({int start, int end})? _resolveChapterParagraphRange(String text, OutlineLinkTarget target) {
+    final List<({int start, int end})> spans = _chapterParagraphSpans(text);
+    if (spans.isEmpty) return null;
+
+    final String anchor = target.anchorText.trim();
+    final int paragraphIndex = target.paragraphIndex;
+
+    // 记录段落序号处的文本与锚点一致时直接命中
+    if (paragraphIndex >= 0 && paragraphIndex < spans.length) {
+      final span = spans[paragraphIndex];
+      final String paragraph = text.substring(span.start, span.end).trim();
+      if (anchor.isEmpty || paragraph == anchor) {
+        if (anchor.isEmpty) return (start: span.start, end: span.end);
+        final int anchorStart = text.indexOf(anchor, span.start);
+        if (anchorStart >= 0 && anchorStart < span.end) {
+          final int anchorEnd = anchorStart + anchor.length > span.end ? span.end : anchorStart + anchor.length;
+          return (start: anchorStart, end: anchorEnd);
+        }
+      }
+    }
+
+    // 全文匹配锚点，取与记录段落序号最近的一次命中
+    if (anchor.isNotEmpty) {
+      int? bestStart;
+      int bestDistance = 1 << 30;
+      int searchStart = 0;
+      while (searchStart < text.length) {
+        final int index = text.indexOf(anchor, searchStart);
+        if (index < 0) break;
+
+        int matchParagraphIndex = 0;
+        for (int i = 0; i < spans.length; i++) {
+          if (index >= spans[i].start && index < spans[i].end) {
+            matchParagraphIndex = i;
+            break;
+          }
+        }
+
+        final int distance = (matchParagraphIndex - paragraphIndex).abs();
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          bestStart = index;
+        }
+        searchStart = index + anchor.length;
+      }
+      if (bestStart != null) return (start: bestStart, end: bestStart + anchor.length);
+    }
+
+    // 段落被局部修改导致文本无法精确匹配时，按相似度寻找最接近的段落
+    // 过短的文本相似度不可靠，不做模糊匹配，直接进入序号兜底判断
+    if (anchor.length >= 4) {
+      final List<double> scores = [
+        for (final span in spans)
+          TextSimilarity.similarity(anchor, text.substring(span.start, span.end)),
+      ];
+      int? bestIndex;
+      double bestScore = 0;
+      for (int i = 0; i < scores.length; i++) {
+        if (scores[i] > bestScore) {
+          bestScore = scores[i];
+          bestIndex = i;
+        }
+      }
+
+      if (bestIndex != null && bestScore >= TextSimilarity.matchThreshold) {
+        // 分数接近时优先选择与记录段落序号更近的段落
+        int chosen = bestIndex;
+        int chosenDistance = (bestIndex - paragraphIndex).abs();
+        for (int i = 0; i < scores.length; i++) {
+          if (scores[i] < bestScore - 0.05) continue;
+          final int distance = (i - paragraphIndex).abs();
+          if (distance < chosenDistance) {
+            chosen = i;
+            chosenDistance = distance;
+          }
+        }
+        final span = spans[chosen];
+        return (start: span.start, end: span.end);
+      }
+    }
+
+    // 文本与相似度均未命中时，仅在段落数量未变化的情况下按记录序号兜底：
+    // 段落数量变化说明序号可能整体偏移，此时宁可不跳转也不跳到错误段落
+    final bool paragraphCountUnchanged =
+        target.paragraphCount <= 0 || target.paragraphCount == spans.length;
+    if (paragraphCountUnchanged && paragraphIndex >= 0 && paragraphIndex < spans.length) {
+      final span = spans[paragraphIndex];
+      return (start: span.start, end: span.end);
+    }
+    return null;
+  }
+
+  /// 将章节正文按行拆分为非空段落范围
+  ///
+  /// 段落范围不含换行符，空行不产生段落，与关联弹窗中的段落序号保持一致。
+  List<({int start, int end})> _chapterParagraphSpans(String text) {
+    final spans = <({int start, int end})>[];
+    int lineStart = 0;
+    for (int i = 0; i <= text.length; i++) {
+      final bool isTextEnd = i == text.length;
+      if (!isTextEnd && text.codeUnitAt(i) != 0x0A) continue;
+      if (i > lineStart && text.substring(lineStart, i).trim().isNotEmpty) {
+        spans.add((start: lineStart, end: i));
+      }
+      lineStart = i + 1;
+    }
+    return spans;
+  }
+
+  /// 通知指定标签页的内容已加载完成
+  ///
+  /// 由编辑器完成异步内容读取后调用，用于唤醒等待该标签页内容就绪的调用方
+  /// （如全文搜索跳转）。
+  void notifyTabContentLoaded(String tabId) {
+    _contentLoadWaiters.remove(tabId)?.complete();
+  }
+
+  // ================= 编辑操作 =================
+
+  /// 当前标签页是否可以撤销
+  ///
+  /// 按当前标签页的编辑器类型向对应编辑器查询；无标签页时不可撤销。
+  bool get canUndo {
+    final tab = currentTab;
+    if (tab == null) return false;
+    final editorState = tab.editorKey.currentState;
+    if (editorState is OutlineEditorState) return editorState.canUndo;
+    if (editorState is NovelEditorState) return editorState.canUndo;
+    return false;
+  }
+
+  /// 当前标签页是否可以重做
+  ///
+  /// 与 [canUndo] 同理，按当前标签页的编辑器类型向对应编辑器查询。
+  bool get canRedo {
+    final tab = currentTab;
+    if (tab == null) return false;
+    final editorState = tab.editorKey.currentState;
+    if (editorState is OutlineEditorState) return editorState.canRedo;
+    if (editorState is NovelEditorState) return editorState.canRedo;
+    return false;
+  }
+
+  /// 撤销当前标签页的编辑
+  ///
+  /// 按当前标签页的编辑器类型分派：大纲编辑器标签页调用大纲编辑器的撤销，
+  /// 小说编辑器标签页调用小说编辑器的撤销。供顶部工具栏等外部入口调用。
+  void undo() {
+    final tab = currentTab;
+    if (tab == null) return;
+    final editorState = tab.editorKey.currentState;
+    if (tab.usesOutlineEditor) {
+      if (editorState is OutlineEditorState) editorState.undo();
+    } else if (editorState is NovelEditorState) {
+      editorState.undo();
+    }
+    notifyEditHistoryChanged();
+  }
+
+  /// 重做当前标签页的编辑
+  ///
+  /// 与 [undo] 同理，按当前标签页的编辑器类型分派到对应编辑器的重做。
+  void redo() {
+    final tab = currentTab;
+    if (tab == null) return;
+    final editorState = tab.editorKey.currentState;
+    if (tab.usesOutlineEditor) {
+      if (editorState is OutlineEditorState) editorState.redo();
+    } else if (editorState is NovelEditorState) {
+      editorState.redo();
+    }
+    notifyEditHistoryChanged();
+  }
+
+  // ================= 标签页管理 =================
+
+  /// 打开新标签页
+  /// 如果标签页已存在，则切换到该标签页
+  /// [isPreview] 是否以预览模式打开（默认 true）
+  /// 预览模式下，已有预览标签页会被替换为新标签页
+  void openTab(EditorTab tab, {bool isPreview = true}) {
+    // 如果全局设置关闭了预览模式，则始终以固定模式打开
+    if (isPreview && !SettingsService.instance.previewModeEnabled) {
+      isPreview = false;
+      tab.isPreview = false;
+    }
+
+    // 检查是否已存在相同ID的标签页
+    final existingIndex = _openedTabs.indexWhere((t) => t.id == tab.id);
+    if (existingIndex != -1) {
+      // 已存在，切换到该标签页
+      _currentTabIndex = existingIndex;
+      // 切换到已加载过的标签页，尝试刷新查找结果
+      refreshFindIfVisible(resetIndex: true);
+    } else if (isPreview) {
+      // 预览模式：查找当前已有的预览标签页并替换
+      final previewIndex = _openedTabs.indexWhere((t) => t.isPreview);
+      if (previewIndex != -1) {
+        // 释放被替换的预览标签页资源
+        final oldTab = _openedTabs[previewIndex];
+        _disposeTabResources(oldTab);
+        // 替换预览标签页
+        _openedTabs[previewIndex] = tab;
+        _currentTabIndex = previewIndex;
+      } else {
+        // 没有预览标签页，添加新标签页
+        _openedTabs.add(tab);
+        _currentTabIndex = _openedTabs.length - 1;
+      }
+    } else {
+      // 非预览模式，直接添加新标签页
+      _openedTabs.add(tab);
+      _currentTabIndex = _openedTabs.length - 1;
+    }
+
+    notifyListeners();
+  }
+
+  /// 打开备份预览标签页
+  ///
+  /// 如果同一备份文件已打开，则切换到该标签页
+  /// 标签页标题格式：章节名 - 备份时间
+  /// 备份预览标签页默认以预览模式打开，会替换已有的预览标签页
+  void openBackupPreviewTab({
+    required String backupFilePath,
+    required String chapterTitle,
+    required String formattedTime,
+    required String bookUuid,
+    required String volumeName,
+    bool isPreview = true,
+    bool originalIsSetting = false,
+    String? originalSettingItemFilePath,
+  }) {
+    // 如果全局设置关闭了预览模式，则始终以固定模式打开
+    if (isPreview && !SettingsService.instance.previewModeEnabled) {
+      isPreview = false;
+    }
+
+    // 按 backupFilePath 去重
+    final existingIndex = _openedTabs.indexWhere(
+      (t) => t.type == EditorTabType.backupPreview && t.backupFilePath == backupFilePath,
+    );
+
+    if (existingIndex != -1) {
+      _currentTabIndex = existingIndex;
+      refreshFindIfVisible(resetIndex: true);
+    } else {
+      final tab = EditorTab(
+        id: 'backup_${DateTime.now().millisecondsSinceEpoch}',
+        title: '$chapterTitle - $formattedTime',
+        type: EditorTabType.backupPreview,
+        isPreview: isPreview,
+        backupFilePath: backupFilePath,
+        originalChapterTitle: chapterTitle,
+        originalBookUuid: bookUuid,
+        originalVolumeName: volumeName,
+        originalIsSetting: originalIsSetting,
+        originalSettingItemFilePath: originalSettingItemFilePath,
+      );
+
+      if (isPreview) {
+        // 当前标签页为预览模式的章节/设定时，固定该标签页，
+        // 将历史版本预览作为新标签页打开，避免当前文档被替换
+        final currentTab = this.currentTab;
+        final shouldPinCurrent = currentTab != null &&
+            currentTab.isPreview &&
+            (currentTab.type == EditorTabType.chapter ||
+                currentTab.type == EditorTabType.settings);
+
+        if (shouldPinCurrent) {
+          currentTab.isPreview = false;
+          _openedTabs.add(tab);
+          _currentTabIndex = _openedTabs.length - 1;
+        } else {
+          // 查找当前已有的预览标签页并替换
+          final previewIndex = _openedTabs.indexWhere((t) => t.isPreview);
+          if (previewIndex != -1) {
+            final oldTab = _openedTabs[previewIndex];
+            _disposeTabResources(oldTab);
+            _openedTabs[previewIndex] = tab;
+            _currentTabIndex = previewIndex;
+          } else {
+            _openedTabs.add(tab);
+            _currentTabIndex = _openedTabs.length - 1;
+          }
+        }
+      } else {
+        // 非预览模式，直接添加新标签页
+        _openedTabs.add(tab);
+        _currentTabIndex = _openedTabs.length - 1;
+      }
+    }
+    notifyListeners();
+  }
+
+  /// 释放标签页资源（停止备份计时器、保存光标位置、释放控制器）
+  void _disposeTabResources(EditorTab tab) {
+    // 停止备份计时器
+    BackupService.instance.stopTabBackupTimer(tab.id);
+
+    // 如果是章节标签页，保存光标位置到缓存
+    if (tab.type == EditorTabType.chapter &&
+        _currentBook != null &&
+        tab.cursorPosition != null) {
+      _saveChapterCursorPosition(tab);
+    }
+
+    // 释放资源
+    tab.textController?.dispose();
+    tab.chapterTitleController?.dispose();
+  }
+
+  /// 关闭标签页
+  ///
+  /// 实现 [WorkspaceStateBase] 声明的协调方法，
+  /// 供 [BookDataMixin] 在删除章节/设定时反向调用。
+  @override
+  void closeTab(String tabId) {
+    final index = _openedTabs.indexWhere((t) => t.id == tabId);
+    if (index == -1) return;
+
+    final tab = _openedTabs.removeAt(index);
+
+    // 释放标签页资源
+    _disposeTabResources(tab);
+
+    // 调整当前选中的标签页索引
+    if (_openedTabs.isEmpty) {
+      _currentTabIndex = -1;
+    } else if (_currentTabIndex >= _openedTabs.length) {
+      _currentTabIndex = _openedTabs.length - 1;
+    } else if (_currentTabIndex > index) {
+      _currentTabIndex--;
+    }
+
+    // 关闭标签页后，如果查找替换栏处于打开状态，在当前激活的标签页上刷新查找结果
+    refreshFindIfVisible(resetIndex: true);
+
+    notifyListeners();
+  }
+
+  /// 保存章节光标位置到缓存
+  ///
+  /// 在关闭章节标签页时调用，将当前光标位置保存到缓存文件
+  Future<void> _saveChapterCursorPosition(EditorTab tab) async {
+    if (_currentBook == null || tab.cursorPosition == null) return;
+
+    try {
+      await ChapterCursorCacheService.instance.saveCursorPosition(
+        bookUuid: _currentBook!.uuid,
+        chapterUuid: tab.id,
+        offset: tab.cursorPosition!.baseOffset,
+      );
+    } catch (e) {
+      debugPrint('保存章节光标位置失败: $e');
+    }
+  }
+
+  /// 保存指定章节对应的标签页光标位置（若该标签页已打开）
+  ///
+  /// 实现 [WorkspaceStateBase] 声明的协调方法，
+  /// 供 [BookDataMixin] 在保存章节内容后反向调用，
+  /// 确保无论是手动保存还是自动保存都能持久化光标位置。
+  @override
+  Future<void> saveChapterCursorPositionIfAny(String chapterUuid) async {
+    final tab =
+        _openedTabs.where((t) => t.id == chapterUuid).firstOrNull;
+    if (tab != null && tab.cursorPosition != null) {
+      await _saveChapterCursorPosition(tab);
+    }
+  }
+
+  /// 切换到指定标签页
+  void switchToTab(int index) {
+    if (index >= 0 && index < _openedTabs.length && _currentTabIndex != index) {
+      // 在切换标签页之前，保存当前标签页的光标位置
+      final currentTab = this.currentTab;
+      if (currentTab != null &&
+          currentTab.type == EditorTabType.chapter &&
+          _currentBook != null &&
+          currentTab.cursorPosition != null) {
+        _saveChapterCursorPosition(currentTab);
+      }
+
+      _currentTabIndex = index;
+
+      // 如果查找替换栏处于打开状态，尝试刷新查找结果
+      refreshFindIfVisible(resetIndex: true);
+
+      notifyListeners();
+    }
+  }
+
+  /// 将预览模式的标签页转为固定状态（退出预览模式）
+  void pinTab(String tabId) {
+    final tab = _openedTabs.where((t) => t.id == tabId).firstOrNull;
+    if (tab != null && tab.isPreview) {
+      tab.isPreview = false;
+      notifyListeners();
+    }
+  }
+
+  /// 异步保存所有章节光标位置（主要用于应用关闭前）
+  Future<void> saveAllCursorPositions() async {
+    if (_currentBook == null) return;
+
+    for (final tab in _openedTabs) {
+      if (tab.type == EditorTabType.chapter && tab.cursorPosition != null) {
+        await _saveChapterCursorPosition(tab);
+      }
+    }
+  }
+
+  /// 关闭所有标签页
+  void closeAllTabs() {
+    // 停止所有备份计时器
+    BackupService.instance.stopAllBackupTimers();
+
+    // 保存所有章节标签页的光标位置
+    if (_currentBook != null) {
+      for (final tab in _openedTabs) {
+        if (tab.type == EditorTabType.chapter && tab.cursorPosition != null) {
+          _saveChapterCursorPosition(tab);
+        }
+      }
+    }
+
+    for (final tab in _openedTabs) {
+      tab.textController?.dispose();
+    }
+    _openedTabs.clear();
+    _currentTabIndex = -1;
+    notifyListeners();
+  }
+
+  /// 关闭其他标签页
+  void closeOtherTabs(String tabId) {
+    final tabsToRemove = _openedTabs.where((t) => t.id != tabId).toList();
+
+    // 停止被关闭标签页的备份计时器
+    for (final tab in tabsToRemove) {
+      BackupService.instance.stopTabBackupTimer(tab.id);
+    }
+
+    // 保存要关闭的章节标签页的光标位置
+    if (_currentBook != null) {
+      for (final tab in tabsToRemove) {
+        if (tab.type == EditorTabType.chapter && tab.cursorPosition != null) {
+          _saveChapterCursorPosition(tab);
+        }
+      }
+    }
+
+    for (final tab in tabsToRemove) {
+      tab.textController?.dispose();
+    }
+    _openedTabs.removeWhere((t) => t.id != tabId);
+    _currentTabIndex = _openedTabs.isEmpty ? -1 : 0;
+    notifyListeners();
+  }
+
+  /// 关闭已保存的标签页
+  void closeSavedTabs() {
+    final tabsToRemove = _openedTabs.where((t) => !t.isModified).toList();
+
+    // 停止被关闭标签页的备份计时器
+    for (final tab in tabsToRemove) {
+      BackupService.instance.stopTabBackupTimer(tab.id);
+    }
+
+    // 保存要关闭的章节标签页的光标位置
+    if (_currentBook != null) {
+      for (final tab in tabsToRemove) {
+        if (tab.type == EditorTabType.chapter && tab.cursorPosition != null) {
+          _saveChapterCursorPosition(tab);
+        }
+      }
+    }
+
+    for (final tab in tabsToRemove) {
+      tab.textController?.dispose();
+    }
+    _openedTabs.removeWhere((t) => !t.isModified);
+    if (_currentTabIndex >= _openedTabs.length) {
+      _currentTabIndex = _openedTabs.isEmpty ? -1 : _openedTabs.length - 1;
+    }
+    notifyListeners();
+  }
+
+  /// 关闭指定标签页右侧的所有标签页
+  void closeRightTabs(String tabId) {
+    final index = _openedTabs.indexWhere((t) => t.id == tabId);
+    if (index == -1) return;
+
+    final tabsToRemove = _openedTabs.sublist(index + 1);
+
+    // 停止被关闭标签页的备份计时器
+    for (final tab in tabsToRemove) {
+      BackupService.instance.stopTabBackupTimer(tab.id);
+    }
+
+    // 保存要关闭的章节标签页的光标位置
+    if (_currentBook != null) {
+      for (final tab in tabsToRemove) {
+        if (tab.type == EditorTabType.chapter && tab.cursorPosition != null) {
+          _saveChapterCursorPosition(tab);
+        }
+      }
+    }
+
+    for (final tab in tabsToRemove) {
+      tab.textController?.dispose();
+    }
+    _openedTabs.removeRange(index + 1, _openedTabs.length);
+    // 如果当前选中的标签页被关闭了，调整索引
+    if (_currentTabIndex > index) {
+      _currentTabIndex = index;
+    }
+    notifyListeners();
+  }
+
+  /// 检查是否有未保存的标签页
+  bool hasUnsavedTabs() {
+    return _openedTabs.any((t) => t.isModified);
+  }
+
+  /// 获取未保存标签页的数量
+  int unsavedTabsCount() {
+    return _openedTabs.where((t) => t.isModified).length;
+  }
+
+  /// 重新排序标签页
+  void reorderTabs(int oldIndex, int newIndex) {
+    if (oldIndex < newIndex) {
+      newIndex -= 1;
+    }
+    final tab = _openedTabs.removeAt(oldIndex);
+    _openedTabs.insert(newIndex, tab);
+
+    // 更新当前选中的标签页索引
+    if (_currentTabIndex == oldIndex) {
+      _currentTabIndex = newIndex;
+    } else if (_currentTabIndex > oldIndex && _currentTabIndex <= newIndex) {
+      _currentTabIndex--;
+    } else if (_currentTabIndex < oldIndex && _currentTabIndex >= newIndex) {
+      _currentTabIndex++;
+    }
+
+    notifyListeners();
+  }
+
+  /// 通知标签页已修改（用于更新 UI）
+  void notifyTabModified(String tabId) {
+    // 首次修改时启动备份计时器
+    _startBackupTimerIfNeeded(tabId);
+    // 保存状态相关 UI 走独立通知器（状态栏、同步图标、章节列表字数）
+    tabSavedStateNotifier.value++;
+    // 首次修改只发生一次，仍需整树通知以同步标签栏标题等依赖项
+    notifyListeners();
+  }
+
+  /// 为指定标签页启动备份计时器
+  ///
+  /// 仅对章节和大纲类型的标签页生效，且仅在自动备份开启时启动
+  void _startBackupTimerIfNeeded(String tabId) {
+    if (!SettingsService.instance.autoBackupEnabled) return;
+    if (_currentBook == null) return;
+
+    final tab = _openedTabs.where((t) => t.id == tabId).firstOrNull;
+    if (tab == null) return;
+
+    // 章节类型：通过文本控制器获取内容
+    if (tab.type == EditorTabType.chapter) {
+      if (tab.textController == null) return;
+
+      // 查找章节的分卷名
+      final chapter = _chapters.where((c) => c.uuid == tab.id).firstOrNull;
+      final volumeName = getVolumeName(chapter?.volumeUuid ?? '');
+
+      BackupService.instance.startTabBackupTimer(
+        tabId: tabId,
+        bookUuid: _currentBook!.uuid,
+        chapterTitle: tab.title,
+        volumeName: volumeName,
+        contentGetter: () => tab.textController!.text,
+      );
+      return;
+    }
+
+    // 设定类型：通过大纲编辑器状态获取序列化内容
+    if (tab.type == EditorTabType.settings) {
+      BackupService.instance.startTabBackupTimer(
+        tabId: tabId,
+        bookUuid: _currentBook!.uuid,
+        chapterTitle: tab.title,
+        volumeName: '',
+        contentGetter: () {
+          final state = tab.editorKey.currentState;
+          if (state is OutlineEditorState) {
+            return state.serializeToText();
+          }
+          return '';
+        },
+        isSetting: true,
+        // 直接读取内存中的伴生数据，未保存的改动也能进入备份
+        companionGetter: () {
+          final state = tab.editorKey.currentState;
+          if (state is OutlineEditorState) {
+            return state.serializeCompanionData();
+          }
+          return '';
+        },
+      );
+    }
+  }
+
+  /// 通知字数统计更新
+  ///
+  /// 当编辑器内容变化时调用，通过 [wordCountNotifier] 局部通知底部状态栏
+  /// 刷新字数显示，不触发全局 notifyListeners。
+  /// 内容变化同样会改变撤销/恢复的可用状态，故一并刷新顶部操作栏。
+  void notifyWordCountUpdated() {
+    if (_isDisposed) return;
+    wordCountNotifier.value++;
+    notifyEditHistoryChanged();
+  }
+
+  /// 通知撤销/恢复可用状态变化
+  ///
+  /// 通过 [editHistoryNotifier] 局部通知顶部操作栏刷新撤销与恢复按钮的
+  /// 禁用态，不触发全局 notifyListeners。
+  void notifyEditHistoryChanged() {
+    if (_isDisposed) return;
+    editHistoryNotifier.value++;
+  }
+
+  // ================= 标签页会话持久化 =================
+
+  /// 保存当前打开的标签页会话到缓存
+  ///
+  /// 仅保存可恢复的章节与设定标签页（跳过只读的备份预览标签页），
+  /// 同时记录当前选中的标签页与每个标签页的光标位置，
+  /// 供下次打开作品时回到上次的工作位置
+  Future<void> saveTabSession() async {
+    if (_currentBook == null) return;
+
+    final entries = <TabSessionEntry>[];
+    for (final tab in _openedTabs) {
+      if (tab.type == EditorTabType.backupPreview) continue;
+      entries.add(TabSessionEntry(
+        id: tab.id,
+        title: tab.title,
+        type: tab.type.name,
+        cursorOffset: tab.cursorPosition?.baseOffset,
+      ));
+    }
+
+    // 计算保存列表中被选中的标签页索引（跳过备份预览后按标识重新定位）
+    int currentIndex = -1;
+    if (_currentTabIndex >= 0 && _currentTabIndex < _openedTabs.length) {
+      final currentId = _openedTabs[_currentTabIndex].id;
+      currentIndex = entries.indexWhere((e) => e.id == currentId);
+    }
+
+    await WorkspaceSessionCacheService.instance.saveSession(
+      bookUuid: _currentBook!.uuid,
+      tabs: entries,
+      currentIndex: currentIndex,
+    );
+  }
+
+  /// 按设置恢复上次退出时打开的标签页
+  ///
+  /// 在书籍数据加载完成后调用：读取缓存中的标签页会话，
+  /// 过滤掉已被删除的章节/设定后重建标签页，并恢复退出时选中的标签页，
+  /// 同时带入每个标签页退出时的光标位置；大纲标签页标记为恢复上次编辑节点，
+  /// 使其内容加载后回到关闭前的编辑位置。
+  /// 由 [WorkspaceProvider.initialize] 在初始化末尾调用。
+  void _restoreTabSessionIfEnabled() {
+    if (!SettingsService.instance.restoreTabsOnOpenWork) return;
+    if (_currentBook == null) return;
+
+    final session =
+        WorkspaceSessionCacheService.instance.getSession(_currentBook!.uuid);
+    if (session == null || session.tabs.isEmpty) return;
+
+    // 记录退出时选中的标签页标识，过滤失效标签页后据此重新定位
+    final savedCurrentId =
+        session.currentIndex >= 0 && session.currentIndex < session.tabs.length
+            ? session.tabs[session.currentIndex].id
+            : null;
+
+    for (final entry in session.tabs) {
+      final type = _parseEditorTabType(entry.type);
+      if (type == EditorTabType.chapter) {
+        final chapter = _chapters.where((c) => c.uuid == entry.id).firstOrNull;
+        if (chapter == null) continue;
+        _openedTabs.add(EditorTab(
+          id: chapter.uuid,
+          title: chapter.title,
+          type: EditorTabType.chapter,
+          cursorPosition: _restoredCursorPosition(entry),
+        ));
+      } else if (type == EditorTabType.settings) {
+        final item = _settingItems.where((i) => i.uuid == entry.id).firstOrNull;
+        if (item == null) continue;
+        _openedTabs.add(EditorTab(
+          id: item.uuid,
+          title: item.title,
+          type: EditorTabType.settings,
+          // 恢复出的设定标签页回到关闭前的编辑节点
+          restoreLastEditPosition: true,
+        ));
+      }
+    }
+
+    if (_openedTabs.isEmpty) return;
+
+    _currentTabIndex = savedCurrentId == null
+        ? 0
+        : _openedTabs.indexWhere((t) => t.id == savedCurrentId);
+    if (_currentTabIndex < 0) _currentTabIndex = 0;
+  }
+
+  /// 计算恢复标签页时应带入的光标位置
+  ///
+  /// 优先取会话条目中记录的光标偏移量；旧版本缓存未记录该字段时，
+  /// 回退到章节光标缓存（该缓存在切换、关闭与保存章节时都会写入）。
+  /// 均无记录时返回 null，由「打开文件时」的设置决定定位位置。
+  TextSelection? _restoredCursorPosition(TabSessionEntry entry) {
+    final int? offset = entry.cursorOffset ??
+        ChapterCursorCacheService.instance
+            .getCursorPosition(
+              bookUuid: _currentBook!.uuid,
+              chapterUuid: entry.id,
+            )
+            ?.offset;
+    if (offset == null || offset < 0) return null;
+    return TextSelection.collapsed(offset: offset);
+  }
+
+  /// 将缓存的标签页类型名称解析为枚举值
+  EditorTabType _parseEditorTabType(String name) {
+    return EditorTabType.values.firstWhere(
+      (type) => type.name == name,
+      orElse: () => EditorTabType.chapter,
+    );
+  }
+
+  // ================= 标签页保存方法 =================
+
+  /// 保存当前标签页的内容
+  ///
+  /// 返回是否保存成功
+  Future<bool> saveCurrentTab() async {
+    final tab = currentTab;
+    if (tab == null) return false;
+    // 内容尚未载入或读取失败时禁止保存，避免空内容覆盖原文件
+    if (tab.isContentLoading || tab.loadErrorMessage != null) {
+      return false;
+    }
+    // 章节类型需要文本控制器；大纲类型使用编辑器状态，无需文本控制器
+    if (tab.type == EditorTabType.chapter && tab.textController == null) {
+      return false;
+    }
+
+    // 章节类型保存到文件
+    if (tab.type == EditorTabType.chapter) {
+      final chapter = _chapters.firstWhere(
+        (c) => c.uuid == tab.id,
+        orElse: () => throw Exception('找不到章节: ${tab.id}'),
+      );
+
+      // 更新章节标题
+      final titleUpdated = await _updateChapterTitle(chapter, tab.title);
+      if (!titleUpdated) return false;
+
+      final content = tab.textController!.text;
+      final success = await saveChapterContent(chapter, content);
+
+      if (success) {
+        tab.isModified = false;
+        notifyListeners();
+      }
+
+      return success;
+    }
+
+    // 设定项类型保存到文件
+    if (tab.type == EditorTabType.settings) {
+      final item = _settingItems.firstWhere(
+        (i) => i.uuid == tab.id,
+        orElse: () => throw Exception('找不到设定项: ${tab.id}'),
+      );
+
+      // 从大纲编辑器状态获取序列化后的纯文本内容
+      final outlineState = tab.editorKey.currentState;
+      if (outlineState == null || outlineState is! OutlineEditorState) {
+        return false;
+      }
+      // 大纲仍在载入或读取失败时禁止保存，避免空内容覆盖原文件
+      if (!outlineState.canSave) {
+        return false;
+      }
+      final content = outlineState.serializeToText();
+
+      // 更新设定项标题
+      final titleUpdated =
+          await renameSettingItem(itemUuid: item.uuid, newTitle: tab.title);
+      if (!titleUpdated) return false;
+
+      final success = await saveSettingItemContent(item, content);
+
+      if (success) {
+        // 关键词、关联、备注与图片等伴生数据随设定文件一同落盘
+        await outlineState.saveCompanionData();
+        tab.isModified = false;
+        notifyListeners();
+      }
+
+      return success;
+    }
+
+    // 其他类型的标签页不支持保存
+    return false;
+  }
+
+  /// 保存所有已修改的标签页
+  ///
+  /// 返回保存成功的数量
+  Future<int> saveAllTabs() async {
+    int savedCount = 0;
+    // 是否有章节内容被写入，用于在循环结束后统一刷新一次章节列表
+    bool chaptersSaved = false;
+
+    for (final tab in _openedTabs) {
+      if (!tab.isModified) continue;
+      // 跳过内容仍在载入或读取失败的标签页，避免把空内容写回文件
+      if (tab.isContentLoading || tab.loadErrorMessage != null) continue;
+
+      // 章节类型保存
+      if (tab.type == EditorTabType.chapter && tab.textController != null) {
+        try {
+          final chapter = _chapters.firstWhere((c) => c.uuid == tab.id);
+
+          // 更新章节标题
+          final titleUpdated = await _updateChapterTitle(chapter, tab.title);
+          if (!titleUpdated) continue;
+
+          final content = tab.textController!.text;
+          final success = await saveChapterContent(
+            chapter,
+            content,
+            reloadChapters: false,
+          );
+
+          if (success) {
+            chaptersSaved = true;
+            tab.isModified = false;
+            savedCount++;
+          }
+        } catch (e) {
+          debugPrint('保存标签页失败: ${tab.title}, 错误: $e');
+        }
+      }
+
+      // 大纲类型保存
+      if (tab.type == EditorTabType.settings) {
+        try {
+          final item = _settingItems.firstWhere((i) => i.uuid == tab.id);
+
+          // 从大纲编辑器状态获取序列化后的纯文本内容
+          final outlineState = tab.editorKey.currentState;
+          if (outlineState == null || outlineState is! OutlineEditorState) {
+            continue;
+          }
+          // 大纲仍在载入或读取失败时跳过，避免空内容覆盖原文件
+          if (!outlineState.canSave) {
+            continue;
+          }
+          final content = outlineState.serializeToText();
+
+          // 更新设定项标题
+          final titleUpdated =
+              await renameSettingItem(itemUuid: item.uuid, newTitle: tab.title);
+          if (!titleUpdated) continue;
+
+          final success = await saveSettingItemContent(item, content);
+          if (success) {
+            // 关键词、关联、备注与图片等伴生数据随设定文件一同落盘
+            await outlineState.saveCompanionData();
+            tab.isModified = false;
+            savedCount++;
+          }
+        } catch (e) {
+          debugPrint('保存大纲标签页失败: ${tab.title}, 错误: $e');
+        }
+      }
+    }
+
+    // 章节内容已落盘，统一刷新一次章节列表（批量保存只查一次库）
+    if (chaptersSaved) {
+      await _loadChapters();
+    }
+
+    if (savedCount > 0) {
+      notifyListeners();
+    }
+
+    return savedCount;
+  }
+
+  // ================= 自动保存方法 =================
+
+  /// 触发自动保存
+  ///
+  /// 在编辑器内容变化时调用，使用防抖机制避免频繁保存：
+  /// 每次输入重置定时器，停止输入 1 秒后执行保存
+  ///
+  /// [recordActivity] 为 false 时不刷新会话追踪器的活动时间，
+  /// 用于不计入码字时长的编辑场景
+  void triggerAutoSave({bool recordActivity = true}) {
+    // 同步更新会话追踪器的活动时间（用于码字时长活跃判定）
+    if (recordActivity) _sessionTracker?.onActivity();
+
+    if (!SettingsService.instance.autoSaveEnabled) return;
+
+    _autoSaveTimer?.cancel();
+    _autoSaveTimer = Timer(const Duration(seconds: 1), () {
+      _performAutoSave();
+    });
+  }
+
+  /// 执行自动保存
+  ///
+  /// 保存所有已修改的标签页
+  Future<void> _performAutoSave() async {
+    if (_isDisposed) return;
+    if (!SettingsService.instance.autoSaveEnabled) return;
+
+    // 跳过内容仍在载入或读取失败的标签页，避免把空内容写回文件
+    final modifiedTabs = _openedTabs
+        .where((t) => t.isModified && !t.isContentLoading && t.loadErrorMessage == null)
+        .toList();
+    if (modifiedTabs.isEmpty) return;
+
+    // 是否有章节内容被写入，用于在循环结束后统一刷新一次章节列表
+    bool chaptersSaved = false;
+
+    // 标题被改动后标签栏需要同步新标题，此时不能只走轻量通知
+    bool titleChanged = false;
+
+    for (final tab in modifiedTabs) {
+      // 章节类型自动保存
+      if (tab.textController != null && tab.type == EditorTabType.chapter) {
+        try {
+          final chapter = _chapters.firstWhere((c) => c.uuid == tab.id);
+          if (chapter.title != tab.title) titleChanged = true;
+          await _updateChapterTitle(chapter, tab.title);
+          final content = tab.textController!.text;
+          final success = await saveChapterContent(
+            chapter,
+            content,
+            reloadChapters: false,
+          );
+          if (success) {
+            chaptersSaved = true;
+            tab.isModified = false;
+          }
+        } catch (e) {
+          debugPrint('自动保存失败: ${tab.title}, 错误: $e');
+        }
+      }
+
+      // 大纲类型自动保存
+      if (tab.type == EditorTabType.settings) {
+        try {
+          final item = _settingItems.firstWhere((i) => i.uuid == tab.id);
+
+          // 从大纲编辑器状态获取序列化后的纯文本内容
+          final outlineState = tab.editorKey.currentState;
+          if (outlineState == null || outlineState is! OutlineEditorState) {
+            continue;
+          }
+          // 大纲仍在载入或读取失败时跳过，避免空内容覆盖原文件
+          if (!outlineState.canSave) {
+            continue;
+          }
+          final content = outlineState.serializeToText();
+
+          // 更新设定项标题
+          if (item.title != tab.title) titleChanged = true;
+          await renameSettingItem(itemUuid: item.uuid, newTitle: tab.title);
+
+          final success = await saveSettingItemContent(item, content);
+          if (success) {
+            // 关键词、关联、备注与图片等伴生数据随设定文件一同落盘
+            await outlineState.saveCompanionData();
+            tab.isModified = false;
+          }
+        } catch (e) {
+          debugPrint('自动保存大纲失败: ${tab.title}, 错误: $e');
+        }
+      }
+    }
+
+    // 章节内容已落盘，统一刷新一次章节列表（自动保存只查一次库）
+    if (chaptersSaved) {
+      await _loadChapters();
+    }
+
+    // 自动保存是高频路径（持续输入时每秒一次）：
+    // 常态只有「未保存 → 已保存」标记与章节字数变化，
+    // 走独立通知器刷新状态栏/同步图标/章节列表字数即可，
+    // 避免整棵工作台（含编辑器）每秒重建一次。
+    tabSavedStateNotifier.value++;
+
+    // 标题被改名时标签栏、侧边栏的标题需要同步，这类变化频率极低，
+    // 仍走整树通知以保证显示正确。
+    if (titleChanged) notifyListeners();
+  }
+
+  /// 立即执行自动保存（用于窗口关闭前等场景）
+  ///
+  /// 取消防抖定时器，直接执行保存
+  Future<void> flushAutoSave() async {
+    _autoSaveTimer?.cancel();
+    await _performAutoSave();
+  }
+
+  // ================= 码字会话回调方法 =================
+
+  /// 跨天回调：重置所有章节与设定项标签页的码字基线
+  ///
+  /// 新一天开始后，已打开标签页的旧基线失效（昨日内容已成"旧内容"），
+  /// 以当前字数重新作为基线，避免删除昨日内容被错误计入今日码字。
+  void _onSessionDayChanged() {
+    for (final tab in _openedTabs) {
+      if (tab.type == EditorTabType.chapter) {
+        tab.updateWordCount();
+        tab.sessionBaselineWordCount = tab.wordCount;
+        tab.recordedSessionWords = 0;
+      } else if (tab.type == EditorTabType.settings && tab.sessionBaselineInitialized) {
+        // 设定项字数由大纲编辑器持续上报，直接以当前字数重置基线
+        tab.sessionBaselineWordCount = tab.wordCount;
+        tab.recordedSessionWords = 0;
+      }
+    }
+  }
+
+  /// 持久化完成回调：统计写入数据库后通知首页/书架刷新
+  ///
+  /// 由 WritingSessionTracker 在字数或时长落库后触发。
+  /// 这里只是统计数据变化，正文并未改动，因此不触发云同步
+  void _onSessionFlushed() {
+    _notifyBookshelfRefresh(contentChanged: false);
+  }
+
+  /// 初始化码字会话追踪器
+  ///
+  /// 由 [WorkspaceProvider.initialize] 在书籍加载完成后调用，
+  /// 加载今日码字数据并注册跨天与持久化回调。
+  Future<void> _initSessionTracker() async {
+    if (_currentBook == null) return;
+
+    _sessionTracker = WritingSessionTracker();
+    await _sessionTracker!.init(_currentBook!.uuid);
+    // 注册跨天与持久化回调
+    _sessionTracker!.onDayChanged = _onSessionDayChanged;
+    _sessionTracker!.onFlushed = _onSessionFlushed;
+  }
+
+  // ================= 备份恢复方法 =================
+
+  /// 从备份内容恢复当前标签页
+  ///
+  /// 章节类型：将内容写入文本控制器
+  /// 大纲类型：恢复正文，并还原备份中的关键词、关联、备注、图片与表格
+  /// [backupFilePath] 备份文件路径，用于定位伴生数据
+  /// 标记为已修改
+  Future<void> restoreFromBackup(String content, {String? backupFilePath}) async {
+    final tab = currentTab;
+    if (tab == null) return;
+
+    // 章节类型：通过文本控制器恢复
+    if (tab.type == EditorTabType.chapter && tab.textController != null) {
+      // 程序化改写全文，不产生编辑事件
+      NovelEditorState.runSilently(() {
+        tab.textController!.text = content;
+        tab.textController!.selection =
+            CodeLineSelectionUtils.collapsedSelection(content, content.length);
+      });
+      tab.isModified = true;
+      tab.updateWordCount();
+      // 恢复后内容已变化，触发自动保存
+      triggerAutoSave();
+      notifyListeners();
+      return;
+    }
+
+    // 大纲类型：恢复伴生文件后解析正文，并重新加载伴生数据
+    if (tab.type == EditorTabType.settings) {
+      final state = tab.editorKey.currentState;
+      if (state is OutlineEditorState) {
+        if (backupFilePath != null) {
+          await BackupService.instance.restoreBackupCompanion(
+            backupFilePath: backupFilePath,
+            settingItemFilePath: getTabFilePath(tab),
+          );
+        }
+        state.parseFromText(content);
+        await state.reloadCompanionData();
+        tab.isModified = true;
+        // 恢复后内容已变化，触发自动保存
+        triggerAutoSave();
+        notifyListeners();
+      }
+    }
+  }
+
+  /// 从备份恢复到指定章节/大纲（用于备份预览标签页的恢复操作）
+  ///
+  /// 查找原始章节或大纲标签页并替换其内容，如果标签页未打开则不执行操作；
+  /// 大纲类型会连同备份中的伴生数据一起还原。
+  Future<void> restoreBackupToChapter(
+    String content,
+    String chapterTitle, {
+    String? backupFilePath,
+  }) async {
+    // 优先查找匹配标题的章节标签页
+    final chapterIndex = _openedTabs.indexWhere(
+      (t) => t.type == EditorTabType.chapter && t.title == chapterTitle,
+    );
+
+    if (chapterIndex != -1) {
+      final chapterTab = _openedTabs[chapterIndex];
+      if (chapterTab.textController != null) {
+        // 程序化改写全文，不产生编辑事件
+        NovelEditorState.runSilently(() {
+          chapterTab.textController!.text = content;
+          chapterTab.textController!.selection =
+              CodeLineSelectionUtils.collapsedSelection(content, content.length);
+        });
+        chapterTab.isModified = true;
+        chapterTab.updateWordCount();
+      }
+
+      // 恢复后内容已变化，触发自动保存
+      triggerAutoSave();
+
+      // 如果当前标签页不是被恢复的章节，跳转到该标签页
+      if (_currentTabIndex != chapterIndex) {
+        _currentTabIndex = chapterIndex;
+        refreshFindIfVisible(resetIndex: true);
+      }
+      notifyListeners();
+      return;
+    }
+
+    // 未找到章节标签页时，查找匹配标题的大纲标签页
+    final outlineIndex = _openedTabs.indexWhere(
+      (t) => t.type == EditorTabType.settings && t.title == chapterTitle,
+    );
+
+    if (outlineIndex == -1) return;
+
+    final outlineTab = _openedTabs[outlineIndex];
+    final state = outlineTab.editorKey.currentState;
+    if (state is OutlineEditorState) {
+      if (backupFilePath != null) {
+        await BackupService.instance.restoreBackupCompanion(
+          backupFilePath: backupFilePath,
+          settingItemFilePath: getTabFilePath(outlineTab),
+        );
+      }
+      state.parseFromText(content);
+      await state.reloadCompanionData();
+      outlineTab.isModified = true;
+    }
+
+    // 恢复后内容已变化，触发自动保存
+    triggerAutoSave();
+
+    // 如果当前标签页不是被恢复的大纲，跳转到该标签页
+    if (_currentTabIndex != outlineIndex) {
+      _currentTabIndex = outlineIndex;
+      refreshFindIfVisible(resetIndex: true);
+    }
+
+    notifyListeners();
+  }
+
+  // ================= 资源释放 =================
+
+  /// 释放编辑器域持有的资源
+  ///
+  /// 由 [WorkspaceProvider.dispose] 调用，释放自动保存定时器、
+  /// 会话追踪器、备份计时器与所有标签页资源。
+  void disposeEditorResources() {
+    // 取消自动保存定时器
+    _autoSaveTimer?.cancel();
+
+    // 取消查找结果合并刷新定时器，避免释放后回调继续访问已清理的状态
+    _cancelFindRefreshTimer();
+
+    // 释放码字会话追踪器（内部会 flush 剩余字数与时长）
+    _sessionTracker?.dispose();
+
+    // 停止所有备份计时器
+    BackupService.instance.stopAllBackupTimers();
+
+    // 释放所有标签页的资源（文本控制器、撤销管理器等）
+    for (final tab in _openedTabs) {
+      tab.textController?.dispose();
+    }
+    _openedTabs.clear();
+
+    // 释放字数统计通知器与撤销/恢复可用状态通知器
+    wordCountNotifier.dispose();
+    editHistoryNotifier.dispose();
+    tabSavedStateNotifier.dispose();
+  }
+}

@@ -1,0 +1,2228 @@
+import 'dart:async';
+import 'dart:math' as math;
+import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
+import 'package:flutter/services.dart';
+import 'package:provider/provider.dart';
+import 'package:quick_write/core/constants/constants.dart';
+import 'package:quick_write/core/models/outline_keyword.dart';
+import 'package:quick_write/core/providers/window_provider.dart';
+import 'package:quick_write/core/providers/workspace_provider.dart';
+import 'package:quick_write/core/services/settings_service.dart';
+import 'package:quick_write/core/services/workspace/custom_highlight_service.dart';
+import 'package:quick_write/core/services/workspace/outline_keyword_service.dart';
+import 'package:quick_write/core/services/workspace/sensitive_word_service.dart';
+import 'package:quick_write/core/utils/chinese_word_segmenter.dart';
+import 'package:quick_write/core/utils/chapter_title_undo_history.dart';
+import 'package:quick_write/core/utils/clean_scroll.dart';
+import 'package:quick_write/core/utils/clipboard_state_cache.dart';
+import 'package:quick_write/core/utils/code_line_selection_utils.dart';
+import 'package:quick_write/core/utils/color_utils.dart';
+import 'package:quick_write/core/utils/find_match_highlighter.dart';
+import 'package:quick_write/core/utils/editor_scroll_helper.dart';
+import 'package:quick_write/core/utils/editor_focus_keep.dart';
+import 'package:quick_write/core/utils/ime_cursor_fixer.dart';
+import 'package:quick_write/core/utils/persistent_selection.dart';
+import 'package:quick_write/core/utils/platform_capabilities.dart';
+import 'package:quick_write/core/utils/re_editor_span_builder.dart';
+import 'package:quick_write/pages/workspace/editor/utils/re_editor_indent_policy.dart';
+import 'package:quick_write/pages/workspace/editor/utils/text_replacement_policy.dart';
+import 'package:quick_write/pages/workspace/editor/widgets/outline_keyword_hover_card.dart';
+import 'package:quick_write/pages/workspace/editor/widgets/re_editor_ime_reporter.dart';
+import 'package:quick_write/shared/widgets/context_menu.dart';
+import 'package:re_editor/re_editor.dart';
+import 'package:quick_write/shared/widgets/qw_text_field.dart';
+
+/// 小说编辑器
+///
+/// 基于 re_editor 实现的小说专用编辑器。
+/// 编辑器高度随正文篇幅自适应，纸张背景、页边距与滚动统一由外层容器负责。
+class NovelEditor extends StatefulWidget {
+  /// 章节正文编辑控制器
+  final CodeLineEditingController controller;
+
+  /// 章节标题编辑控制器（备份预览标签页为 null）
+  final TextEditingController? chapterTitleController;
+
+  /// 行样式构建器（负责排版注入与高亮着色）
+  final ReEditorSpanBuilder? spanBuilder;
+
+  /// 文本变化事件回调
+  final OnEditEvent? onEditEvent;
+
+  /// 章节标题变化回调
+  final ValueChanged<String>? onChapterTitleChanged;
+
+  /// 颜色方案
+  final ColorScheme colorScheme;
+
+  /// 光标位置变化回调（使用扁平偏移量）
+  final ValueChanged<TextSelection>? onSelectionChanged;
+
+  /// 保存回调（Ctrl+S 触发）
+  final VoidCallback? onSave;
+
+  /// 当前标签页是否处于激活（可见）状态
+  final bool isActive;
+
+  /// 额外顶边距（用于查找替换浮窗出现时，在编辑器顶部留出空白防止遮挡文字）
+  final double extraTopPadding;
+
+  /// 是否为只读模式（备份预览标签页为只读）
+  final bool readOnly;
+
+  const NovelEditor({
+    super.key,
+    required this.controller,
+    this.chapterTitleController,
+    this.spanBuilder,
+    this.onEditEvent,
+    this.onChapterTitleChanged,
+    required this.colorScheme,
+    this.onSelectionChanged,
+    this.onSave,
+    this.isActive = true,
+    this.extraTopPadding = 0.0,
+    this.readOnly = false,
+  });
+
+  @override
+  State<NovelEditor> createState() => NovelEditorState();
+}
+
+class NovelEditorState extends State<NovelEditor> with WidgetsBindingObserver {
+  /// 大段粘贴阈值（不小于此值的文本在粘贴时统一换行符）
+  static const int _largeTextThreshold = 5000;
+
+  /// 光标宽度
+  static const double _cursorWidth = 2.0;
+
+  /// 正文左内边距
+  ///
+  /// 光标以字符边界为中心绘制，正文最左侧的光标会有一半落在视口裁剪区外，
+  /// 因此留出等于光标半宽的内边距，保证行首光标完整可见。
+  static const double _contentLeftInset = _cursorWidth / 2 + 0.5;
+
+  /// 纸张模式下纸张容器的左右间距补偿（像素）
+  static const double _paperHorizontalCompensation = 16.0;
+
+  /// 正文标点的成对符号表
+  ///
+  /// 由快捷输入栏当前的符号表推导，自动补全与快捷输入共用同一数据源，
+  /// 用户自定义符号后随设置变化即时生效。
+  static List<CodeSymbolPair> get _punctuationPairs => [
+        for (final symbol in SettingsService.instance.quickInputSymbols)
+          if (symbol.isPairStart) CodeSymbolPair(symbol.symbol, symbol.closing!),
+      ];
+
+  /// 编辑器当前生效的自动替换规则
+  ///
+  /// 由设置中的规则列表推导，规则增删改或开关切换后随设置监听重建即时生效。
+  static List<CodeTextReplacement> get _textReplacements {
+    // 总开关关闭时不向编辑器注册任何替换，键盘输入保持原样
+    if (!SettingsService.instance.autoReplaceEnabled) return const [];
+    return [
+      for (final rule in SettingsService.instance.textReplacementRules)
+        if (rule.enabled && rule.trigger.isNotEmpty)
+          CodeTextReplacement(rule.trigger, rule.replacement),
+    ];
+  }
+
+  /// 程序化文本改写的抑制深度
+  ///
+  /// 备份恢复、段落整理等场景在改写全文期间递增该计数，
+  /// 编辑器据此跳过编辑事件上报，避免程序化改写被误计为键盘输入。
+  static int _silentWriteDepth = 0;
+
+  /// 在不触发编辑事件的前提下执行文本改写
+  static void runSilently(VoidCallback action) {
+    _silentWriteDepth++;
+    try {
+      action();
+    } finally {
+      _silentWriteDepth--;
+    }
+  }
+
+  /// 编辑器滚动控制器（作为 re_editor 的纵向滚动控制器）
+  late final SyncScrollController _scrollController;
+
+  /// re_editor 的双向滚动控制器
+  late final CodeScrollController _codeScrollController;
+
+  /// 编辑器滚动保护器
+  late final EditorScrollGuard _scrollGuard;
+
+  /// 段落缩进策略
+  late final ReEditorIndentPolicy _indentPolicy;
+
+  /// 正文自动替换策略
+  late final TextReplacementPolicy _replacementPolicy;
+
+  /// 焦点节点
+  final FocusNode _focusNode = FocusNode();
+
+  /// 章节标题输入框的焦点节点
+  final FocusNode _titleFocusNode = FocusNode();
+
+  /// 章节标题区域的测量键
+  final GlobalKey _titleAreaKey = GlobalKey();
+
+  /// 章节标题区域（标题及其顶边距）的高度
+  ///
+  /// 标题与正文同屏滚动，其高度需计入编辑器顶部留白，由布局完成后测量得到。
+  double _titleAreaHeight = 0;
+
+  /// 标题区域测量是否已排队，避免同一帧内重复排队
+  bool _titleAreaMeasureScheduled = false;
+
+  /// 选择工具栏控制器
+  ///
+  /// 桌面端右键弹出应用自定义的菜单，移动端长按弹出系统风格的选择工具栏。
+  late final SelectionToolbarController _toolbarController;
+
+  /// 自定义高亮服务引用（用于监听配置变化触发重绘）
+  CustomHighlightService? _customHighlightService;
+
+  /// 大纲关键词服务引用（用于监听索引变化触发重绘）
+  OutlineKeywordService? _outlineKeywordService;
+
+  /// 敏感词服务引用（用于监听词库与标红开关变化触发重绘）
+  SensitiveWordService? _sensitiveWordService;
+
+  /// 关键词交互修饰键是否按住
+  ///
+  /// Windows/Linux 为 Ctrl，macOS 为 Command；按住时正文叠加大纲关键词高亮，
+  /// 并启用悬停卡片与修饰键点击跳转。
+  bool _keywordModifierPressed = false;
+
+  /// 大纲关键词高亮当前是否生效
+  ///
+  /// 移动端没有悬停与修饰键，关键词高亮常驻开启，点按关键词即弹出预览卡片；
+  /// 桌面端仅在按住修饰键时叠加显示。
+  bool get _keywordHighlightActive =>
+      PlatformCapabilities.isMobile || _keywordModifierPressed;
+
+  /// 当前悬停的大纲关键词
+  String? _hoveredKeyword;
+
+  /// 当前悬停关键词的全局矩形列表
+  List<Rect> _hoveredKeywordRects = const [];
+
+  /// 大纲关键词悬浮卡片的浮层
+  OverlayEntry? _keywordCardEntry;
+
+  /// 待展示的悬浮卡片数据（帧末插入时使用）
+  OutlineKeywordEntry? _pendingKeywordCard;
+
+  /// 待展示悬浮卡片的锚点
+  Rect? _pendingKeywordCardAnchor;
+
+  /// 待展示悬浮卡片的主色（当前悬停关键词的颜色）
+  Color? _pendingKeywordCardAccent;
+
+  /// 是否已排队等待插入悬浮卡片
+  bool _keywordCardScheduled = false;
+
+  /// 当前已展示卡片对应的索引项
+  ///
+  /// 鼠标追踪在每帧结束后都会重新命中测试，若内联样式重建会产生新的注解对象并重复
+  /// 触发进入回调；据此判断同一节点无需反复重建浮层。
+  OutlineKeywordEntry? _displayedKeywordEntry;
+
+  /// 悬浮卡片当前的左侧位置
+  double _keywordCardLeft = 0;
+
+  /// 悬浮卡片是否显示在关键词上方
+  bool _keywordCardAbove = false;
+
+  /// 悬停离开关键词后的延迟收起定时器
+  ///
+  /// 指针在两处相同关键词之间移动或移向卡片时可能先触发离开再触发进入，
+  /// 延迟收起可避免卡片闪烁或提前消失。
+  Timer? _keywordHoverExitTimer;
+
+  /// 移动端按下关键词后待抬起时展示的预览数据
+  ///
+  /// 按下阶段只拦截编辑器的手势，抬起后才弹出卡片，
+  /// 使长按选词、拖动滚动等手势不会误弹卡片。
+  ({OutlineKeywordEntry entry, Rect anchor, Color accent})? _pendingMobileKeywordPreview;
+
+  /// 移动端本次点按是否只用于关闭关键词卡片
+  ///
+  /// 卡片已展示时，点按空白处只关闭卡片，不再把这次点按交还编辑器，
+  /// 避免关闭卡片的同一个点按移动光标并唤起输入法。
+  bool _dismissMobileKeywordCardOnTapUp = false;
+
+  /// 待消费的编辑事件类型
+  ///
+  /// 程序化编辑（撤销、粘贴、剪切等）在执行前先置入类型，
+  /// 由内容变化监听消费，从而把事件来源准确传给码字统计。
+  NovelEditType? _pendingEditType;
+
+  /// 章节标题的撤销/重做历史
+  ///
+  /// 标题输入框使用外部控制器，不在正文撤销栈内，需单独维护。
+  final ChapterTitleUndoHistory _titleUndoHistory = ChapterTitleUndoHistory();
+
+  /// 最近一次已知的章节标题文本（用于判定标题是否变化、捕获编辑前文本）
+  String _lastChapterTitle = '';
+
+  /// 正在按历史回写标题，期间的文本变化不再记录
+  bool _applyingTitleHistory = false;
+
+  /// 正文最后一次编辑时间（用于与标题编辑比较撤销先后顺序）
+  DateTime? _lastBodyEditAt;
+
+  /// 上一次撤销/重做作用在标题还是正文（null 表示尚无历史操作）
+  bool? _lastHistoryTargetIsTitle;
+
+  /// 上一次的内容行数据引用
+  ///
+  /// 仅移动光标时 re_editor 不会重建行数据，据此区分"内容变化"与"选区变化"。
+  CodeLines? _lastCodeLines;
+
+  /// 上一次向外通知的选区委
+  TextSelection? _lastSelection;
+
+  /// 用于记录需要在 Layout 阶段补偿的额外顶边距变化量
+  double? _pendingExtraPaddingDelta;
+
+  /// 上一次布局时的编辑区宽度，用于识别宽度变化引起的正文重排
+  double? _layoutWidth;
+
+  /// 宽度变化前光标行相对视口顶部的位置，重排后据此还原光标行的视口位置
+  double? _pendingResizeAnchor;
+
+  /// 待对齐末行的标记
+  ///
+  /// 内容在末行增长时置位，由 [SyncScrollPosition.applyContentDimensions]
+  /// 在布局阶段消费，使滚动修正与当帧渲染一并生效，不出现先渲染再滚动的二次跳动。
+  bool _pendingBottomAlignment = false;
+
+  /// 待对齐末行是否由新增逻辑行（换行键）引起
+  ///
+  /// 新增逻辑行时末行位置必然下移，可直接对齐；
+  /// 否则需在布局阶段确认末行因自动换行变高后才对齐。
+  bool _pendingLineAdded = false;
+
+  /// 本次输入前末行已排版的高度
+  ///
+  /// 自动换行会让末行变高，布局阶段据此判断本次输入是否使末行换行；
+  /// 新增逻辑行会改变行数，末行高度不再可比，此时不记录。
+  double? _previousLastLineHeight;
+
+  /// 内容载入后待定位光标的标记
+  ///
+  /// 由 [revealCursorAfterLoad] 置位，在内容排版完成的布局阶段消费，
+  /// 使视口定位与内容首次绘制一并生效。
+  bool _pendingCursorReveal = false;
+
+  /// 末行下方保留的底边距占视口高度的比例
+  ///
+  /// 由布局过程按设置记录，供末行对齐时按当前可见视口高度换算安全距离；
+  /// 软键盘压缩视口后安全距离随之收窄，使末行下方的留白占比与设置一致。
+  double _bottomMarginRatio = 0;
+
+  /// 滚动内容在纸张下方留出的空白高度
+  ///
+  /// 用于显露纸张下边缘；末行对齐时需一并计入，否则纸张下边缘会被推进视口之外。
+  double _resolvedBottomGap = 0;
+
+  /// 页边距换算所依据的编辑区高度
+  ///
+  /// 页边距按视口高度的百分比换算，而软键盘升降会压缩编辑区高度；
+  /// 若直接采用实时高度，键盘动画期间正文会随之上下移动。
+  /// 此处记录键盘收起时的编辑区高度作为基准，键盘弹出期间沿用该基准。
+  double _marginBasisHeight = 0;
+
+  /// 上一次的高亮摘要
+  ///
+  /// 查找匹配变化不会改变编辑器属性，需要据此主动请求重绘以刷新高亮。
+  int? _lastHighlightHash;
+
+  /// 上一次的内容长度
+  ///
+  /// 用于判断文本是否增长，进而在末行输入时维持底边距这一安全距离。
+  int _previousTextLength = 0;
+
+  /// 缓存窗口最小化状态，用于检测从最小化恢复的情况
+  bool _wasMinimized = false;
+
+  /// 输入法光标上报器的状态键
+  ///
+  /// 布局阶段修正滚动位置后需要立即刷新输入法坐标，
+  /// 通过它直接触发上报，避免候选框停留在滚动前的位置。
+  final GlobalKey<ReEditorImeReporterState> _imeReporterKey =
+      GlobalKey<ReEditorImeReporterState>();
+
+  /// 缓存软键盘高度，用于识别键盘新升起导致的视口压缩
+  double _keyboardHeight = 0;
+
+  /// 视口尺寸变化后合并重绘的延迟
+  static const Duration _viewportRepaintDelay = Duration(milliseconds: 120);
+
+  /// 待执行的视口重绘任务
+  Timer? _viewportRepaintTimer;
+
+  /// 视觉首行缩进宽度缓存
+  ///
+  /// 键为字体、字号与字间距的组合，值为对应样式下两个全角空格的实际宽度。
+  static final Map<String, double> _firstLineIndentCache = {};
+
+  /// 快捷键覆盖动作缓存
+  Map<Type, Action<Intent>>? _shortcutOverrides;
+
+  /// 缓存快捷键覆盖动作时所用的工作台 Provider
+  WorkspaceProvider? _shortcutOverridesProvider;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _scrollController = SyncScrollController(onApplyContentDimensions: _onApplyContentDimensions);
+    _codeScrollController = CodeScrollController(verticalScroller: _scrollController);
+    _scrollGuard = EditorScrollGuard(_scrollController);
+    _indentPolicy = ReEditorIndentPolicy(controller: widget.controller);
+    _replacementPolicy = TextReplacementPolicy(controller: widget.controller);
+    _toolbarController = PlatformCapabilities.isMobile
+        ? MobileSelectionToolbarController(builder: _buildMobileSelectionToolbar)
+        : _EditorToolbarController(onShowMenu: _showContextMenuAt);
+    widget.controller.addListener(_onControllerChanged);
+    _focusNode.addListener(_onFocusChanged);
+    // 登记输入节点：顶部快捷键、左右抽屉等操作让编辑器失焦后，仍需把光标还回原位
+    EditorFocusKeep.track(_focusNode);
+    // 标题输入框同样会被工具面板夺走焦点，一并登记后才能把名字插进标题并归还光标
+    final TextEditingController? titleController = widget.chapterTitleController;
+    if (titleController != null) {
+      EditorFocusKeep.trackTitleInput(_titleFocusNode, titleController);
+      // 章节标题单独记录撤销历史，撤销/恢复才对标题生效
+      _lastChapterTitle = titleController.text;
+      titleController.addListener(_onChapterTitleChanged);
+    }
+    _lastCodeLines = widget.controller.value.codeLines;
+    _previousTextLength = widget.controller.text.length;
+
+    // 加载中文词库，为双击选词提供分词能力
+    ChineseWordSegmenter.instance.install();
+
+    // 监听关键词修饰键状态，按住时叠加大纲关键词高亮
+    _keywordModifierPressed = _readKeywordModifierPressed();
+    HardwareKeyboard.instance.addHandler(_onHardwareKeyEvent);
+    _bindKeywordCallbacks();
+
+    // 滚动时悬停位置已失效，收起关键词悬浮卡片
+    _scrollController.addListener(_hideKeywordCardOnScroll);
+
+    // 移动端关键词高亮常驻开启，首帧后同步给样式构建器，无需等待用户操作
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _applyKeywordHighlightState();
+    });
+
+    // 如果初始化时处于激活状态，请求焦点
+    if (widget.isActive) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _focusEditor();
+      });
+    }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // 监听设置变化（页边距、行间线、排版等）
+    SettingsService.instance.addListener(_onSettingsChanged);
+    // 监听自定义高亮配置变化（service 随书籍工作台绑定，切换书籍时需重新绑定）
+    final CustomHighlightService newService = context.read<WorkspaceProvider>().customHighlightService;
+    if (!identical(newService, _customHighlightService)) {
+      _customHighlightService?.removeListener(_onSettingsChanged);
+      _customHighlightService = newService;
+      _customHighlightService!.addListener(_onSettingsChanged);
+    }
+
+    // 监听大纲关键词索引变化（关键词增删改后立即刷新正文高亮）
+    final OutlineKeywordService newKeywordService = context.read<WorkspaceProvider>().outlineKeywordService;
+    if (!identical(newKeywordService, _outlineKeywordService)) {
+      _outlineKeywordService?.removeListener(_onSettingsChanged);
+      _outlineKeywordService = newKeywordService;
+      _outlineKeywordService!.addListener(_onSettingsChanged);
+    }
+
+    // 监听敏感词词库与标红开关变化（切换后立即刷新正文标红）
+    final SensitiveWordService newSensitiveService = context.read<WorkspaceProvider>().sensitiveWordService;
+    if (!identical(newSensitiveService, _sensitiveWordService)) {
+      _sensitiveWordService?.removeListener(_onSettingsChanged);
+      _sensitiveWordService = newSensitiveService;
+      _sensitiveWordService!.addListener(_onSettingsChanged);
+    }
+
+    // spanBuilder 可能在 initState 之后才由父组件注入，此处重新绑定关键词回调，
+    // 确保移动端开关与桌面修饰键都能触发节点关键词着色
+    _bindKeywordCallbacks();
+  }
+
+  @override
+  void dispose() {
+    _viewportRepaintTimer?.cancel();
+    HardwareKeyboard.instance.removeHandler(_onHardwareKeyEvent);
+    _keywordHoverExitTimer?.cancel();
+    _removeKeywordCardEntry();
+    _scrollController.removeListener(_hideKeywordCardOnScroll);
+    _scrollGuard.dispose();
+    widget.controller.removeListener(_onControllerChanged);
+    widget.chapterTitleController?.removeListener(_onChapterTitleChanged);
+    _focusNode.removeListener(_onFocusChanged);
+    EditorFocusKeep.untrackTitleInput(_titleFocusNode);
+    _titleFocusNode.dispose();
+    SettingsService.instance.removeListener(_onSettingsChanged);
+    _customHighlightService?.removeListener(_onSettingsChanged);
+    _outlineKeywordService?.removeListener(_onSettingsChanged);
+    _sensitiveWordService?.removeListener(_onSettingsChanged);
+    _scrollController.dispose();
+    _codeScrollController.dispose();
+    _focusNode.dispose();
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(NovelEditor oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 父组件重建时注入新的样式构建器，需重新绑定关键词回调与当前高亮状态；
+    // 更新会通知控制器重绘，延后到帧末执行，避免在构建阶段触发重建
+    if (!identical(widget.spanBuilder, oldWidget.spanBuilder)) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _bindKeywordCallbacks();
+        _applyKeywordHighlightState();
+      });
+    }
+    // 当标签页由不可见变为可见时，自动请求焦点
+    if (widget.isActive && !oldWidget.isActive) {
+      // 开启滚动保护（锁定当前滚动位置，防止 requestFocus 导致的自动滚动）
+      _scrollGuard.protect(const Duration(milliseconds: 150));
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && !_focusNode.hasFocus) {
+          _focusEditor();
+        }
+      });
+      // 后台期间关键词修饰键状态可能已变化，切换回前台时同步一次
+      _syncKeywordModifierState();
+    }
+
+    // 内容载入完成解除只读时恢复焦点：
+    // 只读期间获得焦点不会建立输入法连接，需重新失焦再聚焦一次，
+    // 否则编辑器没有输入光标、无法直接输入。
+    // 移动端不主动聚焦，避免自动弹出输入法，也不改动用户已获得的焦点
+    if (!PlatformCapabilities.isMobile &&
+        widget.isActive &&
+        oldWidget.readOnly &&
+        !widget.readOnly) {
+      _scrollGuard.protect(const Duration(milliseconds: 150));
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        if (!_focusNode.hasFocus) {
+          _focusEditor();
+          return;
+        }
+        _focusNode.unfocus();
+        // 失焦与聚焦分两帧执行，确保焦点变化通知触发输入法连接重建
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _focusEditor();
+        });
+      });
+    }
+
+    // 当额外顶边距变化时（如查找替换栏显示/隐藏），在 Layout 阶段补偿滚动偏移量防止内容跳动
+    if (widget.extraTopPadding != oldWidget.extraTopPadding) {
+      final double delta = widget.extraTopPadding - oldWidget.extraTopPadding;
+      if (delta != 0) {
+        _pendingExtraPaddingDelta = delta;
+      }
+    }
+
+    // 标签页切换到后台后收起关键词悬浮卡片
+    if (!widget.isActive) _hideKeywordCard();
+
+    // 章节标题控制器被换成另一个实例（切章）时重绑监听并清空标题撤销栈，
+    // 否则旧章节的标题历史会串到新章节上
+    if (!identical(widget.chapterTitleController, oldWidget.chapterTitleController)) {
+      oldWidget.chapterTitleController?.removeListener(_onChapterTitleChanged);
+      final TextEditingController? titleController = widget.chapterTitleController;
+      _titleUndoHistory.clear();
+      _lastHistoryTargetIsTitle = null;
+      if (titleController != null) {
+        _lastChapterTitle = titleController.text;
+        titleController.addListener(_onChapterTitleChanged);
+        EditorFocusKeep.trackTitleInput(_titleFocusNode, titleController);
+      } else {
+        _lastChapterTitle = '';
+      }
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    // 开启滚动保护，防止应用从后台恢复时编辑器自动滚动到光标位置
+    if (state == AppLifecycleState.resumed) {
+      _scrollGuard.protect(const Duration(milliseconds: 300));
+    }
+  }
+
+  @override
+  void didChangeMetrics() {
+    super.didChangeMetrics();
+    // 移动端软键盘升降会改变视口高度，度量变化当帧尚未完成布局，
+    // 视口尺寸需等布局结束后才能取得，因此统一在帧末处理
+    if (PlatformCapabilities.isMobile) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _revealSelectionWhenKeyboardShown());
+    }
+  }
+
+  /// 软键盘新升起时把选区所在行滚入视口
+  ///
+  /// 仅在键盘高度增加且编辑器持有焦点时滚动，使被选中文字落到键盘上方的可见区域内；
+  /// 选区行本就可见时不产生任何滚动。
+  /// 键盘高度取自窗口视图的原始内边距：Scaffold 按键盘高度收缩本子树时，
+  /// 会一并剔除子树 MediaQuery 中的底部内边距，从 MediaQuery 读取无法识别键盘升降。
+  void _revealSelectionWhenKeyboardShown() {
+    if (!mounted) return;
+    final double keyboardHeight = View.of(context).viewInsets.bottom;
+    final double previousHeight = _keyboardHeight;
+    _keyboardHeight = keyboardHeight;
+    if (keyboardHeight <= previousHeight || keyboardHeight <= 0 || !_focusNode.hasFocus) return;
+    // 滚动前解除滚动保护，避免保护逻辑把位置拉回旧的滚动值导致定位无效
+    _scrollGuard.unprotect();
+    widget.controller.makeCursorCenterIfInvisible();
+  }
+
+  /// 合并同一轮视口尺寸变化，仅在尺寸稳定后重绘一次
+  ///
+  /// 连续重绘会让可见行逐次重新排版，代价远高于单次重绘，故把中间过程合并掉。
+  void _scheduleViewportRepaint() {
+    _viewportRepaintTimer?.cancel();
+    _viewportRepaintTimer = Timer(_viewportRepaintDelay, () {
+      if (mounted) widget.controller.forceRepaint();
+    });
+  }
+
+  /// 滚动到当前光标/选区位置
+  ///
+  /// 供外部调用（如查找替换导航时），使编辑器滚动到当前选区所在位置
+  void scrollToCursor() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      // 滚动前解除滚动保护，避免保护逻辑把位置拉回旧的滚动值导致定位无效
+      _scrollGuard.unprotect();
+      widget.controller.makeCursorCenterIfInvisible();
+    });
+  }
+
+  /// 内容载入后定位到光标所在行
+  ///
+  /// 内容与选区是程序化写入的，编辑器不会自动滚动：此处标记待定位，
+  /// 由随后内容排版的布局阶段修正视口，内容首次绘制即为定位后的画面。
+  void revealCursorAfterLoad() {
+    if (!mounted) return;
+    _pendingCursorReveal = true;
+    // 布局阶段未能完成定位时（如排版尚未就绪），在布局结束后补一次滚动
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_pendingCursorReveal) return;
+      _pendingCursorReveal = false;
+      _scrollGuard.unprotect();
+      widget.controller.makeCursorCenterIfInvisible();
+    });
+  }
+
+  /// 请求编辑器获取焦点（统一入口）
+  ///
+  /// 移动端不主动唤起输入法，需由用户点击编辑区自行聚焦，因此移动端直接忽略
+  void _focusEditor() {
+    if (PlatformCapabilities.isMobile) return;
+    _focusNode.requestFocus();
+  }
+
+  /// 请求编辑器获取焦点
+  ///
+  /// 供外部调用（如关闭查找替换栏后），将焦点归还给编辑器
+  void requestEditorFocus() {
+    _scrollGuard.unprotect();
+    _focusEditor();
+  }
+
+  /// 编辑器当前是否持有焦点
+  ///
+  /// 供外部（如移动端快捷输入栏）判断输入法是否由本编辑器唤起。
+  bool get hasEditorFocus => _focusNode.hasFocus;
+
+  /// 当前书籍是否已绑定关键词
+  bool get hasOutlineKeywords =>
+      _outlineKeywordService != null && _outlineKeywordService!.keywords.isNotEmpty;
+
+  /// 设置变化时刷新样式并重绘
+  void _onSettingsChanged() {
+    if (!mounted) return;
+    // 自定义高亮（含字面量 / 正则模式切换）、大纲关键词等配置变化后，
+    // 解析缓存必须按新配置重算，否则正文要等到下一次输入才会按新配置着色
+    widget.spanBuilder?.update(context: context, text: widget.controller.text);
+    // 标题字号、标题显隐等设置会改变标题区域高度，需要重新测量
+    if (widget.chapterTitleController != null && SettingsService.instance.showChapterTitle) {
+      _scheduleTitleAreaMeasure();
+    }
+    setState(() {});
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) widget.controller.forceRepaint();
+    });
+  }
+
+  /// 绑定大纲关键词相关的样式构建器回调
+  void _bindKeywordCallbacks() {
+    final ReEditorSpanBuilder? spanBuilder = widget.spanBuilder;
+    if (spanBuilder == null) return;
+    spanBuilder.ctrlPressed = _keywordHighlightActive;
+    spanBuilder.onKeywordHover = _onKeywordHover;
+    spanBuilder.onKeywordHoverExit = _onKeywordHoverExit;
+  }
+
+  /// 读取关键词交互修饰键的当前状态
+  ///
+  /// macOS 使用 Command，其余平台使用 Ctrl。
+  static bool _readKeywordModifierPressed() =>
+      PlatformCapabilities.isMacOS
+          ? HardwareKeyboard.instance.isMetaPressed
+          : HardwareKeyboard.instance.isControlPressed;
+
+  /// 将当前关键词高亮状态应用到样式构建器并重绘
+  void _applyKeywordHighlightState() {
+    final bool active = _keywordHighlightActive;
+    final ReEditorSpanBuilder? spanBuilder = widget.spanBuilder;
+    if (spanBuilder != null) {
+      spanBuilder.ctrlPressed = active;
+      spanBuilder.update(context: context, text: widget.controller.text);
+    }
+    widget.controller.forceRepaint();
+  }
+
+  /// 将关键词修饰键状态同步到编辑器与样式构建器
+  void _syncKeywordModifierState() {
+    final bool pressed = _readKeywordModifierPressed();
+    if (pressed == _keywordModifierPressed) return;
+    _keywordModifierPressed = pressed;
+    _applyKeywordHighlightState();
+    if (!_keywordHighlightActive) _hideKeywordCard();
+  }
+
+  /// 关键词修饰键状态变化时刷新关键词高亮
+  ///
+  /// 仅在按下状态真正变化时重算高亮并重绘；松开时立即收起悬浮卡片。
+  /// 非激活标签页不响应，避免后台编辑器做无意义的重新排版。
+  bool _onHardwareKeyEvent(KeyEvent event) {
+    if (!mounted || !widget.isActive) return false;
+    _syncKeywordModifierState();
+    return false;
+  }
+
+  /// 指针进入大纲关键词
+  ///
+  /// 悬浮卡片的插入延后到帧末执行：鼠标注解的进入回调发生在命中测试过程中，
+  /// 此时同步插入浮层会挂载新的鼠标追踪区域并触发再次命中测试，导致无限递归。
+  void _onKeywordHover(String keyword, List<Rect> rects) {
+    if (!_keywordHighlightActive || !mounted || rects.isEmpty) return;
+    final OutlineKeywordEntry? entry = _outlineKeywordService?.entryForKeyword(keyword);
+    if (entry == null) return;
+    _keywordHoverExitTimer?.cancel();
+    _hoveredKeyword = keyword;
+    _hoveredKeywordRects = rects;
+    _scheduleKeywordCard(entry, rects.first, _keywordAccentOf(entry, keyword));
+  }
+
+  /// 取关键词绑定的颜色，作为卡片主色
+  Color _keywordAccentOf(OutlineKeywordEntry entry, String keyword) {
+    for (final item in entry.keywords) {
+      if (item.keyword == keyword) return item.color;
+    }
+    return entry.keywords.isNotEmpty ? entry.keywords.first.color : const Color(0xFF1565C0);
+  }
+
+  /// 安排在当前帧结束后展示悬浮卡片
+  void _scheduleKeywordCard(OutlineKeywordEntry entry, Rect anchorRect, Color accentColor) {
+    _pendingKeywordCard = entry;
+    _pendingKeywordCardAnchor = anchorRect;
+    _pendingKeywordCardAccent = accentColor;
+    if (_keywordCardScheduled) return;
+    _keywordCardScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _keywordCardScheduled = false;
+      final OutlineKeywordEntry? pendingEntry = _pendingKeywordCard;
+      final Rect? pendingAnchor = _pendingKeywordCardAnchor;
+      final Color? pendingAccent = _pendingKeywordCardAccent;
+      _pendingKeywordCard = null;
+      _pendingKeywordCardAnchor = null;
+      _pendingKeywordCardAccent = null;
+      if (!mounted || pendingEntry == null || pendingAnchor == null || pendingAccent == null) return;
+      // 延后期间关键词高亮已关闭或指针已离开关键词时不再展示
+      if (!_keywordHighlightActive || _hoveredKeyword == null) return;
+      _showKeywordCard(pendingEntry, pendingAnchor, pendingAccent);
+    });
+  }
+
+  /// 指针离开大纲关键词
+  ///
+  /// 延迟收起卡片，避免在两处相同关键词之间移动或移向卡片时出现闪动。
+  void _onKeywordHoverExit(String keyword) {
+    if (_hoveredKeyword != keyword) return;
+    _keywordHoverExitTimer?.cancel();
+    _keywordHoverExitTimer = Timer(const Duration(milliseconds: 150), () {
+      if (_hoveredKeyword == keyword) _hideKeywordCard();
+    });
+  }
+
+  /// 指针进入悬浮卡片
+  ///
+  /// 取消离开关键词时启动的收起定时器，使卡片在指针移入后保持显示。
+  void _onKeywordCardEnter() {
+    _keywordHoverExitTimer?.cancel();
+    _keywordHoverExitTimer = null;
+  }
+
+  /// 指针离开悬浮卡片
+  void _onKeywordCardExit() {
+    _hideKeywordCard();
+  }
+
+  /// 当前视口底部被软键盘占用的逻辑高度
+  ///
+  /// 直接读取视图内边距并换算为逻辑像素，避免受 Scaffold 收缩子树后的 MediaQuery 影响。
+  double get _keyboardBottomInset {
+    final view = View.of(context);
+    final double ratio = view.devicePixelRatio;
+    return ratio <= 0 ? 0 : view.viewInsets.bottom / ratio;
+  }
+
+  /// 展示关键词悬浮卡片
+  ///
+  /// 优先显示在关键词下方，下方空间不足时翻到上方；
+  /// 卡片内容为该节点的全部子孙节点，超过最大高度时在卡片内滚动。
+  void _showKeywordCard(OutlineKeywordEntry entry, Rect anchorRect, Color accentColor) {
+    // 同一条目已展示时直接复用，避免鼠标追踪重复命中导致浮层反复重建与位置抖动
+    if (_keywordCardEntry != null && identical(_displayedKeywordEntry, entry)) return;
+    _removeKeywordCardEntry();
+    final OverlayState? overlay = Overlay.maybeOf(context);
+    if (overlay == null) return;
+
+    final Size screen = MediaQuery.sizeOf(context);
+    const double margin = OutlineKeywordHoverCard.screenMargin;
+    // 软键盘占用的底部区域不参与定位，避免移动端卡片落在键盘之下
+    final double visibleBottom = screen.height - _keyboardBottomInset;
+    final double maxHeight = (visibleBottom * 0.5).clamp(160.0, 380.0).toDouble();
+    // 窄屏时卡片宽度收缩到屏幕可用宽度
+    final double cardWidth = (screen.width - margin * 2)
+        .clamp(200.0, OutlineKeywordHoverCard.width)
+        .toDouble();
+
+    // 水平方向：默认与关键词左对齐，右侧放不下时改为与关键词右对齐（向左展开）
+    double left = anchorRect.left;
+    if (left + cardWidth > screen.width - margin) {
+      left = anchorRect.right - cardWidth;
+    }
+    _keywordCardLeft = left
+        .clamp(margin, math.max(margin, screen.width - cardWidth - margin))
+        .toDouble();
+
+    // 垂直方向：先按估算高度决定显示在下方还是上方，
+    // 显示在上方时改用底部对齐，保证卡片底部始终贴在关键词上方
+    final double estimated = OutlineKeywordHoverCard.estimateHeight(entry, maxHeight);
+    _keywordCardAbove = anchorRect.bottom + 6 + estimated > visibleBottom - margin;
+
+    final OverlayEntry cardEntry = OverlayEntry(
+      // OverlayEntry 的内容不是 Stack，Positioned 必须放在 Stack 内部才能生效
+      builder: (_) => Stack(
+        children: [
+          Positioned(
+            left: _keywordCardLeft,
+            top: _keywordCardAbove ? null : anchorRect.bottom + 6,
+            bottom: _keywordCardAbove ? math.max(margin, screen.height - anchorRect.top + 6) : null,
+            width: cardWidth,
+            // 卡片归属编辑器的点击区域组：点击卡片时编辑器不失焦，
+            // 移动端输入法与卡片都不会因点按卡片而收起
+            child: CodeEditorTapRegion(
+              child: OutlineKeywordHoverCard(
+                entry: entry,
+                accentColor: accentColor,
+                maxHeight: maxHeight,
+                onTap: () => _jumpToOutlineKeyword(entry),
+                onMouseEnter: _onKeywordCardEnter,
+                onMouseExit: _onKeywordCardExit,
+                // 实测高度超出下方空间时改为显示在上方（只翻转一次，避免位置来回跳动）
+                onMeasuredHeight: (height) =>
+                    _ensureKeywordCardVisible(anchorRect, height, visibleBottom, margin),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+    _keywordCardEntry = cardEntry;
+    _displayedKeywordEntry = entry;
+    overlay.insert(cardEntry);
+  }
+
+  /// 根据实测高度确保卡片完整可见
+  ///
+  /// 仅在「按估算高度显示在下方、实际高度却放不下」时翻到上方；
+  /// 翻到上方后不再回调修正，避免位置在两个状态间来回切换。
+  void _ensureKeywordCardVisible(
+    Rect anchorRect,
+    double cardHeight,
+    double visibleBottom,
+    double margin,
+  ) {
+    if (_keywordCardAbove) return;
+    if (anchorRect.bottom + 6 + cardHeight <= visibleBottom - margin) return;
+    _keywordCardAbove = true;
+    _keywordCardEntry?.markNeedsBuild();
+  }
+
+  /// 移除悬浮卡片浮层（保留悬停关键词状态）
+  ///
+  /// 构建/布局阶段移除浮层会触发 markNeedsBuild 断言（如滚动监听在布局期间回调），
+  /// 此时延后到帧末再移除。
+  void _removeKeywordCardEntry() {
+    _displayedKeywordEntry = null;
+    final OverlayEntry? entry = _keywordCardEntry;
+    _keywordCardEntry = null;
+    if (entry == null) return;
+    if (SchedulerBinding.instance.schedulerPhase == SchedulerPhase.persistentCallbacks) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => entry.remove());
+    } else {
+      entry.remove();
+    }
+  }
+
+  /// 收起悬浮卡片并清除悬停状态
+  void _hideKeywordCard() {
+    _keywordHoverExitTimer?.cancel();
+    _keywordHoverExitTimer = null;
+    // 丢弃尚未插入的卡片请求，避免收起后又重新出现
+    _pendingKeywordCard = null;
+    _pendingKeywordCardAnchor = null;
+    _pendingKeywordCardAccent = null;
+    _pendingMobileKeywordPreview = null;
+    _dismissMobileKeywordCardOnTapUp = false;
+    _removeKeywordCardEntry();
+    _hoveredKeyword = null;
+    _hoveredKeywordRects = const [];
+  }
+
+  /// 滚动导致悬停位置失效时收起卡片
+  void _hideKeywordCardOnScroll() {
+    if (_keywordCardEntry != null) _hideKeywordCard();
+  }
+
+  /// 处理编辑器内的指针按下
+  ///
+  /// 按住关键词修饰键（Ctrl / Command）且指针落在当前悬停的关键词上时，
+  /// 跳转到绑定的节点。
+  void _onEditorPointerDown(PointerDownEvent event) {
+    if (!_keywordModifierPressed) return;
+    final String? keyword = _hoveredKeyword;
+    if (keyword == null) return;
+    if (!_hoveredKeywordRects.any((rect) => rect.contains(event.position))) return;
+    final OutlineKeywordEntry? entry = _outlineKeywordService?.entryForKeyword(keyword);
+    if (entry == null) return;
+    _jumpToOutlineKeyword(entry);
+  }
+
+  /// 拦截移动端点按关键词的手势
+  ///
+  /// 关键词预览开启后，点按关键词由本方法接管：编辑器不再移动光标、
+  /// 不唤起输入法，只在手指抬起后弹出预览卡片；
+  /// 卡片展示期间点按空白处同样由本方法接管，只关闭卡片，
+  /// 不会顺带移动光标或唤起输入法。
+  bool _interceptMobileKeywordTap(Offset position, CodeLineSelection? caret, bool isTapUp) {
+    if (!PlatformCapabilities.isMobile) return false;
+
+    // 按下阶段只记录命中的关键词，避免长按或拖动时提前弹卡
+    if (!isTapUp) {
+      _pendingMobileKeywordPreview = _resolveMobileKeywordPreview(position, caret);
+      _dismissMobileKeywordCardOnTapUp =
+          _pendingMobileKeywordPreview == null && _keywordCardEntry != null;
+      return _pendingMobileKeywordPreview != null || _dismissMobileKeywordCardOnTapUp;
+    }
+
+    final ({OutlineKeywordEntry entry, Rect anchor, Color accent})? pending =
+        _pendingMobileKeywordPreview;
+    _pendingMobileKeywordPreview = null;
+    if (pending != null) {
+      _dismissMobileKeywordCardOnTapUp = false;
+      _showKeywordCard(pending.entry, pending.anchor, pending.accent);
+      return true;
+    }
+    if (_dismissMobileKeywordCardOnTapUp) {
+      _dismissMobileKeywordCardOnTapUp = false;
+      _hideKeywordCard();
+      return true;
+    }
+    return false;
+  }
+
+  /// 解析移动端点按位置对应的关键词预览数据
+  ///
+  /// 点按位置换算为全文偏移后查找命中的关键词；光标落在词尾时向前取一个字符，
+  /// 避免单字关键词漏判。未命中关键词时返回 null。
+  ({OutlineKeywordEntry entry, Rect anchor, Color accent})? _resolveMobileKeywordPreview(
+    Offset position,
+    CodeLineSelection? caret,
+  ) {
+    final ReEditorSpanBuilder? spanBuilder = widget.spanBuilder;
+    if (spanBuilder == null || caret == null) return null;
+    final TextSelection flat = CodeLineSelectionUtils.flatSelectionOf(
+      widget.controller.text,
+      caret,
+    );
+    if (!flat.isValid) return null;
+
+    final int offset = flat.baseOffset;
+    String? keyword = spanBuilder.outlineKeywordAt(offset);
+    if (keyword == null && offset > 0) {
+      keyword = spanBuilder.outlineKeywordAt(offset - 1);
+    }
+    if (keyword == null) return null;
+
+    final OutlineKeywordEntry? entry = _outlineKeywordService?.entryForKeyword(keyword);
+    if (entry == null) return null;
+    // 以点按位置上方一小段作为锚点，卡片优先显示在手指上方
+    return (
+      entry: entry,
+      anchor: Rect.fromLTWH(position.dx, position.dy - 20, 0, 20),
+      accent: _keywordAccentOf(entry, keyword),
+    );
+  }
+
+  /// 跳转到关键词绑定的节点
+  void _jumpToOutlineKeyword(OutlineKeywordEntry entry) {
+    final WorkspaceProvider provider = context.read<WorkspaceProvider>();
+    // 先发起跳转，再把浮层移除延后到帧末：
+    // 直接在浮层自身的指针回调里销毁浮层，会中断本次事件分发
+    unawaited(provider.navigateToOutlineKeyword(entry));
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _hideKeywordCard();
+    });
+  }
+
+  /// 内容或选区变化时通知父组件
+  void _onControllerChanged() {
+    if (!mounted) return;
+    final CodeLineEditingValue value = widget.controller.value;
+
+    // 选区变化：换算为扁平偏移量后向外通知
+    final TextSelection flatSelection = CodeLineSelectionUtils.flatSelectionOf(widget.controller.text, value.selection);
+    if (flatSelection != _lastSelection) {
+      _lastSelection = flatSelection;
+      widget.onSelectionChanged?.call(flatSelection);
+    }
+
+    // 仅移动光标时行数据引用不变，此时不视为内容变化
+    if (identical(value.codeLines, _lastCodeLines)) return;
+    // 记录变化前的逻辑行数，用于判断本次输入是否新增了逻辑行
+    final int previousLineCount = _lastCodeLines?.length ?? value.codeLines.length;
+    _lastCodeLines = value.codeLines;
+
+    // 同步刷新高亮解析缓存
+    //
+    // 高亮范围以全文偏移量表示，必须在渲染前按最新文本重算；
+    // 否则旧偏移量被套用到新文本上会出现整段错位（插入点之后全部着色、
+    // 或被后推的引号失去高亮），直至下一次重建才恢复。
+    widget.spanBuilder?.update(context: context, text: widget.controller.text);
+
+    // 程序化改写全文（备份恢复、段落整理）不计入编辑事件
+    if (_silentWriteDepth > 0) return;
+
+    // 内容增长时维持底边距这一安全距离
+    final int currentLength = widget.controller.text.length;
+    final bool isTextGrown = currentLength > _previousTextLength;
+    _previousTextLength = currentLength;
+    if (isTextGrown) {
+      _keepBottomPaddingVisible(isLineAdded: value.codeLines.length > previousLineCount);
+    }
+
+    final NovelEditType type = _pendingEditType ?? NovelEditType.keyboard;
+    _pendingEditType = null;
+    // 撤销/重做本身不算新编辑，其余编辑更新正文编辑时间，供标题与正文的撤销排序使用
+    if (type != NovelEditType.undo && type != NovelEditType.redo) {
+      _lastBodyEditAt = DateTime.now();
+      _lastHistoryTargetIsTitle = null;
+    }
+    widget.onEditEvent?.call(type);
+  }
+
+  /// 标记末行需要在布局阶段对齐底边距
+  ///
+  /// 光标位于最后一行时，只有本次输入新增逻辑行（换行键）或使末行自动换行，
+  /// 末行才会向下移动；仅局部文字增多、排版未发生变化时不应移动视口。
+  /// 自动换行取决于排版结果，需在布局阶段确认，故此处记录输入前末行已排版的高度。
+  void _keepBottomPaddingVisible({required bool isLineAdded}) {
+    if (widget.controller.selection.extentIndex < widget.controller.codeLines.length - 1) {
+      return;
+    }
+
+    // 新增逻辑行时末行必然下移，可直接对齐，无需再确认换行
+    if (isLineAdded) {
+      _pendingLineAdded = true;
+      _pendingBottomAlignment = true;
+      return;
+    }
+
+    // 已确认新增逻辑行的待对齐不受本次输入影响
+    if (_pendingLineAdded) return;
+
+    _previousLastLineHeight =
+        _codeScrollController.contentHeightOfLine(widget.controller.codeLines.length - 1);
+    _pendingBottomAlignment = _previousLastLineHeight != null;
+  }
+
+  /// 焦点变化时触发
+  ///
+  /// 窗口最小化恢复或从其他应用切回时开启短暂的滚动保护，避免不期望的跳动。
+  void _onFocusChanged() {
+    if (_focusNode.hasFocus) {
+      _scrollGuard.protect(const Duration(milliseconds: 150));
+    } else {
+      // 失焦后悬停位置不再有效，收起关键词悬浮卡片
+      _hideKeywordCard();
+    }
+    // 选区颜色随焦点变化（失焦时灰显），需要重建编辑器
+    if (mounted) setState(() {});
+  }
+
+  /// 在 Layout 阶段修正滚动像素
+  ///
+  /// 修正发生在 Paint 之前，因此结果随当帧一并呈现，不会出现先渲染再滚动的二次跳动。
+  /// 一是补偿额外顶边距变化导致的滚动偏移，二是让末行连同底边距对齐视口底部，
+  /// 三是内容载入后把视口定位到光标所在行，四是宽度变化重排后还原光标行的视口位置。
+  void _onApplyContentDimensions(ScrollPosition position, double minExt, double maxExt) {
+    bool corrected = false;
+    if (_pendingExtraPaddingDelta != null) {
+      final double targetOffset = (position.pixels + _pendingExtraPaddingDelta!).clamp(minExt, maxExt);
+      if ((position.pixels - targetOffset).abs() > 0.5) {
+        position.correctPixels(targetOffset);
+        corrected = true;
+      }
+      _pendingExtraPaddingDelta = null;
+    }
+    if (_pendingBottomAlignment) {
+      _pendingBottomAlignment = false;
+      final bool lineAdded = _pendingLineAdded;
+      _pendingLineAdded = false;
+      final double? previousHeight = _previousLastLineHeight;
+      _previousLastLineHeight = null;
+      // 新增逻辑行可直接对齐；否则需末行因自动换行变高，说明本次输入让末行下移
+      final double? currentHeight = lineAdded
+          ? null
+          : _codeScrollController.contentHeightOfLine(widget.controller.codeLines.length - 1);
+      final bool shouldAlign = lineAdded ||
+          (previousHeight != null && currentHeight != null && currentHeight > previousHeight + 0.5);
+      if (shouldAlign && _alignLastLineWithBottomPadding(position, minExt, maxExt)) {
+        corrected = true;
+      }
+    }
+    if (_pendingCursorReveal && _revealCursorInLayout(position, minExt, maxExt)) {
+      corrected = true;
+    }
+    if (_alignCursorToResizeAnchor(position, minExt, maxExt)) {
+      corrected = true;
+    }
+    // 滚动位置改变后光标在屏幕上的位置随之变化，需要在当帧内刷新输入法坐标：
+    // 若等到下一帧，输入法会先按滚动前的位置显示候选框，再跳回正确位置
+    if (corrected) {
+      _imeReporterKey.currentState?.reportNow();
+    }
+  }
+
+  /// 记录宽度变化前光标行相对视口顶部的位置
+  ///
+  /// 此时行高前缀和仍对应旧宽度；光标行不在视口内时不记录，保留用户的浏览位置。
+  void _captureResizeAnchor(double width) {
+    final double? previousWidth = _layoutWidth;
+    _layoutWidth = width;
+    if (previousWidth == null || (width - previousWidth).abs() < 0.5) return;
+    if (!_scrollController.hasClients) return;
+    final ScrollPosition position = _scrollController.position;
+    if (!position.hasViewportDimension) return;
+    final double? cursorTop =
+        _codeScrollController.contentTopOfPosition(widget.controller.selection.extent);
+    final double lineHeight = _codeScrollController.preferredLineHeight;
+    if (cursorTop == null || lineHeight <= 0) return;
+    final double viewportY = cursorTop - position.pixels;
+    if (viewportY + lineHeight <= 0 || viewportY >= position.viewportDimension) return;
+    _pendingResizeAnchor = viewportY.clamp(
+      0.0,
+      math.max(0.0, position.viewportDimension - lineHeight),
+    );
+  }
+
+  /// 重排后按宽度变化前记录的位置还原光标行在视口中的位置
+  ///
+  /// 返回是否修正了滚动像素；排版尚未完成时保留标记，交由下一次布局修正。
+  bool _alignCursorToResizeAnchor(ScrollPosition position, double minExt, double maxExt) {
+    final double? anchor = _pendingResizeAnchor;
+    if (anchor == null) return false;
+    final double? cursorTop =
+        _codeScrollController.contentTopOfPosition(widget.controller.selection.extent);
+    if (cursorTop == null) return false;
+    _pendingResizeAnchor = null;
+
+    final double targetOffset = (cursorTop - anchor).clamp(minExt, maxExt);
+    if ((targetOffset - position.pixels).abs() <= 0.5) return false;
+    position.correctPixels(targetOffset);
+    // 按修正后的偏移重算可见段落，避免本帧仍按旧偏移构建行段落绘制
+    _codeScrollController.refreshVisibleParagraphs();
+    // 同步保护目标，避免保护器把位置拉回修正前的值
+    _scrollGuard.retarget();
+    return true;
+  }
+
+  /// 在布局阶段把视口定位到光标所在行
+  ///
+  /// 光标不在视口内时居中显示；修正滚动像素后立即按同一偏移重算可见段落，
+  /// 使本帧绘制的内容与定位结果一致，内容首次呈现即为定位后的画面。
+  /// 排版信息尚不可用时保留待定位标记，由布局结束后的兜底滚动完成定位。
+  /// 返回是否修正了滚动像素。
+  bool _revealCursorInLayout(ScrollPosition position, double minExt, double maxExt) {
+    final double? contentTop = _codeScrollController.contentTopOfPosition(widget.controller.selection.extent);
+    final double lineHeight = _codeScrollController.preferredLineHeight;
+    if (contentTop == null || lineHeight <= 0 || !position.hasViewportDimension) return false;
+    _pendingCursorReveal = false;
+
+    final double viewportTop = position.pixels;
+    final double viewportBottom = viewportTop + position.viewportDimension;
+    final double contentBottom = contentTop + lineHeight;
+    // 光标行已完全在视口内时保持当前滚动位置
+    if (contentTop >= viewportTop && contentBottom <= viewportBottom) return false;
+
+    final double target = ((contentTop + contentBottom) / 2 - position.viewportDimension / 2).clamp(minExt, maxExt);
+    if ((target - position.pixels).abs() <= 0.5) return false;
+    position.correctPixels(target);
+    // 按修正后的偏移重算可见段落，否则本帧仍会按旧偏移构建的行段落绘制
+    _codeScrollController.refreshVisibleParagraphs();
+    return true;
+  }
+
+  /// 让末行连同其下方的底边距与纸张下留白对齐视口底部
+  ///
+  /// 目标偏移取「末行底部 + 安全距离 + 纸张下留白 − 视口高度」：
+  /// 末行尚未顶到视口底部时该值小于当前偏移，不产生滚动；
+  /// 正文未撑满视口（滚动内容由纸张最小页高撑起）时该值同样不足视口高度，视口不会被推到纸张末尾；
+  /// 正文撑满视口后，滚动内容的下边缘即末行下方的这段留白，
+  /// 该值等于滚动内容的最大偏移，末行、纸张下边缘与其外留白一并对齐视口底部。
+  bool _alignLastLineWithBottomPadding(ScrollPosition position, double minExt, double maxExt) {
+    final double? lineBottom = _codeScrollController.contentBottomOfLine(widget.controller.codeLines.length - 1);
+    if (lineBottom == null) return false;
+    // 安全距离按当前可见视口高度换算，软键盘弹出压缩视口后随之收窄，
+    // 使末行停在视口下方留白占当前视口该比例的位置
+    final double bottomMargin = position.viewportDimension * _bottomMarginRatio + _resolvedBottomGap;
+    final double targetOffset = (lineBottom + bottomMargin - position.viewportDimension).clamp(minExt, maxExt);
+    if (targetOffset > position.pixels + 0.5) {
+      position.correctPixels(targetOffset);
+      // 按修正后的偏移重算可见段落，使本帧构建的行段落与对齐结果一致
+      _codeScrollController.refreshVisibleParagraphs();
+      return true;
+    }
+    return false;
+  }
+
+  /// 执行一次程序化编辑并标注事件来源
+  ///
+  /// 编辑引起内容变化时由 [_onControllerChanged] 消费类型；
+  /// 未引起变化（如撤销栈为空）时标记作废，不触发统计。
+  void _runEdit(NovelEditType type, VoidCallback operation) {
+    _pendingEditType = type;
+    operation();
+    _pendingEditType = null;
+  }
+
+  /// 是否可撤销（只读模式下不可撤销）
+  bool get canUndo => !widget.readOnly && (widget.controller.canUndo || _titleUndoHistory.canUndo);
+
+  /// 是否可重做（只读模式下不可重做）
+  bool get canRedo => !widget.readOnly && (widget.controller.canRedo || _titleUndoHistory.canRedo);
+
+  /// 撤销时是否应先回退章节标题
+  ///
+  /// 标题与正文各自维护撤销栈，按最后一次编辑的先后决定撤销哪一边：
+  /// 标题输入晚于正文编辑就撤标题，否则交回正文撤销栈处理。
+  bool _shouldUndoTitleFirst() {
+    if (!_titleUndoHistory.canUndo) return false;
+    final DateTime? titleAt = _titleUndoHistory.lastEditAt;
+    final DateTime? bodyAt = _lastBodyEditAt;
+    if (bodyAt == null) return true;
+    return titleAt != null && titleAt.isAfter(bodyAt);
+  }
+
+  /// 撤销
+  void undo() {
+    if (widget.readOnly) return;
+    if (_shouldUndoTitleFirst()) {
+      final ChapterTitleEdit? edit = _titleUndoHistory.undo();
+      if (edit != null) {
+        _applyChapterTitleText(edit.textBefore);
+        _lastHistoryTargetIsTitle = true;
+        return;
+      }
+    }
+    if (widget.controller.canUndo) {
+      _runEdit(NovelEditType.undo, widget.controller.undo);
+      widget.controller.makeCursorCenterIfInvisible();
+      // 标记正文为最近操作，连续撤销继续回退正文
+      _lastBodyEditAt = DateTime.now();
+      _lastHistoryTargetIsTitle = false;
+      return;
+    }
+    // 正文已无可撤销内容时退而撤销标题
+    final ChapterTitleEdit? edit = _titleUndoHistory.undo();
+    if (edit != null) {
+      _applyChapterTitleText(edit.textBefore);
+      _lastHistoryTargetIsTitle = true;
+    }
+  }
+
+  /// 重做
+  void redo() {
+    if (widget.readOnly) return;
+    // 重做沿上一次撤销的对象回退，避免正文与标题交替错乱
+    final bool wantTitle = _lastHistoryTargetIsTitle ?? false;
+    if (wantTitle && _titleUndoHistory.canRedo) {
+      final ChapterTitleEdit? edit = _titleUndoHistory.redo();
+      if (edit != null) {
+        _applyChapterTitleText(edit.textAfter);
+        return;
+      }
+    }
+    if (widget.controller.canRedo) {
+      _runEdit(NovelEditType.redo, widget.controller.redo);
+      widget.controller.makeCursorCenterIfInvisible();
+      _lastBodyEditAt = DateTime.now();
+      _lastHistoryTargetIsTitle = false;
+      return;
+    }
+    if (_titleUndoHistory.canRedo) {
+      final ChapterTitleEdit? edit = _titleUndoHistory.redo();
+      if (edit != null) {
+        _applyChapterTitleText(edit.textAfter);
+        _lastHistoryTargetIsTitle = true;
+      }
+    }
+  }
+
+  /// 章节标题文本变化时记入标题撤销栈
+  void _onChapterTitleChanged() {
+    if (_applyingTitleHistory) return;
+    final TextEditingController? controller = widget.chapterTitleController;
+    if (controller == null) return;
+    final String title = controller.text;
+    if (title == _lastChapterTitle) return;
+    // 仅标题输入框持有焦点时才视为用户编辑，避免切换章节等程序化赋值污染撤销栈
+    if (!_titleFocusNode.hasFocus) {
+      _lastChapterTitle = title;
+      return;
+    }
+    _titleUndoHistory.record(before: _lastChapterTitle, after: title);
+    _lastChapterTitle = title;
+    _lastHistoryTargetIsTitle = null;
+    if (mounted) setState(() {});
+  }
+
+  /// 按撤销/重做记录回写章节标题
+  void _applyChapterTitleText(String text) {
+    final TextEditingController? controller = widget.chapterTitleController;
+    if (controller == null) return;
+    _applyingTitleHistory = true;
+    controller.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    );
+    _applyingTitleHistory = false;
+    _lastChapterTitle = text;
+    widget.onChapterTitleChanged?.call(text);
+    _scheduleTitleAreaMeasure();
+    if (mounted) setState(() {});
+    // 标题是本次撤销/重做的落点，光标交还标题输入框
+    _titleFocusNode.requestFocus();
+  }
+
+  /// 剪切
+  void _cut() {
+    if (widget.readOnly) return;
+    _runEdit(NovelEditType.cut, widget.controller.cut);
+    // 同步标记剪贴板已有内容，避免下次右键菜单的"粘贴"项被错误禁用
+    ClipboardStateCache.markHasContent();
+  }
+
+  /// 复制
+  void _copy() {
+    widget.controller.copy();
+    ClipboardStateCache.markHasContent();
+  }
+
+  /// 删除选中内容
+  void _delete() {
+    if (widget.readOnly) return;
+    _runEdit(NovelEditType.delete, widget.controller.deleteSelection);
+  }
+
+  /// 在光标处插入文本片段
+  ///
+  /// 插入会替换当前选区，插入后光标定位到片段内的 [caretOffsetInText] 处
+  /// （为空时落在片段末尾），用于插入成对符号并把光标置于两条符号之间；
+  /// 该替换按键盘输入计入编辑事件。
+  /// 插入后若光标前文本凑成某条自动替换规则的原文本，插入内容会被一并改写。
+  void insertText(String text, {int? caretOffsetInText}) {
+    if (widget.readOnly || text.isEmpty) return;
+    final String currentText = widget.controller.text;
+    final TextSelection flatSelection = CodeLineSelectionUtils.flatSelectionOf(currentText, widget.controller.selection);
+    final int insertOffset = flatSelection.start;
+    bool replaced = false;
+    _runEdit(NovelEditType.keyboard, () {
+      widget.controller.replaceSelection(text);
+      // 成对符号需要把光标置于符号之间，不参与自动替换
+      if (caretOffsetInText == null) {
+        replaced = _replacementPolicy.applyIfMatched();
+      }
+    });
+    // 发生自动替换时，光标已由替换操作定位到替换文本之后
+    if (!replaced) {
+      final String updatedText = widget.controller.text;
+      widget.controller.selection = CodeLineSelectionUtils.collapsedSelection(
+        updatedText,
+        (insertOffset + (caretOffsetInText ?? text.length)).clamp(0, updatedText.length),
+      );
+    }
+    widget.controller.makeCursorCenterIfInvisible();
+  }
+
+  /// 章节标题是否持有输入焦点
+  bool get hasTitleFocus => _titleFocusNode.hasFocus;
+
+  /// 在章节标题的光标处插入文本
+  ///
+  /// 供随机取名等外部能力使用：有选区时替换选中文字，无有效选区时追加在
+  /// 光标处或标题末尾。程序化改写不会触发输入框的 onChanged，需手工回调
+  /// 外部保存标题。标题不可编辑或无光标记录时不插入，返回是否插入成功。
+  bool insertTextToTitle(String text) {
+    final TextEditingController? controller = widget.chapterTitleController;
+    if (controller == null || widget.readOnly || text.isEmpty) return false;
+
+    final String oldText = controller.text;
+    final TextSelection selection = controller.selection;
+    final int start = selection.isValid ? selection.start : oldText.length;
+    final int end = selection.isValid ? selection.end : oldText.length;
+    final String newText = oldText.replaceRange(start, end, text);
+
+    controller.value = TextEditingValue(
+      text: newText,
+      selection: TextSelection.collapsed(offset: start + text.length),
+    );
+    widget.onChapterTitleChanged?.call(newText);
+    if (!_titleFocusNode.hasFocus) _titleFocusNode.requestFocus();
+    return true;
+  }
+
+  /// 自定义粘贴处理
+  ///
+  /// 大段文本粘贴时统一换行符：部分编辑器复制出的长文本使用 `\r\n`，
+  /// 归一化为 `\n` 可避免排版与统计上的额外开销。
+  Future<void> _handleCustomPaste() async {
+    if (widget.readOnly) return;
+    final ClipboardData? data = await Clipboard.getData(Clipboard.kTextPlain);
+    final String? rawText = data?.text;
+    if (rawText == null || rawText.isEmpty) return;
+
+    final String text = rawText.length < _largeTextThreshold
+        ? rawText
+        : rawText.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
+
+    _runEdit(NovelEditType.paste, () => widget.controller.replaceSelection(text));
+    ClipboardStateCache.markHasContent();
+    widget.controller.makeCursorCenterIfInvisible();
+  }
+
+  /// 显示正文右键菜单
+  void _showContextMenuAt(Offset position) {
+    if (!mounted) return;
+    // 刷新剪贴板状态缓存，确保菜单中"粘贴"项的启用状态正确
+    ClipboardStateCache.refresh().then((_) {
+      if (!mounted) return;
+      ContextMenu.showMenuAt(
+        context: context,
+        position: position,
+        menuItems: _buildContextMenuItems(),
+        onDismissed: () {
+          if (mounted && !_focusNode.hasFocus) _focusEditor();
+        },
+      );
+    });
+  }
+
+  /// 编辑器右键菜单项列表
+  ///
+  /// 根据当前编辑器状态（是否有选区、撤销栈等）动态生成菜单项。
+  /// 撤销/恢复与快捷键 Ctrl+Z / Ctrl+Y 调用的是同一套实现（[undo] / [redo]），
+  /// 只读模式下仅保留复制和全选，禁用所有编辑操作。
+  List<ContextMenuItem> _buildContextMenuItems() {
+    final bool hasSelection = !widget.controller.selection.isCollapsed;
+    final bool isReadOnly = widget.readOnly;
+
+    return [
+      // ===== 撤销 / 恢复组 =====
+      ContextMenuItem(
+        labelText: '撤销',
+        icon: Icons.undo,
+        // 章节标题的改动也在撤销栈内，故统一用编辑器级判定
+        enabled: !isReadOnly && canUndo,
+        onTap: undo,
+      ),
+      ContextMenuItem(
+        labelText: '恢复',
+        icon: Icons.redo,
+        enabled: !isReadOnly && canRedo,
+        onTap: redo,
+      ),
+
+      // ----- 分隔线 -----
+      ContextMenuItem.divider(),
+
+      // ===== 剪切 / 复制 / 粘贴 / 删除组 =====
+      ContextMenuItem(labelText: '剪切', icon: Icons.cut, enabled: !isReadOnly && hasSelection, onTap: _cut),
+      ContextMenuItem(labelText: '复制', icon: Icons.copy, enabled: hasSelection, onTap: _copy),
+      ContextMenuItem(
+        labelText: '粘贴',
+        icon: Icons.paste,
+        enabled: !isReadOnly && ClipboardStateCache.hasContent,
+        onTap: _handleCustomPaste,
+      ),
+      ContextMenuItem(
+        labelText: '删除',
+        icon: Icons.delete_outline,
+        enabled: !isReadOnly && hasSelection,
+        labelColor: Colors.redAccent,
+        onTap: _delete,
+      ),
+
+      // ----- 分隔线 -----
+      ContextMenuItem.divider(),
+
+      // ===== 全选 =====
+      ContextMenuItem(labelText: '全选', icon: Icons.select_all, onTap: widget.controller.selectAll),
+    ];
+  }
+
+  /// 构建移动端选择工具栏
+  ///
+  /// 移动端长按选中文本后回调此方法，返回 Flutter 自适应工具栏，
+  /// 外观与按钮文案交由平台渲染；按钮动作复用编辑器既有实现，
+  /// 使剪切、粘贴等操作与码字统计、剪贴板处理保持一致。
+  Widget _buildMobileSelectionToolbar({
+    required BuildContext context,
+    required TextSelectionToolbarAnchors anchors,
+    required CodeLineEditingController controller,
+    required VoidCallback onDismiss,
+    required VoidCallback onRefresh,
+  }) {
+    final bool hasSelection = !controller.selection.isCollapsed;
+    final List<ContextMenuButtonItem> buttonItems = [
+      if (!widget.readOnly && hasSelection)
+        ContextMenuButtonItem(
+          type: ContextMenuButtonType.cut,
+          onPressed: () {
+            onDismiss();
+            _cut();
+          },
+        ),
+      if (hasSelection)
+        ContextMenuButtonItem(
+          type: ContextMenuButtonType.copy,
+          onPressed: () {
+            onDismiss();
+            _copy();
+          },
+        ),
+      if (!widget.readOnly)
+        ContextMenuButtonItem(
+          type: ContextMenuButtonType.paste,
+          onPressed: () {
+            onDismiss();
+            _handleCustomPaste();
+          },
+        ),
+      ContextMenuButtonItem(
+        type: ContextMenuButtonType.selectAll,
+        onPressed: () {
+          onDismiss();
+          controller.selectAll();
+        },
+      ),
+    ];
+
+    return AdaptiveTextSelectionToolbar.buttonItems(
+      anchors: anchors,
+      buttonItems: buttonItems,
+    );
+  }
+
+  /// 获取编辑器快捷键覆盖动作
+  ///
+  /// 动作只随工作台 Provider 变化，Provider 未变化时复用已构建的一份，
+  /// 避免编辑区每次重建都新建一批动作对象。
+  Map<Type, Action<Intent>> _resolveShortcutOverrides(WorkspaceProvider provider) {
+    if (!identical(provider, _shortcutOverridesProvider)) {
+      _shortcutOverridesProvider = provider;
+      _shortcutOverrides = _buildShortcutOverrides(provider);
+    }
+    return _shortcutOverrides!;
+  }
+
+  /// 构建编辑器快捷键覆盖动作
+  ///
+  /// re_editor 自带代码编辑器语义的快捷键，这里替换为小说写作语义：
+  /// 撤销/重做/剪切/粘贴标注事件来源，Tab 与回车走段落缩进策略，
+  /// 退格删除行首缩进、Delete 键执行前向删除，
+  /// 查找替换与保存改用工作台的既有实现，注释、字符转换两类快捷键直接屏蔽。
+  Map<Type, Action<Intent>> _buildShortcutOverrides(WorkspaceProvider provider) {
+    return {
+      CodeShortcutUndoIntent: CallbackAction<CodeShortcutUndoIntent>(
+        onInvoke: (intent) {
+          undo();
+          return null;
+        },
+      ),
+      CodeShortcutRedoIntent: CallbackAction<CodeShortcutRedoIntent>(
+        onInvoke: (intent) {
+          redo();
+          return null;
+        },
+      ),
+      CodeShortcutCutIntent: CallbackAction<CodeShortcutCutIntent>(
+        onInvoke: (intent) {
+          _cut();
+          return null;
+        },
+      ),
+      CodeShortcutPasteIntent: CallbackAction<CodeShortcutPasteIntent>(
+        onInvoke: (intent) {
+          _handleCustomPaste();
+          return null;
+        },
+      ),
+      CodeShortcutIndentIntent: CallbackAction<CodeShortcutIndentIntent>(
+        onInvoke: (intent) {
+          if (!widget.readOnly) _indentPolicy.handleTab();
+          return null;
+        },
+      ),
+      CodeShortcutNewLineIntent: CallbackAction<CodeShortcutNewLineIntent>(
+        onInvoke: (intent) {
+          if (!widget.readOnly) _indentPolicy.handleNewLine();
+          return null;
+        },
+      ),
+      CodeShortcutDeleteIntent: CallbackAction<CodeShortcutDeleteIntent>(
+        onInvoke: (intent) {
+          if (widget.readOnly) return null;
+          if (intent.forward) {
+            widget.controller.deleteForward();
+          } else {
+            _indentPolicy.handleBackspace();
+          }
+          return null;
+        },
+      ),
+      CodeShortcutSaveIntent: CallbackAction<CodeShortcutSaveIntent>(
+        onInvoke: (intent) {
+          widget.onSave?.call();
+          return null;
+        },
+      ),
+      CodeShortcutFindIntent: CallbackAction<CodeShortcutFindIntent>(
+        onInvoke: (intent) {
+          provider.openFindReplace();
+          return null;
+        },
+      ),
+      CodeShortcutReplaceIntent: CallbackAction<CodeShortcutReplaceIntent>(
+        onInvoke: (intent) {
+          provider.openFindReplace(showReplace: true);
+          return null;
+        },
+      ),
+      CodeShortcutEscIntent: CallbackAction<CodeShortcutEscIntent>(
+        onInvoke: (intent) {
+          if (provider.isFindReplaceVisible) provider.closeFindReplace();
+          return null;
+        },
+      ),
+      // 屏蔽单行/多行注释快捷键（Control/Command + / 与 Shift + Control/Command + /）
+      CodeShortcutCommentIntent: DoNothingAction(),
+      // 屏蔽字符转换快捷键（Control/Command + T）
+      CodeShortcutTransposeCharactersIntent: DoNothingAction(),
+    };
+  }
+
+  /// 标题焦点下 Tab 切换到正文编辑器
+  ///
+  /// 正文拥有焦点时由 re_editor 自己的快捷键处理 Tab，此处的绑定不会被触发。
+  void _handleGlobalTab() {
+    if (!_focusNode.hasFocus) _focusEditor();
+  }
+
+  /// 处理保存快捷键（Ctrl+S / Cmd+S）
+  void _handleSave() {
+    widget.onSave?.call();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // 编辑器内容不随应用界面字号缩放，保留编辑器自身的字体大小设置
+    return MediaQuery(
+      data: MediaQuery.of(context).copyWith(textScaler: TextScaler.noScaling),
+      child: _buildEditorBody(context),
+    );
+  }
+
+  /// 构建编辑器主体内容
+  Widget _buildEditorBody(BuildContext context) {
+    // 检测窗口从最小化恢复的情况，请求编辑器焦点
+    final bool isMinimized = context.select<WindowProvider, bool>((p) => p.isMinimized);
+    if (_wasMinimized && !isMinimized && widget.isActive) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && !_focusNode.hasFocus) {
+          _scrollGuard.protect(const Duration(milliseconds: 150));
+          _focusEditor();
+        }
+      });
+    }
+    _wasMinimized = isMinimized;
+
+    final WorkspaceProvider workspaceProvider = context.read<WorkspaceProvider>();
+    final int highlightHash = context.select<WorkspaceProvider, int>((p) {
+      final matches = p.findMatches;
+      int hash = p.currentMatchIndex ^ matches.length;
+      for (final m in matches) {
+        hash = Object.hash(hash, m.baseOffset, m.extentOffset);
+      }
+      return hash;
+    });
+
+    final ReEditorSpanBuilder? spanBuilder = widget.spanBuilder;
+    if (spanBuilder != null) {
+      spanBuilder.update(context: context, text: widget.controller.text);
+    }
+
+    // 高亮输入变化（如查找匹配变化）不改变编辑器属性，需主动请求重绘
+    if (_lastHighlightHash != highlightHash) {
+      _lastHighlightHash = highlightHash;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) widget.controller.forceRepaint();
+      });
+    }
+
+    // 标题区域高度决定编辑器顶部留白，首次展示时在布局完成后测量
+    if (_titleAreaHeight <= 0 && widget.chapterTitleController != null && SettingsService.instance.showChapterTitle) {
+      _scheduleTitleAreaMeasure();
+    }
+
+    return CallbackShortcuts(
+      bindings: {
+        // 标题焦点下按 Tab 切换到正文编辑器
+        if (!widget.readOnly) const SingleActivator(LogicalKeyboardKey.tab): _handleGlobalTab,
+        // 以下为全局快捷键，无论焦点在标题还是正文都生效
+        const SingleActivator(LogicalKeyboardKey.keyS, control: true): _handleSave,
+        const SingleActivator(LogicalKeyboardKey.keyS, meta: true): _handleSave,
+        const SingleActivator(LogicalKeyboardKey.keyF, control: true): () {
+          workspaceProvider.openFindReplace();
+        },
+        const SingleActivator(LogicalKeyboardKey.keyF, meta: true): () {
+          workspaceProvider.openFindReplace();
+        },
+        // Ctrl+H：打开查找替换（Windows 习惯）
+        const SingleActivator(LogicalKeyboardKey.keyH, control: true): () {
+          workspaceProvider.openFindReplace(showReplace: true);
+        },
+        // Cmd+Option+F：打开查找替换（macOS 习惯）
+        const SingleActivator(LogicalKeyboardKey.keyF, meta: true, alt: true): () {
+          workspaceProvider.openFindReplace(showReplace: true);
+        },
+        const SingleActivator(LogicalKeyboardKey.escape): () {
+          if (workspaceProvider.isFindReplaceVisible) workspaceProvider.closeFindReplace();
+        },
+      },
+      child: _buildEditorArea(context),
+    );
+  }
+
+  /// 编辑器区域：纸张背景 + 页边距 + 标题 + 编辑器
+  ///
+  /// 滚动由外层滚动容器承载（参照大纲编辑器）：滚动条紧贴容器，
+  /// 纸张作为滚动内容的一部分，宽度按模式约束、高度随正文篇幅自适应。
+  /// 纸张边界、页边距与标题都是滚动内容的组成部分，随正文一起滚动。
+  Widget _buildEditorArea(BuildContext context) {
+    final SettingsService settings = SettingsService.instance;
+    return NotificationListener<ScrollMetricsNotification>(
+      // 视口尺寸变化时（如窗口最大化/恢复、拖动调整窗口大小），按新的视口高度重算可见行区间并重新排版
+      onNotification: (notification) {
+        if (PlatformCapabilities.isMobile) {
+          // 移动端键盘升降会在动画期间连续产生多次尺寸通知，逐次重绘会反复重排可见行
+          _scheduleViewportRepaint();
+        } else {
+          widget.controller.forceRepaint();
+        }
+        return false;
+      },
+      child: Scrollbar(
+        controller: _scrollController,
+        thumbVisibility: settings.scrollbarAlwaysVisible ? true : null,
+        thickness: editorScrollbarThickness,
+        radius: Radius.circular(editorScrollbarThickness / 2),
+        // 移动端默认把滚动条当作纯指示器，显式开启拖动交互
+        interactive: PlatformCapabilities.isMobile ? true : null,
+        child: ScrollConfiguration(
+          // 屏蔽滚动视图自带滚动条与边界光效，滚动条统一由外层绘制
+          behavior: CleanEditorScrollBehavior(),
+          child: LayoutBuilder(builder: _buildEditorAreaContent),
+        ),
+      ),
+    );
+  }
+
+  /// 取页边距换算所依据的编辑区高度
+  ///
+  /// 键盘收起时以当前可用高度更新基准，键盘弹出期间沿用上一次记录的基准，
+  /// 使页边距不随键盘动画变化，正文在键盘升降过程中保持原位。
+  double _resolveMarginBasisHeight(double availableHeight) {
+    // 高度取自窗口视图的原始内边距：需要区分键盘升降，与应用内边距无关
+    if (View.of(context).viewInsets.bottom <= 0) {
+      _marginBasisHeight = availableHeight;
+    }
+    return _marginBasisHeight > 0 ? _marginBasisHeight : availableHeight;
+  }
+
+  /// 编辑器区域内容：纸张 + 标题 + 编辑器
+  ///
+  /// 纸张宽度按模式约束（纸张模式为 A4 宽且相对整个窗口居中，非纸张模式贴合上级容器），
+  /// 高度由标题与正文内容撑开；编辑器另设最小高度以撑满视口，
+  /// 纸张模式下纸张容器再保证至少为一页 A4 高。
+  /// 纸张背景占满纸张宽度；纸张模式下纸张容器再补偿左右各 16 像素，
+  /// 布局设置-页边距（左右上下）则全部作为编辑器的内部留白，
+  /// 使其落在编辑器盒内，点击边距空白处可把光标定位到附近的正文行。
+  Widget _buildEditorAreaContent(BuildContext context, BoxConstraints constraints) {
+    // 窗口全屏切换、最小化等尺寸过渡期间可能瞬时得到无效宽度，
+    // 此时跳过内容布局，待尺寸恢复后正常渲染
+    if (!constraints.hasBoundedWidth || constraints.maxWidth <= 0) {
+      return const SizedBox.shrink();
+    }
+
+    // 正文换行依赖编辑区宽度，宽度变化后由布局阶段还原光标行的视口位置
+    _captureResizeAnchor(constraints.maxWidth);
+
+    final SettingsService settings = SettingsService.instance;
+    final ColorScheme colorScheme = Theme.of(context).colorScheme;
+    final bool pageViewEnabled = settings.isPageViewEnabled;
+    final bool showTitle = widget.chapterTitleController != null && settings.showChapterTitle;
+    // 纸张宽度：纸张模式恒为 A4 宽，非纸张模式贴合上级容器（即视口宽度）
+    final double paperWidth = pageViewEnabled ? GlobalConstants.a4Width : constraints.maxWidth;
+    // 纸张相对整个窗口居中所需的横向偏移：编辑区夹在左右边栏之间，
+    // 两侧边栏宽度不等时纸张需反向平移，抵消编辑区中心与窗口中心的偏差
+    final double paperCenterOffset = pageViewEnabled
+        ? context.select<WorkspaceProvider, double>((provider) => provider.paperCenterOffset)
+        : 0.0;
+    // 纸张两侧可自由分配的空白宽度
+    final double paperFreeWidth = constraints.maxWidth - paperWidth;
+    // 纸张的水平对齐系数：把偏移量按空白宽度换算为 -1（贴左）至 1（贴右）的比例，
+    // 0 为居中；宽度不足以容纳纸张时不做偏移
+    final double paperAlignmentX = paperFreeWidth <= 0
+        ? 0.0
+        : (paperCenterOffset * 2 / paperFreeWidth).clamp(-1.0, 1.0).toDouble();
+    // 纸张容器的左右补偿：仅纸张模式生效
+    final double paperCompensation = pageViewEnabled ? _paperHorizontalCompensation : 0.0;
+    // 左右页边距：百分比 × 纸张宽度
+    final double horizontalPadding = paperWidth * (settings.horizontalMargin / 100);
+    // 上下页边距的换算基准：键盘升降期间保持不变，避免正文随键盘上下移动
+    final double marginBasisHeight = _resolveMarginBasisHeight(constraints.maxHeight);
+    // 顶边距：百分比 × 视口高度，作为章节标题与正文首行之间的间距
+    final double topMargin = marginBasisHeight * (settings.topMargin / 100);
+    // 底边距：百分比 × 视口高度，作为纸张的底部留白，即末行与纸张底边之间的距离
+    final double bottomPadding = marginBasisHeight * (settings.bottomMargin / 100);
+    // 记录到实例状态，供布局阶段对齐末行时按当前可见视口换算安全距离
+    _bottomMarginRatio = settings.bottomMargin / 100;
+    // 纸张上下与容器之间留出的空白，用于显露纸张轮廓
+    final double paperGap = pageViewEnabled ? GlobalConstants.paperTopMargin : 0.0;
+    // 记录到实例状态，供布局阶段对齐末行时计算目标滚动偏移
+    _resolvedBottomGap = paperGap;
+    final double scrollTopPadding = widget.extraTopPadding + paperGap;
+    // 标题区域占用的高度（纸张内标题及其顶部间距）
+    final double titleAreaHeight = showTitle ? _resolveTitleAreaHeight(settings) : 0.0;
+    // 视口扣除滚动容器上下留白后可供纸张使用的高度
+    final double viewportFillHeight = constraints.maxHeight - scrollTopPadding - paperGap;
+    // 编辑器最小高度：撑满视口中除去标题后的剩余区域，
+    // 使空文档或短章节下方的空白区仍属于编辑区（可命中并显示文本光标），不会露出母容器背景
+    final double editorMinHeight = math.max(0.0, viewportFillHeight - titleAreaHeight);
+    // 编辑器在滚动内容中的纵向偏移：滚动顶边距 + 章节标题高度
+    final double editorContentOffset = scrollTopPadding + titleAreaHeight;
+    // 编辑区底色：默认跟随主题，自定义时使用配置的颜色，纸张与编辑区共用同一底色
+    final Color editorBackgroundColor = ColorUtils.getEditorBackgroundColorForTheme(context);
+    // 纸张外的背景色：纸张模式下由淡化设置决定，其余模式与编辑区底色保持一致
+    final Color outsideBackgroundColor = pageViewEnabled
+        ? ColorUtils.getPaperOutsideBackgroundColor(context)
+        : editorBackgroundColor;
+
+    return ColoredBox(
+      // 铺满编辑区域的底色，用于显露纸张外的背景
+      color: outsideBackgroundColor,
+      child: SingleChildScrollView(
+        controller: _scrollController,
+        padding: EdgeInsets.only(top: scrollTopPadding, bottom: paperGap),
+        // 纸张横向按对齐系数偏移，使其相对整个窗口居中
+        child: Align(
+          alignment: Alignment(paperAlignmentX, 0),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxWidth: pageViewEnabled ? GlobalConstants.a4Width : double.infinity,
+              minHeight: pageViewEnabled ? GlobalConstants.a4Height : 0.0,
+            ),
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: pageViewEnabled ? editorBackgroundColor : Colors.transparent,
+                boxShadow: pageViewEnabled
+                    ? [
+                        BoxShadow(
+                          color: colorScheme.shadow.withValues(alpha: 0.15),
+                          blurRadius: 16,
+                          offset: const Offset(0, 4),
+                        ),
+                      ]
+                    : null,
+              ),
+              // 纸张容器的左右补偿：纸张背景仍占满纸张宽度，内容两侧各内缩该补偿
+              child: Padding(
+                padding: EdgeInsets.symmetric(horizontal: paperCompensation),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // 标题与正文文本区左右对齐，故同样内缩左右页边距；
+                    // 左对齐时正文额外留有行首内边距，标题左侧同步补上以对齐正文文字
+                    if (showTitle)
+                      Padding(
+                        padding: EdgeInsets.only(
+                          left: horizontalPadding +
+                              (settings.isChapterTitleLeftAligned ? _contentLeftInset : 0),
+                          right: horizontalPadding,
+                        ),
+                        child: _buildChapterTitle(context),
+                      ),
+                    _buildEditor(
+                      context,
+                      // 左右页边距让正文与纸张边缘保留距离；左侧额外加上行首内边距，
+                      // 保证行首光标完整可见；顶边距为标题与正文之间的间距，底边距为末行的安全距离
+                      EdgeInsets.fromLTRB(
+                        horizontalPadding + _contentLeftInset,
+                        topMargin,
+                        horizontalPadding,
+                        bottomPadding,
+                      ),
+                      editorContentOffset,
+                      editorMinHeight,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 章节标题组件
+  Widget _buildChapterTitle(BuildContext context) {
+    final SettingsService settings = SettingsService.instance;
+    final TextEditingController titleController = widget.chapterTitleController!;
+    return Padding(
+      // 供测量标题区域高度使用
+      key: _titleAreaKey,
+      padding: EdgeInsets.only(top: settings.chapterTitleTopMargin + 16),
+      child: ImeCursorFixerWrapper(
+        controller: titleController,
+        focusNode: _titleFocusNode,
+        child: QwTextField(
+          controller: titleController,
+          focusNode: _titleFocusNode,
+          decoration: const InputDecoration(
+            filled: false,
+            border: InputBorder.none,
+            enabledBorder: InputBorder.none,
+            focusedBorder: InputBorder.none,
+            hoverColor: Colors.transparent,
+            // 去掉主题输入框的默认内边距，使左对齐时标题与正文文字左边缘对齐
+            contentPadding: EdgeInsets.zero,
+          ),
+          style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+            // 章节标题使用独立的标题字体设置，默认（null）为系统字体，
+            // 不随正文字体与界面字体变化
+            fontFamily: settings.chapterTitleFontFamily,
+            fontSize: settings.chapterTitleFontSize,
+            color: ColorUtils.getChapterTitleColorForTheme(context),
+          ),
+          // 标题不再限制单行：文字超出宽度时自动折行，标题区高度由
+          // _scheduleTitleAreaMeasure 在帧末按实际排版结果校正
+          maxLines: null,
+          minLines: 1,
+          // 允许自动折行但不接受手动换行，避免标题被拆成多段
+          inputFormatters: [FilteringTextInputFormatter.deny(RegExp(r'[\n\r]'))],
+          // 标题对齐方式由布局设置决定，默认居中
+          textAlign: settings.isChapterTitleLeftAligned ? TextAlign.left : TextAlign.center,
+          onChanged: (title) {
+            widget.onChapterTitleChanged?.call(title);
+            // 标题折行数变化会改变标题区高度，重新测量以修正正文顶部留白
+            _scheduleTitleAreaMeasure();
+            Future.delayed(const Duration(milliseconds: 80), () {
+              if (mounted) _scheduleTitleAreaMeasure();
+            });
+          },
+        ),
+      ),
+    );
+  }
+
+  /// 章节标题区域（标题及其顶边距）的高度
+  ///
+  /// 优先使用实际排版测得的高度；尚未测得时按字号估算，待测量完成后自动校正。
+  double _resolveTitleAreaHeight(SettingsService settings) {
+    if (_titleAreaHeight > 0) return _titleAreaHeight;
+    return settings.chapterTitleTopMargin + settings.chapterTitleFontSize * 1.5;
+  }
+
+  /// 在帧末按实际排版结果校正章节标题区域高度
+  ///
+  /// 标题高度取决于字号与主题样式，只能在布局完成后取得；
+  /// 高度变化时触发重建以刷新编辑器顶部留白，未变化则不再重建。
+  void _scheduleTitleAreaMeasure() {
+    if (_titleAreaMeasureScheduled) return;
+    _titleAreaMeasureScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _titleAreaMeasureScheduled = false;
+      if (!mounted) return;
+      final RenderObject? render = _titleAreaKey.currentContext?.findRenderObject();
+      if (render is! RenderBox || !render.hasSize) return;
+      final double height = render.size.height;
+      if ((height - _titleAreaHeight).abs() < 1.0) return;
+      setState(() => _titleAreaHeight = height);
+    });
+  }
+
+  /// 视觉首行缩进的宽度（像素）
+  ///
+  /// 取当前字体下两个全角空格的实际宽度，保持视觉缩进与字符缩进外观一致；
+  /// 仅在开启首行缩进且缩进不由全角空格实现时返回非零值。
+  double _resolveFirstLineIndentWidth(SettingsService settings) {
+    if (!settings.isFirstLineIndentEnabled || settings.isFullWidthSpaceIndentEnabled) {
+      return 0;
+    }
+    final String cacheKey = '${settings.fontFamily}|${settings.fontSize}|${settings.letterSpacing}';
+    final double? cached = _firstLineIndentCache[cacheKey];
+    if (cached != null) return cached;
+    final TextPainter painter = TextPainter(
+      text: TextSpan(
+        text: ReEditorIndentPolicy.indent,
+        style: TextStyle(
+          fontFamily: settings.fontFamily,
+          fontSize: settings.fontSize,
+          letterSpacing: settings.letterSpacing,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    final double width = painter.width;
+    painter.dispose();
+    _firstLineIndentCache[cacheKey] = width;
+    return width;
+  }
+
+  /// 构建编辑器本体
+  ///
+  /// 选区颜色随焦点切换：失焦时使用派生灰显色，保持上一次选区的可见性。
+  /// 页边距作为编辑器的内部留白而非外层容器的间距，
+  /// 使编辑器盒覆盖整张纸张，点击边距空白处也能把光标定位到附近的正文行。
+  /// 行间线随正文一并交给编辑器绘制，跟随其懒加载只绘制可见行。
+  /// [minHeight] 为编辑器最小高度，内容不足时按下限撑开，避免短章节露出纸张外的背景。
+  Widget _buildEditor(
+    BuildContext context,
+    EdgeInsets padding,
+    double contentOffset,
+    double minHeight,
+  ) {
+    final SettingsService settings = SettingsService.instance;
+    final ColorScheme colorScheme = Theme.of(context).colorScheme;
+    final Color focusedSelectionColor = computeFocusedSelectionColor(colorScheme);
+    final Color unfocusedSelectionColor = computePersistentSelectionColor(context, colorScheme.primary);
+    // 查找匹配变化时重建编辑器，供 span/painter 同步
+    context.select<WorkspaceProvider, int>((p) {
+      final matches = p.findMatches;
+      int hash = p.currentMatchIndex ^ matches.length;
+      for (final m in matches) {
+        hash = Object.hash(hash, m.start, m.end);
+      }
+      return hash;
+    });
+    final WorkspaceProvider workspaceProvider = context.read<WorkspaceProvider>();
+    // 行间线样式：仅在开启时传入，关闭时交由编辑器跳过绘制
+    final CodeLineSeparatorStyle? lineSeparator = settings.showLineSeparator
+        ? CodeLineSeparatorStyle(
+            color: ColorUtils.getFontColorForTheme(context),
+            dashed: settings.lineSeparatorStyle == 'dashed',
+            opacity: settings.lineSeparatorOpacity,
+          )
+        : null;
+
+    return Listener(
+      // 桌面端按住修饰键点击关键词时跳转
+      onPointerDown: _onEditorPointerDown,
+      child: ReEditorImeReporter(
+        key: _imeReporterKey,
+        controller: widget.controller,
+        focusNode: _focusNode,
+        scrollController: _scrollController,
+        child: ListenableBuilder(
+          listenable: _focusNode,
+          builder: (context, child) {
+            return CodeEditor(
+              controller: widget.controller,
+              focusNode: _focusNode,
+              scrollController: _codeScrollController,
+              // 编辑器不承载滚动：高度随内容自适应，滚动由外层容器统一负责
+              viewportScroller: _scrollController,
+              viewportContentOffset: contentOffset,
+              // 内容不足视口时按下限撑开编辑器，使下方空白区仍属于编辑区
+              viewportMinHeight: minHeight,
+              style: CodeEditorStyle(
+                fontSize: settings.fontSize,
+                fontFamily: settings.fontFamily,
+                fontHeight: settings.lineHeight,
+                letterSpacing: settings.letterSpacing,
+                textColor: ColorUtils.getFontColorForTheme(context),
+                backgroundColor: Colors.transparent,
+                cursorColor: ColorUtils.getCursorColorForTheme(context, colorScheme.primary),
+                cursorWidth: _cursorWidth,
+                selectionColor: _focusNode.hasFocus
+                    ? focusedSelectionColor
+                    : unfocusedSelectionColor,
+                highlightColor: focusedSelectionColor,
+                findMatches: workspaceProvider.findMatches,
+                currentMatchIndex: workspaceProvider.currentMatchIndex,
+                findMatchColor: FindMatchHighlighter.getMatchColor(context),
+                currentFindMatchColor: FindMatchHighlighter.getCurrentMatchColor(context),
+                lineSeparator: lineSeparator,
+                // 视觉首行缩进：首行缩进改由排版实现，正文不再写入全角空格
+                firstLineIndent: _resolveFirstLineIndentWidth(settings),
+              ),
+              // 小说正文需要自动换行，且不显示行号与代码折叠标记
+              wordWrap: true,
+              readOnly: widget.readOnly,
+              // 关闭编辑器自身的自动聚焦：是否聚焦由外部按平台决定，
+              // 移动端打开作品或切换标签页时不主动唤起输入法
+              autofocus: false,
+              // 只读预览（如历史版本备份）不显示输入光标
+              showCursorWhenReadOnly: false,
+              // 静态光标：开启后光标常亮不闪烁（其他设置中可切换）
+              staticCursor: settings.staticCursorEnabled,
+              // 呼吸式顺滑光标：光标透明度平滑起伏，仅移动端启用
+              breathingCursor: PlatformCapabilities.isMobile &&
+                  settings.breathingCursorEnabled,
+              // 成对符号自动补全仅移动端启用，符号表取自标点符号表；
+              // 表中未列出的 ASCII 引号与括号不会被写入正文
+              autocompleteSymbols: PlatformCapabilities.isMobile &&
+                  SettingsService.instance.punctuationAutoCompleteEnabled,
+              autocompletePairs: _punctuationPairs,
+              // 输入命中替换规则时直接把原文本改写为替换文本
+              textReplacements: _textReplacements,
+              // 移动端软键盘换行交由段落缩进策略处理，与桌面端回车共用补空行与首行缩进规则；
+              // 只读编辑器与桌面端不接管，沿用编辑器默认换行
+              onNewLine: PlatformCapabilities.isMobile && !widget.readOnly
+                  ? _indentPolicy.handleNewLine
+                  : null,
+              // 移动端点按关键词时由本编辑器接管：弹出预览卡片，
+              // 同时不把光标落到关键词、不唤起输入法
+              onMobileTapIntercept: _interceptMobileKeywordTap,
+              chunkAnalyzer: const NonCodeChunkAnalyzer(),
+              padding: padding,
+              margin: EdgeInsets.zero,
+              // hint: '开始输入内容……',
+              toolbarController: _toolbarController,
+              shortcutOverrideActions: _resolveShortcutOverrides(context.read<WorkspaceProvider>()),
+              // 滚动条由外层统一绘制，这里屏蔽编辑器自带的滚动条
+              scrollbarBuilder: (context, child, details) => child,
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+/// 正文右键菜单控制器
+///
+/// re_editor 在桌面端点击右键时通过该控制器回调显示菜单，
+/// 菜单内容与定位交由外部实现，以便复用应用既有的菜单样式。
+class _EditorToolbarController implements SelectionToolbarController {
+  _EditorToolbarController({required this.onShowMenu});
+
+  /// 显示菜单的回调，参数为菜单锚点的屏幕坐标
+  final void Function(Offset position) onShowMenu;
+
+  @override
+  void show({
+    required BuildContext context,
+    required CodeLineEditingController controller,
+    required TextSelectionToolbarAnchors anchors,
+    Rect? renderRect,
+    required LayerLink layerLink,
+    required ValueNotifier<bool> visibility,
+  }) {
+    onShowMenu(anchors.primaryAnchor);
+  }
+
+  @override
+  void hide(BuildContext context) {}
+}
+
+/// 编辑器文本变化事件类型
+///
+/// 用于在编辑器拦截层（粘贴、撤销、恢复、剪切、删除、键盘输入）
+/// 明确区分事件来源，供码字统计模块按类型分别处理：
+/// - keyboard/paste/cut/delete 参与码字统计
+/// - undo/redo 不参与码字统计（仅同步基线，避免影响今日码字与码字速度）
+enum NovelEditType {
+  /// 键盘输入（含 Backspace/Delete 键删除）
+  keyboard,
+
+  /// 粘贴
+  paste,
+
+  /// 剪切
+  cut,
+
+  /// 删除选中文本（右键菜单触发）
+  delete,
+
+  /// 撤销（不参与码字统计）
+  undo,
+
+  /// 恢复（不参与码字统计）
+  redo,
+}
+
+/// 编辑事件回调签名
+///
+/// 由 [NovelEditor] 在文本变化时触发，参数为事件类型。
+/// 字数增量由调用方根据控制器字数变化计算。
+typedef OnEditEvent = void Function(NovelEditType type);

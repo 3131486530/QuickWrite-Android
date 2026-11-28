@@ -1,0 +1,120 @@
+<div align="center">
+
+<img src="assets/icon/icon1.png" width="96" alt="快码字 Logo" />
+
+# 快码字 QuickWrite
+
+**专注于小说创作的本地写作工具**
+
+把作品、章节、大纲设定与码字工具集中在一处，帮你专注地把故事写下去。
+
+[![平台](https://img.shields.io/badge/平台-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20Android-blue)](#-下载与安装)
+[![License](https://img.shields.io/badge/License-GPL--3.0-green)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/yic77455/QuickWrite)](https://github.com/yic77455/QuickWrite/releases)
+[![Last Commit](https://img.shields.io/github/last-commit/yic77455/QuickWrite)](https://github.com/yic77455/QuickWrite/commits)
+
+</div>
+
+<div align="center">
+  <img src="docs/images/00-overview.png" alt="快码字主界面" width="880" />
+</div>
+
+---
+
+## 目录
+
+- [项目简介](#项目简介)
+- [功能特性](#功能特性)
+- [界面预览](#界面预览)
+- [下载与安装](#下载与安装)
+- [反馈与贡献](#反馈与贡献)
+- [开源许可](#开源许可)
+
+## 项目简介
+
+快码字（QuickWrite）是一款面向**小说**、**网文**、**剧本**作者开发的文字创作工具，界面干净，功能齐全，只为码字而生。
+除稳定的长文本编辑器外，还有节点式大纲编辑器，帮助作者记录自己的灵感，整理作品的设定。
+
+- **本地优先&&云备份可选**：所有创作数据默认保存在本机，支持自选 WebDAV、S3 协议做云端备份，不绑定账号、不采集内容。
+- **跨平台**：桌面端覆盖 Windows、macOS、Linux，移动端支持 Android，同一套数据与操作习惯。
+- **完全免费**：没有会员制，没有任何功能限制，无需购买、无需注册、无需支付任何费用。
+- **项目开源**：基于 GPL-3.0 协议开源，代码安全透明，不收集任何用户数据，无广告、无跟踪、无隐私问题。
+
+## 功能特性
+
+- 支持从 **docx / txt** 等文本文件**导入**作品，快速把已有作品搬进来。
+- **正文编辑器**：十万字级章节依旧流畅，滚动、输入、编辑不卡顿。支持调整文字格式、页面布局、自定义高亮，可绑定设点中的关键词，快速预览设定节点信息。
+- **大纲编辑器**：像 Workflowy 或 幕布 那样处理你的大纲与角色、地点、势力、世界背景等设定条目，支持无限层级、折叠展开、关联其他条目、**绑定关键词**、插入图片或表格。
+- 另外，除基本的**查找替换**、**全文搜索**、**段落整理**、**自动备份**和**历史版本**等功能外，快码字还具备**码字统计**、**云同步**、**外观自定义**、**随机取名**等等功能，一款文字工具该有的功能它全都有。
+
+## 界面预览
+
+### 书架首页
+
+<div align="center">
+  <img src="docs/images/01-bookshelf.png" alt="书架首页" width="880" />
+</div>
+
+### 工作台
+
+<div align="center">
+  <img src="docs/images/02-workspace.png" alt="工作台" width="880" />
+</div>
+
+### 大纲与设定
+
+<div align="center">
+  <img src="docs/images/03-outline.png" alt="大纲节点树" width="880" />
+</div>
+
+### 码字统计
+
+<div align="center">
+  <img src="docs/images/04-stats.png" alt="码字统计" width="880" />
+</div>
+
+## 下载与安装
+
+应用发布在 [GitHub Releases](https://github.com/yic77455/QuickWrite/releases)，国内用户也可访问 [Gitee Releases](https://gitee.com/yic77455/quick-write/releases) 获得更稳定的下载速度。
+
+### Windows
+
+1. 在 Releases 页面下载最新版 Windows 安装包，文件名形如 `quick-write-1.x.x-windows-x64.exe`。
+2. 运行安装程序，按照提示完成安装。
+3. 首次启动后可在「主界面 → 云同步」中配置 WebDAV 或 S3 服务器地址进行数据同步。
+
+### macOS
+
+1. 下载 `quick-write-1.x.x-macos-universal.dmg`，双击打开后将「快码字」拖入「应用程序」文件夹。
+2. 首次启动若被 Gatekeeper 拦截，请在「应用程序」中右键点击「快码字」选择「打开」，或前往「系统设置 → 隐私与安全性」允许该应用运行。
+3. 首次启动后可在「主界面 → 云同步」中配置 WebDAV 或 S3 服务器地址进行数据同步。
+
+> macOS 版本目前仍处于测试阶段，使用中遇到问题请及时在 Issues 中反馈。
+
+### Linux
+
+1. 下载 `quick-write-1.x.x-linux-amd64.deb`，适用于 amd64 / x86_64 架构的 Debian、Ubuntu 等发行版。
+2. 双击安装包用系统软件中心安装，或在终端执行 `sudo apt install ./quick-write-1.x.x-linux-amd64.deb`。
+3. 卸载执行 `sudo apt remove quickwrite`，书稿与设置不会被删除；如需连同配置一起彻底清除，执行 `sudo apt purge quickwrite`。
+4. 首次启动后可在「主界面 → 云同步」中配置 WebDAV 或 S3 服务器地址进行数据同步。
+
+> Linux 版本目前仍处于测试阶段，使用中遇到问题请及时在 Issues 中反馈。
+
+### Android
+
+1. 在 Releases 页面下载最新版 `.apk` 安装包，文件名形如 `quick-write-1.x.x-android.apk`。
+2. 在手机允许「安装未知来源应用」后完成安装。
+3. 首次启动后可在「工具 → 云同步」中配置 WebDAV 或 S3 服务器地址进行数据同步。
+
+## 反馈与贡献
+
+- 遇到问题或有建议，欢迎在 [Issues](https://github.com/yic77455/QuickWrite/issues) 中反馈。
+- 提交代码请遵循仓库既有的代码风格与注释规范，并在 PR 中说明改动目的与验证方式。
+
+## 开源许可
+
+本项目基于 [GPL-3.0](LICENSE) 协议开源。你可以自由地使用、修改与分发，但基于本项目的衍生作品须以相同协议开源，并保留原始版权声明。软件按“原样”提供，不附带任何明示或暗示的担保。
+
+<p align="center">
+  <sub>© 2026 yic77455 · 保留所有权利</sub>
+</p>

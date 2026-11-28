@@ -1,0 +1,866 @@
+import 'dart:async';
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'package:quick_write/core/models/chapter.dart';
+import 'package:quick_write/core/models/setting_item.dart';
+import 'package:quick_write/core/providers/workspace_provider.dart';
+import 'package:quick_write/core/services/backup_service.dart';
+import 'package:quick_write/core/services/cache_services/chapter_cursor_cache_service.dart';
+import 'package:quick_write/core/services/chapter_word_count_service.dart';
+import 'package:quick_write/core/services/settings_service.dart';
+import 'package:quick_write/core/utils/color_utils.dart';
+import 'package:quick_write/core/utils/code_line_selection_utils.dart';
+import 'package:quick_write/core/utils/platform_capabilities.dart';
+import 'package:quick_write/core/utils/re_editor_span_builder.dart';
+import 'package:quick_write/core/utils/typography_extension.dart';
+import 'package:quick_write/core/utils/word_count_utils.dart';
+import 'package:quick_write/pages/workspace/editor/widgets/find_replace_bar.dart';
+import 'package:quick_write/pages/workspace/editor/widgets/outline_editor_widgets.dart';
+import 'package:quick_write/pages/workspace/editor/widgets/word_count_floating_window.dart';
+import 'package:quick_write/pages/workspace/editor/novel_editor.dart';
+import 'package:quick_write/pages/workspace/editor/outline_editor.dart';
+import 'package:quick_write/shared/dialogs/word_count_dialog.dart';
+import 'package:quick_write/shared/widgets/widgets.dart';
+import 'package:re_editor/re_editor.dart';
+
+/// 工作区容器
+/// 
+/// 管理文本编辑器和标签页的容器组件
+class EditorContainer extends StatefulWidget {
+  /// 是否收起标签页栏
+  ///
+  /// 移动端横屏输入法弹出时收起，把纵向空间让给编辑内容；桌面端与竖屏保持显示
+  final bool hideTabBar;
+
+  const EditorContainer({super.key, this.hideTabBar = false});
+
+  @override
+  State<EditorContainer> createState() => _EditorContainerState();
+}
+
+class _EditorContainerState extends State<EditorContainer> {
+  /// 选区删除不计入码字统计的字数阈值
+  ///
+  /// 一次性删除（如选中一段文本后删除/剪切）字数超过此阈值时，视为清理操作而非创作过程的修改，
+  /// 不参与今日码字与码字速度统计，但仍同步基线以保持后续统计正确。
+  static const int _largeDeletionThreshold = 10;
+
+  /// 加载指示的显示延迟
+  ///
+  /// 本地文件通常几十毫秒内读完，立即显示加载指示会形成闪烁；
+  /// 超过该时长仍未完成时才显示，慢速读取时用户仍能得到反馈。
+  static const Duration _loadingIndicatorDelay = Duration(milliseconds: 300);
+
+  /// 当前加载的标签页ID（用于避免重复加载）
+  String? _loadingTabId;
+
+  /// 加载指示是否可见（加载超过 [_loadingIndicatorDelay] 仍未完成时置位）
+  bool _showLoadingIndicator = false;
+
+  /// 加载指示的延时定时器
+  Timer? _loadingIndicatorTimer;
+
+  @override
+  void dispose() {
+    _loadingIndicatorTimer?.cancel();
+    super.dispose();
+  }
+
+  /// 开始一次内容加载
+  ///
+  /// 记录正在加载的标签页，并延时启动加载指示：
+  /// 正常速度的读取不会显示指示，避免编辑器背景闪动
+  void _startLoading(String tabId) {
+    _loadingTabId = tabId;
+    _showLoadingIndicator = false;
+    _loadingIndicatorTimer?.cancel();
+    _loadingIndicatorTimer = Timer(_loadingIndicatorDelay, () {
+      if (!mounted) return;
+      setState(() => _showLoadingIndicator = true);
+    });
+  }
+
+  /// 清空加载状态
+  void _clearLoadingState() {
+    _loadingTabId = null;
+    _loadingIndicatorTimer?.cancel();
+    _loadingIndicatorTimer = null;
+    _showLoadingIndicator = false;
+  }
+
+  /// 确保当前标签页的控制器和内容已加载
+  void _ensureCurrentTabLoaded(WorkspaceProvider workspaceProvider) {
+    final currentTab = workspaceProvider.currentTab;
+
+    if (currentTab == null) {
+      _clearLoadingState();
+      return;
+    }
+
+    // 设定项标签页使用大纲编辑器，无需加载文本内容
+    if (currentTab.type == EditorTabType.settings) {
+      return;
+    }
+
+    // 大纲备份预览标签页使用大纲编辑器只读模式，无需加载文本内容
+    if (currentTab.type == EditorTabType.backupPreview && currentTab.originalIsSetting) {
+      return;
+    }
+
+    // 如果标签页还没有控制器，需要创建并加载内容
+    if (currentTab.textController == null) {
+      // 标记正在加载的标签页：
+      // 等待期间切换到其他标签页时据此放弃本次加载，载入期间禁止保存
+      currentTab.isContentLoading = true;
+      currentTab.loadErrorMessage = null;
+      _startLoading(currentTab.id);
+
+      final spanBuilder = ReEditorSpanBuilder(
+        customHighlightService: workspaceProvider.customHighlightService,
+        outlineKeywordService: workspaceProvider.outlineKeywordService,
+        sensitiveWordService: workspaceProvider.sensitiveWordService,
+      );
+      currentTab.spanBuilder = spanBuilder;
+      currentTab.textController = CodeLineEditingController(
+        options: const CodeLineOptions(lineBreak: TextLineBreak.lf),
+        spanBuilder: spanBuilder.call,
+      );
+      // 备份预览标签页不需要章节标题控制器
+      if (currentTab.type != EditorTabType.backupPreview) {
+        currentTab.chapterTitleController = TextEditingController();
+      }
+      // 记录载入前标签页携带的光标位置：
+      // 编辑器在空内容上挂载时会上报一次选区并覆盖该字段，需在此处先取出
+      final TextSelection? restoredCursor = currentTab.cursorPosition;
+
+      // 异步加载内容
+      _loadTabContent(currentTab, workspaceProvider, restoredCursor);
+    }
+  }
+  
+  /// 异步加载标签页内容
+  ///
+  /// [restoredCursor] 为载入前标签页携带的光标位置，仅在会话恢复时为非空
+  Future<void> _loadTabContent(
+    EditorTab tab,
+    WorkspaceProvider provider,
+    TextSelection? restoredCursor,
+  ) async {
+    // 确保异步执行，避免无 await 时在 build 阶段调用 setState/notifyListeners
+    await Future.microtask(() {});
+
+    // 如果用户在等待期间切换了标签页，放弃加载
+    if (_loadingTabId != tab.id) {
+      // 放弃加载后标签页没有内容，标记为读取失败，
+      // 避免它被当作空文档继续编辑或保存而覆盖原文件
+      tab.isContentLoading = false;
+      tab.loadErrorMessage = '内容加载已中断，请重试';
+      return;
+    }
+    
+    try {
+      String content = '';
+      // 读取失败原因（null 表示读取成功）
+      String? loadError;
+      
+      if (tab.type == EditorTabType.backupPreview) {
+        // 从备份文件读取内容
+        if (tab.backupFilePath != null) {
+          final backupContent = await BackupService.instance.readBackupContent(tab.backupFilePath!);
+          if (backupContent == null) {
+            loadError = '备份内容读取失败';
+          } else {
+            content = backupContent;
+          }
+        } else {
+          loadError = '备份文件不存在';
+        }
+      } else if (tab.type == EditorTabType.chapter) {
+        // 从文件系统读取章节内容
+        final chapter = _findChapterByUuid(provider.chapters, tab.id);
+        if (chapter == null) {
+          loadError = '章节不存在，可能已被删除';
+        } else {
+          final chapterContent = await provider.tryReadChapterContent(chapter);
+          if (chapterContent == null) {
+            loadError = '章节内容读取失败';
+          } else {
+            content = chapterContent;
+          }
+        }
+      } else if (tab.type == EditorTabType.settings) {
+        // 从文件系统读取设定项内容
+        final item = _findSettingItemByUuid(provider.settingItems, tab.id);
+        if (item != null) {
+          content = await provider.readSettingItemContent(item);
+        }
+      }
+      
+      // 读取失败：显示错误占位并提供重试，不再写入任何内容
+      if (loadError != null) {
+        tab.loadErrorMessage = loadError;
+        return;
+      }
+      tab.loadErrorMessage = null;
+
+      // 如果内容为空，使用默认模板
+      if (content.isEmpty) {
+        content = _getDefaultContent(tab);
+      }
+      
+      // 更新控制器内容（如果标签页还是当前的）
+      if (mounted && tab.textController != null) {
+        // 程序化载入内容，不产生编辑事件
+        NovelEditorState.runSilently(() {
+          tab.textController!.text = content;
+        });
+
+        // 计算初始光标位置：
+        // 恢复标签页会话时按记录的光标位置还原；
+        // 备份预览标签页置于开头；其余标签页按用户设置的「打开文件时」模式决定
+        int caretOffset;
+        if (tab.type == EditorTabType.backupPreview) {
+          caretOffset = 0;
+        } else if (restoredCursor != null) {
+          // 会话恢复的标签页优先还原退出时的光标位置，不受「打开文件时」设置影响
+          caretOffset = restoredCursor.baseOffset.clamp(0, content.length);
+          debugPrint('恢复会话光标位置: ${tab.title}, offset: $caretOffset');
+        } else {
+          final cursorMode = SettingsService.instance.openChapterCursorMode;
+          if (cursorMode == 'end') {
+            // 定位至文末
+            caretOffset = content.length;
+          } else if (cursorMode == 'lastEdit') {
+            // 上一次编辑位置：从缓存中读取光标位置
+            final bookUuid = provider.currentBook?.uuid;
+            final cachedPosition = bookUuid == null
+                ? null
+                : ChapterCursorCacheService.instance.getCursorPosition(
+                    bookUuid: bookUuid,
+                    chapterUuid: tab.id,
+                  );
+            if (cachedPosition != null) {
+              caretOffset = cachedPosition.offset.clamp(0, content.length);
+              debugPrint('恢复章节光标位置: ${tab.title}, offset: $caretOffset');
+            } else {
+              // 无缓存，定位至章节开头，跳过首行缩进
+              caretOffset = _skipFirstLineIndent(content);
+            }
+          } else {
+            // 默认模式：定位至章节开头，跳过首行缩进
+            caretOffset = _skipFirstLineIndent(content);
+          }
+        }
+
+        tab.textController!.selection =
+            CodeLineSelectionUtils.collapsedSelection(content, caretOffset);
+        tab.cursorPosition = TextSelection.collapsed(offset: caretOffset);
+
+        // 设置章节标题（备份预览标签页不需要）
+        if (tab.chapterTitleController != null) {
+          tab.chapterTitleController!.text = tab.title;
+        }
+
+        // 清空撤销栈，防止把"加载初始内容"当作第一次输入可以被撤销
+        tab.textController!.clearHistory();
+
+        // 加载完成后更新字数统计
+        tab.updateWordCount();
+        // 初始化码字统计基线：以当前字数为基线，recorded 归零
+        // 后续编辑事件基于此基线计算 currentNet，避免删除旧内容被错误计入今日码字
+        tab.sessionBaselineWordCount = tab.wordCount;
+        tab.recordedSessionWords = 0;
+        // 通知 UI 刷新
+        provider.notifyWordCountUpdated();
+
+        // 内容加载完成后，如果查找替换栏处于打开状态，刷新查找结果
+        provider.refreshFindIfVisible(resetIndex: true);
+
+        // 内容载入后让视口跟随光标，避免长章节中光标落在视口外：
+        // 会话恢复的标签页按还原的光标；「定位至文末」「上一次编辑位置」模式下按载入后的光标
+        if (restoredCursor != null || _openModeScrollsToCursor(tab)) {
+          _revealCursorAfterLoad(tab);
+        }
+      }
+    } catch (e) {
+      debugPrint('加载内容失败: $e');
+      // 载入异常同样进入错误占位，避免空白或半截内容被继续编辑与保存
+      tab.loadErrorMessage = '内容载入失败';
+    } finally {
+      tab.isContentLoading = false;
+      // 仅当本次加载仍是当前跟踪的加载时才清理加载状态，
+      // 避免被后续加载取代后误清对方的加载指示
+      if (_loadingTabId == tab.id) {
+        _loadingTabId = null;
+        _loadingIndicatorTimer?.cancel();
+        _loadingIndicatorTimer = null;
+        _showLoadingIndicator = false;
+      }
+      // 内容载入完成，通知编辑器重组内容相关布局
+      if (mounted) {
+        setState(() {});
+      }
+      // 通知等待该标签页内容就绪的调用方（如全文搜索跳转）
+      provider.notifyTabContentLoaded(tab.id);
+    }
+  }
+
+  /// 重新加载标签页内容
+  ///
+  /// 读取失败后由错误占位的重试按钮触发，重试期间重新进入加载状态
+  void _retryLoad(EditorTab tab, WorkspaceProvider provider) {
+    if (tab.isContentLoading) return;
+    tab.loadErrorMessage = null;
+    tab.isContentLoading = true;
+    _startLoading(tab.id);
+    setState(() {});
+    _loadTabContent(tab, provider, null);
+  }
+  
+  /// 「打开文件时」设置是否要求载入内容后把视口滚动到光标处
+  ///
+  /// 备份预览标签页的光标固定在开头，不参与该判断
+  bool _openModeScrollsToCursor(EditorTab tab) {
+    if (tab.type == EditorTabType.backupPreview) return false;
+    final String mode = SettingsService.instance.openChapterCursorMode;
+    return mode == 'end' || mode == 'lastEdit';
+  }
+
+  /// 内容载入后让视口定位到光标所在行
+  ///
+  /// 内容与选区是程序化写入的，编辑器不会自动滚动，因此需要显式请求一次定位；
+  /// 定位由编辑器在随后的布局阶段完成，内容首次绘制即为定位后的画面。
+  void _revealCursorAfterLoad(EditorTab tab) {
+    final state = tab.editorKey.currentState;
+    if (state is NovelEditorState) {
+      state.revealCursorAfterLoad();
+      return;
+    }
+    // 编辑器尚未挂载完成时延后一帧再请求定位
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final mountedState = tab.editorKey.currentState;
+      if (mountedState is NovelEditorState) {
+        mountedState.revealCursorAfterLoad();
+      }
+    });
+  }
+
+  /// 根据 UUID 查找章节
+  ChapterModel? _findChapterByUuid(List<ChapterModel> chapters, String uuid) {
+    try {
+      return chapters.firstWhere((c) => c.uuid == uuid);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 根据 UUID 查找设定项
+  SettingItemModel? _findSettingItemByUuid(List<SettingItemModel> items, String uuid) {
+    try {
+      return items.firstWhere((i) => i.uuid == uuid);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 跳过首行缩进，返回第一个非缩进字符的偏移量
+  ///
+  /// 检测文本第一段第一行开头的全角空格（\u{3000}），跳过缩进定位到第一个文字前方
+  int _skipFirstLineIndent(String content) {
+    if (content.isEmpty) return 0;
+    int offset = 0;
+    // 跳过第一段第一行开头的全角空格
+    while (offset < content.length && content[offset] == '\u{3000}') {
+      offset++;
+    }
+    // 如果遇到换行符，说明第一行只有缩进没有正文，回到开头
+    if (offset < content.length && content[offset] == '\n') {
+      return 0;
+    }
+    return offset;
+  }
+
+  /// 获取默认内容模板
+  /// 
+  /// 根据标签页类型返回不同的初始内容模板
+  String _getDefaultContent(EditorTab tab) {
+    switch (tab.type) {
+      case EditorTabType.chapter:
+        return '';
+      case EditorTabType.settings:
+        return '';
+      case EditorTabType.backupPreview:
+        return '';
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // 从上下文获取工作区提供者，这个提供者负责管理所有标签页的状态和操作
+    final workspaceProvider = context.watch<WorkspaceProvider>();
+
+    // 确保当前标签页加载
+    _ensureCurrentTabLoaded(workspaceProvider);
+
+    // 如果没有打开的标签页，显示空状态
+    if (!workspaceProvider.hasOpenedTabs) {
+      return _buildEmptyState(context);
+    }
+
+    // 当前标签页是否支持替换
+    final currentTab = workspaceProvider.currentTab;
+    final canReplace = currentTab?.canReplace ?? true;
+
+    // 查找替换浮窗的顶部偏移量
+    // 移动端紧贴编辑器顶部（标签栏下方）；桌面端保留间距。大纲模式需下移至顶部工具栏下方，避免遮挡操作按钮
+    final double baseTop = PlatformCapabilities.isMobile ? 0.0 : 6.0;
+    final double findReplaceTop = (currentTab?.usesOutlineEditor ?? false)
+        ? OutlineEditorTopBar.height + baseTop
+        : baseTop;
+
+    return Column(
+      children: [
+        // 标签栏（移动端横屏时收起，为编辑内容让出高度）；
+        // 占满整宽由外层 SizedBox 保证，使收起/恢复动画只发生在纵向
+        SizedBox(
+          width: double.infinity,
+          child: AnimatedSize(
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeOut,
+            alignment: Alignment.topCenter,
+            child: widget.hideTabBar
+                ? const SizedBox.shrink()
+                : TabBarWidget(provider: workspaceProvider),
+          ),
+        ),
+        // 编辑器内容区域
+        Expanded(
+          child: Stack(
+            children: [
+              // 编辑器内容
+              _buildEditorContent(context, workspaceProvider),
+              // 加载指示：仅在「当前标签页仍在载入」且载入超过一定时长时显示，
+              // 正常几十毫秒的读取不显示，避免编辑器背景闪动；
+              // 切换到其他标签页后不再覆盖其内容
+              if (_showLoadingIndicator &&
+                  (workspaceProvider.currentTab?.isContentLoading ?? false))
+                Positioned.fill(
+                  child: AbsorbPointer(
+                    child: ColoredBox(
+                      color: ColorUtils.getEditorBackgroundColorForTheme(context),
+                      child: Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            CircularProgressIndicator(color: Theme.of(context).colorScheme.primary),
+                            const SizedBox(height: 16),
+                            Text(
+                              '正在加载内容…',
+                              style: context.bodyMedium?.copyWith(
+                                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              // 字数浮窗（移动端，浮在编辑内容之上，随编辑区一起被键盘上推）
+              WordCountFloatingWindow(onTap: () => _showWordCountStatsDialog(workspaceProvider)),
+              // 查找替换栏（浮动在编辑区域右上角）
+              if (workspaceProvider.isFindReplaceVisible)
+                Positioned(
+                  // 移动端左右贴边铺满屏幕宽度，桌面端保持右侧留白
+                  left: PlatformCapabilities.isMobile ? 0 : null,
+                  right: PlatformCapabilities.isMobile ? 0 : 16,
+                  top: findReplaceTop,
+                  child: FindReplaceBar(
+                    key: const ValueKey('find_replace_bar'),
+                    initialFindText: workspaceProvider.findText,
+                    initialReplaceText: workspaceProvider.replaceText,
+                    caseSensitive: workspaceProvider.findCaseSensitive,
+                    showReplace: canReplace && workspaceProvider.showReplace,
+                    canReplace: canReplace,
+                    currentMatchIndex: workspaceProvider.currentMatchDisplayIndex,
+                    totalMatchCount: workspaceProvider.totalMatchCount,
+                    onFindTextChanged: (text) {
+                      workspaceProvider.updateFindText(text);
+                    },
+                    onFindNext: () => workspaceProvider.findNext(),
+                    onFindPrevious: () => workspaceProvider.findPrevious(),
+                    onReplaceCurrent: () => workspaceProvider.replaceCurrentMatch(),
+                    onReplaceAll: () => workspaceProvider.replaceAllMatches(),
+                    onReplaceTextChanged: (text) => workspaceProvider.updateReplaceText(text),
+                    onClose: () => workspaceProvider.closeFindReplace(),
+                    onCaseSensitiveChanged: (value) => workspaceProvider.setFindCaseSensitive(value),
+                    onShowReplaceChanged: (value) => workspaceProvider.setShowReplace(value),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// 记录设定项的字数变化到码字统计
+  ///
+  /// 以标签页的码字基线计算本次净增字数，增量按键盘输入计入会话统计；
+  /// 关闭「包含设定字数」时只同步基线，不写入统计。
+  void _recordSettingWordsChange(EditorTab tab, WorkspaceProvider provider) {
+    if (!tab.sessionBaselineInitialized) return;
+
+    // currentNet = max(0, 当前字数 - 基线字数)，避免删除旧内容让今日码字为负
+    final currentNet = tab.wordCount > tab.sessionBaselineWordCount
+        ? tab.wordCount - tab.sessionBaselineWordCount
+        : 0;
+    final delta = currentNet - tab.recordedSessionWords;
+
+    if (delta != 0) {
+      // 大规模删除视为清理操作，不上报为码字，但仍同步基线
+      final bool isLargeDeletion = delta < -_largeDeletionThreshold;
+      final tracker = provider.sessionTracker;
+      if (!isLargeDeletion && tracker != null && tracker.includeSettingWords) {
+        tracker.onWordsChanged(typedDelta: delta);
+      }
+    }
+    tab.recordedSessionWords = currentNet;
+  }
+
+  /// 点击字数浮窗时弹出字数统计
+  ///
+  /// 复用底部状态栏点击字数所用的同一统计弹窗，统计当前标签页正文的详细字数。
+  /// 设定项标签页使用大纲编辑器，没有文本控制器，需从其节点树导出纯文本统计。
+  void _showWordCountStatsDialog(WorkspaceProvider provider) {
+    final tab = provider.currentTab;
+    if (tab == null) return;
+
+    final String text;
+    if (tab.usesOutlineEditor) {
+      final state = tab.editorKey.currentState;
+      if (state is! OutlineEditorState) return;
+      text = state.serializeToText();
+    } else {
+      final controller = tab.textController;
+      if (controller == null) return;
+      text = controller.text;
+    }
+
+    final result = WordCountUtils.countWordsDetail(text);
+    showWordCountDialog(context: context, result: result, chapterTitle: tab.title);
+  }
+
+  /// 构建编辑器内容区域
+  Widget _buildEditorContent(BuildContext context, WorkspaceProvider provider) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    // 用 ColoredBox 包裹整个编辑器区域，确保内容为空时不会露出灰色底层
+    // 底色与编辑器背景设置保持一致，避免空内容状态下出现异色
+    // 先构建所有已打开标签页的编辑器实例
+    //
+    // 这些实例必须常驻（切换标签页要保留滚动位置、节点展开状态与输入连接），
+    // 但隐藏页里的动画（光标闪烁、呼吸式光标、字数浮窗动画等）如果继续
+    // 按帧推进，会在后台持续触发重建与文本布局；下面用 TickerMode 只让
+    // 当前页的动画运行，消除隐藏页的空转开销。
+    final List<Widget> tabEditors =
+        provider.openedTabs.asMap().entries.map((entry) {
+        final index = entry.key;
+        final tab = entry.value;
+
+        // 设定项标签页使用大纲编辑器
+        if (tab.type == EditorTabType.settings) {
+          return OutlineEditor(
+            key: tab.editorKey,
+            colorScheme: colorScheme,
+            filePath: provider.getTabFilePath(tab),
+            // 书籍与设定项标识用于读写上次编辑节点缓存
+            bookUuid: provider.currentBook?.uuid,
+            settingItemUuid: tab.id,
+            // 大纲标题取自标签页标题，编辑后随保存同步重命名大纲文件
+            title: tab.title,
+            onTitleChanged: (title) {
+              // 空标题会生成无效文件名，保留原标题不做更新
+              if (title.trim().isEmpty) return;
+              // 编辑预览模式下修改标题时，退出预览模式
+              if (tab.isPreview) {
+                provider.pinTab(tab.id);
+              }
+              // 标题即设定项名称，保存时据此重命名文件
+              tab.title = title;
+              if (!tab.isModified) {
+                tab.isModified = true;
+                provider.notifyTabModified(tab.id);
+              }
+              // 触发自动保存（不含设定字数时，设定编辑不参与码字时长计时）
+              provider.triggerAutoSave(
+                recordActivity: provider.sessionTracker?.includeSettingWords ?? true,
+              );
+            },
+            // 查找替换栏可见时为编辑器预留顶边距，避免内容被遮挡
+            extraTopPadding: provider.findReplaceBarPadding,
+            // 新建设定文件时，内容加载完成后聚焦第一个节点
+            autoFocusFirstNode: tab.autoFocusFirstNode,
+            // 会话恢复的标签页定位到关闭前编辑的节点
+            restoreLastEditPosition: tab.restoreLastEditPosition,
+            // 标记是否为当前激活的标签页，非激活标签页恢复定位后不抢占键盘焦点
+            isActive: index == provider.currentTabIndex,
+            // 关键词服务用于读写节点关键词并同步书籍级索引
+            keywordService: provider.outlineKeywordService,
+            // 大纲内容异步加载完成后，若查找替换栏处于打开状态则刷新查找结果，
+            // 并通知等待内容就绪的调用方（如全文搜索跳转）
+            onContentLoaded: () {
+              // 以加载完成时的字数为码字统计基线，加载前的字数不计入码字
+              tab.sessionBaselineWordCount = tab.wordCount;
+              tab.recordedSessionWords = 0;
+              tab.sessionBaselineInitialized = true;
+              provider.refreshFindIfVisible(resetIndex: true);
+              provider.notifyTabContentLoaded(tab.id);
+            },
+            onContentChanged: () {
+              // 编辑预览模式下内容时，退出预览模式
+              if (tab.isPreview) {
+                provider.pinTab(tab.id);
+              }
+              // 标记为已修改
+              if (!tab.isModified) {
+                tab.isModified = true;
+                provider.notifyTabModified(tab.id);
+              }
+              // 文本或节点结构变化后重新计算查找匹配，使高亮始终基于当前文本
+              provider.refreshFindIfVisible();
+              // 内容变化计入码字统计（关闭设定字数时只同步基线）
+              _recordSettingWordsChange(tab, provider);
+              // 触发自动保存（不含设定字数时，设定编辑不参与码字时长计时）
+              provider.triggerAutoSave(
+                recordActivity: provider.sessionTracker?.includeSettingWords ?? true,
+              );
+            },
+            onSave: () => provider.saveCurrentTab(),
+            onStatsChanged: (topicCount, wordCount) {
+              tab.topicCount = topicCount;
+              tab.wordCount = wordCount;
+              provider.notifyWordCountUpdated();
+            },
+          );
+        }
+
+        // 大纲备份预览标签页使用大纲编辑器只读模式
+        if (tab.type == EditorTabType.backupPreview && tab.originalIsSetting) {
+          return OutlineEditor(
+            key: tab.editorKey,
+            colorScheme: colorScheme,
+            filePath: tab.backupFilePath,
+            readOnly: true,
+            // 备份不保存图片副本，图片按原设定项目录解析
+            imageBaseFilePath: tab.originalSettingItemFilePath,
+            // 备份预览展示关键词标签，但不写盘（只读由编辑器内部拦截）
+            keywordService: provider.outlineKeywordService,
+            // 备份预览展示原始标题，只读不可编辑
+            title: tab.originalChapterTitle ?? tab.title,
+            // 查找替换栏可见时为编辑器预留顶边距，避免内容被遮挡
+            extraTopPadding: provider.findReplaceBarPadding,
+            // 大纲内容异步加载完成后，若查找替换栏处于打开状态则刷新查找结果
+            onContentLoaded: () => provider.refreshFindIfVisible(resetIndex: true),
+            onStatsChanged: (topicCount, wordCount) {
+              tab.topicCount = topicCount;
+              tab.wordCount = wordCount;
+              provider.notifyWordCountUpdated();
+            },
+          );
+        }
+
+        // 内容读取失败：显示错误占位与重试入口，避免空白内容被继续编辑或保存
+        if (tab.loadErrorMessage != null) {
+          return _buildLoadErrorPlaceholder(context, tab, provider);
+        }
+
+        // 如果控制器为空，返回空占位
+        if (tab.textController == null) {
+          return const SizedBox.shrink();
+        }
+
+        return NovelEditor(
+          key: tab.editorKey,
+          isActive: provider.currentTabIndex == index,
+          controller: tab.textController!,
+          spanBuilder: tab.spanBuilder,
+          chapterTitleController: tab.chapterTitleController,
+          colorScheme: colorScheme,
+          // 内容尚未载入完成时锁定编辑，避免输入被随后写入的内容覆盖
+          readOnly: tab.isReadOnly || tab.isContentLoading,
+          onSelectionChanged: (selection) {
+            tab.cursorPosition = selection;
+            // 防抖更新选中字数（通过 ValueNotifier 局部通知，不触发全局 Provider 重建）
+            tab.updateSelectedWordCountDebounced();
+          },
+          onEditEvent: tab.isReadOnly ? null : (NovelEditType type) {
+            // 编辑预览模式下内容时，退出预览模式
+            if (tab.isPreview) {
+              provider.pinTab(tab.id);
+            }
+            // 标记为已修改
+            if (!tab.isModified) {
+              tab.isModified = true;
+              provider.notifyTabModified(tab.id);
+            }
+            // 计算字数与基线 delta
+            // currentNet = max(0, 当前字数 - 基线字数)，避免删除旧内容让今日码字为负
+            tab.updateWordCount();
+            final currentNet = tab.wordCount > tab.sessionBaselineWordCount
+                ? tab.wordCount - tab.sessionBaselineWordCount
+                : 0;
+            final delta = currentNet - tab.recordedSessionWords;
+
+            if (type == NovelEditType.undo || type == NovelEditType.redo) {
+              // 撤销/恢复不影响今日码字与码字速度，仅同步基线以保持后续操作正确
+              tab.recordedSessionWords = currentNet;
+            } else if (delta != 0) {
+              // 判断是否为大规模删除：选区一次性删除/剪切字数超过阈值时，视为清理操作而非创作过程的修改
+              // 此时跳过码字统计上报，避免今日码字因清理操作而回退；但仍同步 recordedSessionWords，
+              // 否则下次输入时会把这次删除的字数错误计入统计
+              final bool isLargeDeletion = delta < -_largeDeletionThreshold &&
+                  (type == NovelEditType.keyboard ||
+                   type == NovelEditType.cut ||
+                   type == NovelEditType.delete);
+
+              if (!isLargeDeletion) {
+                // 按 事件类型分发到统计追踪器
+                switch (type) {
+                  case NovelEditType.keyboard:
+                  case NovelEditType.cut:
+                  case NovelEditType.delete:
+                    // 键盘输入、剪切、删除均按键盘输入语义计入统计
+                    provider.sessionTracker?.onWordsChanged(typedDelta: delta, pastedDelta: 0);
+                    break;
+                  case NovelEditType.paste:
+                    // 粘贴单独计入 pastedDelta，用于开关控制与码字速度排除
+                    provider.sessionTracker?.onWordsChanged(typedDelta: 0, pastedDelta: delta);
+                    break;
+                  case NovelEditType.undo:
+                  case NovelEditType.redo:
+                    // 不会到达：上方分支已处理
+                    break;
+                }
+                // 今日章节字数：开关开启时按章节累计当日净增字数（跨天自动清空）
+                if (tab.type == EditorTabType.chapter &&
+                    SettingsService.instance.statsChapterWordCountEnabled) {
+                  ChapterWordCountService.instance.addWords(
+                    chapterId: tab.id,
+                    title: tab.title,
+                    delta: delta,
+                  );
+                }
+              }
+              tab.recordedSessionWords = currentNet;
+            }
+            // 通知 UI 刷新（更新底部状态栏字数显示）
+            provider.notifyWordCountUpdated();
+            // 文本内容变化时，如果查找替换栏处于打开状态，刷新查找结果以防止匹配位置错位
+            provider.refreshFindIfVisible();
+            // 触发自动保存
+            provider.triggerAutoSave();
+          },
+          onChapterTitleChanged: tab.isReadOnly ? null : (title) {
+            // 编辑预览模式下章节标题时，退出预览模式
+            if (tab.isPreview) {
+              provider.pinTab(tab.id);
+            }
+            // 更新标签页标题
+            tab.title = title;
+            // 同步今日章节字数清单中的标题
+            ChapterWordCountService.instance.updateTitle(tab.id, title);
+            // 标记为已修改
+            if (!tab.isModified) {
+              tab.isModified = true;
+              provider.notifyTabModified(tab.id);
+            }
+            // 触发自动保存
+            provider.triggerAutoSave();
+          },
+          onSave: tab.isReadOnly ? null : () => provider.saveCurrentTab(),
+          extraTopPadding: provider.findReplaceBarPadding,
+        );
+      }).toList();
+
+    final int currentTabIndex = provider.currentTabIndex;
+    return ColoredBox(
+      color: ColorUtils.getEditorBackgroundColorForTheme(context),
+      child: IndexedStack(
+        index: currentTabIndex,
+        children: [
+          for (int i = 0; i < tabEditors.length; i++)
+            TickerMode(
+              enabled: i == currentTabIndex,
+              child: tabEditors[i],
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// 构建内容读取失败的错误占位
+  ///
+  /// 显示失败原因与重试入口；重试成功前该标签页不提供编辑与保存，
+  /// 避免空内容覆盖磁盘上的原文
+  Widget _buildLoadErrorPlaceholder(
+    BuildContext context,
+    EditorTab tab,
+    WorkspaceProvider provider,
+  ) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.error_outline_rounded, size: 36, color: colorScheme.error),
+          const SizedBox(height: 12),
+          Text(
+            tab.loadErrorMessage!,
+            style: context.bodyMedium?.copyWith(color: colorScheme.onSurfaceVariant),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 16),
+          TextButton.icon(
+            onPressed: () => _retryLoad(tab, provider),
+            icon: const Icon(Icons.refresh, size: 18),
+            label: const Text('重试'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 构建空状态提示
+  Widget _buildEmptyState(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(
+            Icons.edit_document,
+            size: 64,
+            color: colorScheme.primary.withValues(alpha: 0.7),
+          ),
+          const SizedBox(height: 16),
+          Text(
+            '选择一个章节或设定开始创作',
+            style: context.bodyLarge?.copyWith(
+              color: colorScheme.onSurfaceVariant.withValues(alpha: 0.7),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            '从左侧边栏选择章节或设定',
+            style: context.bodySmall?.copyWith(
+              color: colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}

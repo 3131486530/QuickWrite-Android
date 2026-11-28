@@ -1,0 +1,1171 @@
+part of re_editor;
+
+class _CodeInputController extends ChangeNotifier implements DeltaTextInputClient {
+
+  CodeLineEditingController _controller;
+  FocusNode _focusNode;
+  bool _readOnly;
+  bool _autocompleteSymbols;
+
+  /// 自动补全使用的成对符号，为空时沿用内置符号表
+  List<CodeSymbolPair>? _autocompletePairs;
+
+  /// 输入自动替换规则，为空时不做替换
+  List<CodeTextReplacement>? _textReplacements;
+
+  /// 外部换行处理，为空时使用控制器默认换行
+  VoidCallback? _newLineHandler;
+
+  bool _updateCausedByFloatingCursor;
+  late Offset _floatingCursorStartingOffset;
+
+  TextInputConnection? _textInputConnection;
+  TextEditingValue? _remoteEditingValue;
+
+  /// 失焦后延迟断开输入连接的计时器
+  ///
+  /// 焦点在正文与标题等输入框之间转移时，断开连接若抢在下一个输入框
+  /// 建立连接之前执行，引擎会先收起输入法再被重新拉起，表现为键盘闪一下；
+  /// 延后到下一帧之后再断开可让新输入框先接管引擎当前客户端，旧连接的
+  /// 关闭请求随之失效，键盘保持不动。
+  Timer? _deferredCloseTimer;
+
+  /// 延迟断连已轮询等待的时长
+  int _deferredCloseElapsed = 0;
+
+  /// 延迟断连的轮询步长
+  static const int _deferredCloseStepMs = 16;
+
+  /// 判定焦点悬空后连续确认的次数，避免一次误判就断连
+  int _deferredClosePendingTicks = 0;
+
+  /// 延迟断连的最长等待时长：
+  /// 点击另一个输入框时，失焦发生在按下、对方取焦点发生在抬起，
+  /// 这段时间主焦点为空或停在路由作用域上，需要多等一会儿再判定。
+  static const int _deferredCloseMaxWaitMs = 400;
+
+  /// 改写发生后输入法可能仍持有改写前的文本，标记下一次增量是否需要校验失配并重建输入会话
+  bool _pendingImeResync = false;
+
+  /// 连续重建输入会话的次数，用于逐级加重重建手段
+  int _imeResyncAttempts = 0;
+
+  final _CodeFloatingCursorController _floatingCursorController;
+  Timer? _floatingCursorScrollTimer;
+
+  GlobalKey? _editorKey;
+
+  _CodeInputController({
+    required CodeLineEditingController controller,
+    required _CodeFloatingCursorController floatingCursorController,
+    required FocusNode focusNode,
+    required bool readOnly,
+    required bool autocompleteSymbols,
+    List<CodeSymbolPair>? autocompletePairs,
+    List<CodeTextReplacement>? textReplacements,
+    VoidCallback? newLineHandler,
+  }) : _controller = controller,
+    _floatingCursorController = floatingCursorController,
+    _focusNode = focusNode,
+    _readOnly = readOnly,
+    _updateCausedByFloatingCursor = false,
+    _autocompleteSymbols = autocompleteSymbols,
+    _autocompletePairs = autocompletePairs,
+    _textReplacements = textReplacements,
+    _newLineHandler = newLineHandler {
+    _controller.addListener(_onCodeEditingChanged);
+    _focusNode.addListener(_onFocusChanged);
+  }
+
+  void bindEditor(GlobalKey key) {
+    _editorKey = key;
+  }
+
+  set controller(CodeLineEditingController value) {
+    if (_controller == value) {
+      return;
+    }
+    _controller.removeListener(_onCodeEditingChanged);
+    _controller = value;
+    _controller.addListener(_onCodeEditingChanged);
+    _onCodeEditingChanged();
+  }
+
+  set focusNode(FocusNode value) {
+    if (_focusNode == value) {
+      return;
+    }
+    _focusNode.removeListener(_onFocusChanged);
+    _focusNode = value;
+    _focusNode.addListener(_onFocusChanged);
+  }
+
+  set readOnly(bool value) {
+    if (_readOnly == value) {
+      return;
+    }
+    _readOnly = value;
+  }
+
+  set autocompleteSymbols(bool value) {
+    if (_autocompleteSymbols == value) {
+      return;
+    }
+    _autocompleteSymbols = value;
+  }
+
+  set autocompletePairs(List<CodeSymbolPair>? value) {
+    if (listEquals(_autocompletePairs, value)) {
+      return;
+    }
+    _autocompletePairs = value;
+  }
+
+  set textReplacements(List<CodeTextReplacement>? value) {
+    if (listEquals(_textReplacements, value)) {
+      return;
+    }
+    _textReplacements = value;
+  }
+
+  set newLineHandler(VoidCallback? value) {
+    if (_newLineHandler == value) {
+      return;
+    }
+    _newLineHandler = value;
+  }
+
+  /// 执行换行
+  ///
+  /// 移动端软键盘的换行不经过快捷键机制，非空时交由外部换行处理接管，
+  /// 使移动端与桌面端共用同一套换行规则；为空时使用控制器默认换行。
+  void applyNewLine() {
+    final VoidCallback? handler = _newLineHandler;
+    if (handler != null) {
+      handler();
+    } else {
+      _controller.applyNewLine();
+    }
+  }
+
+  set value(CodeLineEditingValue value) {
+    _controller.value = value;
+  }
+
+  CodeLineEditingValue get value => _controller.value;
+
+  set codeLines(CodeLines value) {
+    _controller.codeLines = value.isEmpty ? _kInitialCodeLines : value;
+  }
+
+  CodeLines get codeLines => _controller.codeLines;
+
+  set selection(CodeLineSelection value) => _controller.selection = value;
+
+  CodeLineSelection get selection => _controller.selection;
+
+  set composing(TextRange value) => _controller.composing = value;
+
+  TextRange get composing => _controller.composing;
+
+  @override
+  void connectionClosed() {
+  }
+
+  @override
+  AutofillScope? get currentAutofillScope => null;
+
+  @override
+  TextEditingValue? get currentTextEditingValue => _buildTextEditingValue();
+
+  @override
+  void performAction(TextInputAction action) {
+    if (action == TextInputAction.newline) {
+      // Fix issue #42, iOS will insert duplicate new lines.
+      // We only do this on Android.
+      if (kIsAndroid) {
+        applyNewLine();
+      }
+    }
+  }
+
+  @override
+  void performPrivateCommand(String action, Map<String, dynamic> data) {
+  }
+
+  @override
+  void showAutocorrectionPromptRect(int start, int end) {
+  }
+
+  @override
+  void showToolbar() {
+  }
+
+  @override
+  void insertTextPlaceholder(Size size) {
+  }
+
+  @override
+  void removeTextPlaceholder() {
+  }
+
+  @override
+  void updateEditingValueWithDeltas(List<TextEditingDelta> textEditingDeltas) {
+    if (_updateCausedByFloatingCursor) {
+      // This is necessary because otherwise the content of the line where the floating cursor was started
+      // will be pasted over to the line where the floating cursor was stopped.
+      _updateCausedByFloatingCursor = false;
+      return;
+    }
+
+    _resyncImeIfDesynced(textEditingDeltas);
+
+    if (textEditingDeltas.any((delta) => delta is TextEditingDeltaInsertion && delta.textInserted == '\n')) {
+      TextEditingValue newValue = _remoteEditingValue!;
+      for (final TextEditingDelta delta in textEditingDeltas) {
+        newValue = delta.apply(newValue);
+      }
+      _remoteEditingValue = newValue;
+      applyNewLine();
+      return;
+    }
+
+    // _Trace.begin('updateEditingValue all');
+    TextEditingValue newValue = _remoteEditingValue!;
+    bool smartChange = false;
+    for (final TextEditingDelta delta in textEditingDeltas) {
+      TextEditingDelta appliedDelta = delta;
+      if (_autocompleteSymbols) {
+        appliedDelta = _SmartTextEditingDelta(delta, _autocompletePairs).apply(selection);
+        if (appliedDelta != delta) {
+          smartChange = true;
+        }
+      }
+      newValue = _applyDelta(newValue, appliedDelta);
+    }
+    // 输入法侧实际持有的文本：本次增量应用完成、规则改写之前的值
+    final TextEditingValue appliedValue = newValue;
+    // 输入内容以规则原文本结尾时改写为替换文本，与本次输入合并为一次编辑
+    final TextEditingValue replacedValue = _applyTextReplacements(newValue);
+    // 自动替换是否真正改写了本次输入
+    final bool replaced = replacedValue != newValue;
+    if (replaced) {
+      newValue = replacedValue;
+      smartChange = true;
+    }
+    if (newValue == _remoteEditingValue) {
+      return;
+    }
+    // 输入法若已改写镜像文本，说明本次变更携带有实际输入内容
+    final bool textChanged = smartChange || newValue.text != _remoteEditingValue!.text;
+    // 本次光标在镜像中移动的步数，用于区分方向键与输入法的行首行尾操作
+    final int caretMove = newValue.selection.start - _remoteEditingValue!.selection.start;
+    // 改写类变更（智能括号补全 / 自动替换）发生时，输入法侧持有的是改写前的
+    // appliedValue，镜像记录必须对齐到它；否则替换为空这类"改写后正文与镜像记录
+    // 完全一致"的情形会被误判为无需同步，输入法永远停留在被删掉的原文本上
+    _remoteEditingValue = smartChange ? appliedValue : newValue;
+    // 多行选区时镜像只包含选区起始行，正文无法从镜像直接推得：
+    // 不改变镜像文本的更新（如组合开始）只同步组合区，不能交给控制器，
+    // 否则控制器会按整段选区把镜像文本写回正文，造成选区内各行被错误合并替换
+    if (!textChanged && !selection.isSameLine) {
+      composing = newValue.composing;
+      return;
+    }
+    // print('update text ${newValue.text}');
+    // print('update selection ${newValue.selection}');
+    // print('update composing ${newValue.composing}');
+    if (newValue.usePrefix) {
+      if (_handleCursorBeyondMirror(newValue, textChanged: textChanged, caretMove: caretMove)) {
+        return;
+      }
+      if (newValue.selection.isCollapsed && newValue.selection.start == 0) {
+        _controller.deleteBackward();
+      } else {
+        _controller.edit(newValue.removePrefixIfNecessary().removeSuffixIfNecessary());
+      }
+    } else {
+      _controller.edit(newValue);
+    }
+    notifyListeners();
+    // _Trace.end('updateEditingValue all');
+  }
+
+  /// 将一条文本增量应用到镜像文本
+  ///
+  /// 增量以输入法侧文本为基准。镜像文本在正文编辑后会立即更新并重新下发，
+  /// 而输入法侧可能尚未接收到新文本，此时增量描述的改动无法映射到镜像上：
+  /// 只同步组合区，不采用其携带的文本与光标，避免旧文本覆盖镜像中已有的内容。
+  /// 输入法开始组合时会先删除镜像中选中的内容，再插入组合文本，
+  /// 但上报的增量只描述了插入动作；此时把落在选区内的插入按替换处理，
+  /// 使镜像文本与输入法内部文本保持一致，避免被选中的内容残留。
+  TextEditingValue _applyDelta(TextEditingValue value, TextEditingDelta delta) {
+    if (delta.oldText != value.text) {
+      return value.copyWith(composing: delta.composing);
+    }
+    if (delta is TextEditingDeltaInsertion &&
+        value.selection.isValid &&
+        !value.selection.isCollapsed) {
+      final TextSelection remoteSelection = value.selection;
+      if (delta.insertionOffset >= remoteSelection.start && delta.insertionOffset <= remoteSelection.end) {
+        return value.copyWith(
+          text: value.text.replaceRange(remoteSelection.start, remoteSelection.end, delta.textInserted),
+          selection: TextSelection.collapsed(
+            offset: remoteSelection.start + delta.textInserted.length
+          ),
+          composing: delta.composing,
+        );
+      }
+    }
+    return delta.apply(value);
+  }
+
+  /// 按自动替换规则改写待提交的输入内容
+  ///
+  /// 光标前恰好以某条规则的原文本结尾时，把这段原文本替换为规则指定的内容，
+  /// 光标随之落在替换文本之后；多条规则同时命中时取原文本最长的一条。
+  TextEditingValue _applyTextReplacements(TextEditingValue value) {
+    final List<CodeTextReplacement>? rules = _textReplacements;
+    if (rules == null || rules.isEmpty) return value;
+    if (!value.selection.isValid || !value.selection.isCollapsed) return value;
+
+    final int caret = value.selection.start;
+    int matchedLength = 0;
+    String? matchedReplacement;
+    for (final CodeTextReplacement rule in rules) {
+      final String trigger = rule.trigger;
+      if (trigger.isEmpty || trigger.length > caret) continue;
+      // 已有更长的规则命中时，短规则不再覆盖
+      if (trigger.length <= matchedLength) continue;
+      if (!value.text.startsWith(trigger, caret - trigger.length)) continue;
+      if (rule.replacement.isEmpty) continue;
+      if (rule.replacement == trigger) continue;
+      matchedLength = trigger.length;
+      matchedReplacement = rule.replacement;
+    }
+    if (matchedReplacement == null) return value;
+
+    final int start = caret - matchedLength;
+    return value.copyWith(
+      text: value.text.replaceRange(start, caret, matchedReplacement),
+      selection: TextSelection.collapsed(offset: start + matchedReplacement.length),
+      composing: TextRange.empty,
+    );
+  }
+
+  /// 处理光标越过镜像两端零宽哨兵的选区变更
+  ///
+  /// 光标越过哨兵时镜像文本没有变化，表示输入法把光标移出了镜像：
+  /// 单步越过哨兵对应方向键，跨多步越过对应输入法的行首行尾操作。
+  /// 返回是否已处理本次变更，未处理时仍按普通选区变更处理。
+  bool _handleCursorBeyondMirror(TextEditingValue value, {
+    required bool textChanged,
+    required int caretMove,
+  }) {
+    if (textChanged || !value.usePrefix || !value.selection.isCollapsed) {
+      return false;
+    }
+    if (value.selection.start == 0) {
+      if (caretMove == -1) {
+        // 光标在行首继续左移，移至上一行行尾
+        _controller.moveCursor(AxisDirection.left);
+      } else {
+        // 输入法把光标移至行首
+        selection = CodeLineSelection.collapsed(
+          index: selection.extentIndex,
+          offset: 0
+        );
+        _controller.makeCursorCenterIfInvisible();
+      }
+      return true;
+    }
+    if (value.selection.start == value.text.length) {
+      if (caretMove == 1) {
+        // 光标在行尾继续右移，移至下一行行首
+        _controller.moveCursor(AxisDirection.right);
+      } else {
+        // 输入法把光标移至行尾
+        selection = CodeLineSelection.collapsed(
+          index: selection.extentIndex,
+          offset: codeLines[selection.extentIndex].length
+        );
+        _controller.makeCursorCenterIfInvisible();
+      }
+      return true;
+    }
+    return false;
+  }
+
+  @override
+  void updateEditingValue(TextEditingValue textEditingValue) {
+  }
+
+  @override
+  void updateFloatingCursor(RawFloatingCursorPoint point) {
+    _updateCausedByFloatingCursor = true;
+    final _CodeFieldRender? render = _editorKey?.currentContext?.findRenderObject() as _CodeFieldRender?;
+    if (render == null) {
+      return;
+    }
+    switch(point.state) {
+      case FloatingCursorDragState.Start:
+        _floatingCursorStartingOffset = render.calculateTextPositionViewportOffset(selection.base)!;
+        _floatingCursorController.setFloatingCursorPositions(
+          floatingCursorOffset: _floatingCursorStartingOffset,
+          finalCursorSelection: selection,
+        );
+        break;
+      case FloatingCursorDragState.Update:
+        final Offset updatedOffset = _floatingCursorStartingOffset + point.offset!;
+
+        final double topBound = render.paintBounds.top + render.paddingTop;
+        final double leftBound = render.paintBounds.left + render.paddingLeft;
+        final double bottomBound = render.paintBounds.bottom - render.paddingBottom - render.floatingCursorHeight;
+        final double rightBound = render.paintBounds.right - render.paddingRight;
+
+        // Clamp the offset coordinates to the paint bounds
+        Offset clampedUpdatedOffset = Offset(
+          updatedOffset.dx.clamp(leftBound, rightBound),
+          updatedOffset.dy.clamp(topBound, bottomBound),
+        );
+
+        // An adjustment is made on the y-axis so that whenever it is in between lines, the line where the center
+        // of the floating cursor is will be selected.
+        Offset adjustedClampedUpdatedOffset = clampedUpdatedOffset + Offset(0, render.floatingCursorHeight / 2);
+        final CodeLinePosition newPosition = render.calculateTextPosition(adjustedClampedUpdatedOffset)!;
+
+        // The offset at which the actual cursor would end up if floating cursor was terminated now.
+        final Offset? snappedNewOffset = render.calculateTextPositionViewportOffset(newPosition);
+
+        CodeLineSelection newSelection = CodeLineSelection.fromPosition(position: newPosition);
+
+
+        if (clampedUpdatedOffset != updatedOffset) {
+          // When the cursor is at one of the edges, adjust the starting offset so that the floating cursor
+          // does not get "loose" when starting to move in the opposite direction.
+          _floatingCursorStartingOffset += clampedUpdatedOffset - updatedOffset;
+        }
+
+        if (clampedUpdatedOffset.dy == topBound || clampedUpdatedOffset.dy == bottomBound || clampedUpdatedOffset.dx == rightBound || clampedUpdatedOffset.dx == leftBound) {
+          _floatingCursorScrollTimer ??= Timer.periodic(const Duration(milliseconds: 50), (timer) {
+            render.autoScrollWhenDraggingFloatingCursor(clampedUpdatedOffset);
+            final CodeLinePosition newPos = render.calculateTextPosition(adjustedClampedUpdatedOffset)!;
+            final Offset? snappedNewOffset = render.calculateTextPositionViewportOffset(newPos);
+
+            // This step ensures that the preview cursor will keep updating when scrolling
+            if (adjustedClampedUpdatedOffset.dx > snappedNewOffset!.dx + render.textStyle.fontSize!) {
+              _floatingCursorController.updatePreviewCursorOffset(snappedNewOffset);
+            }
+            else {
+              _floatingCursorController.updatePreviewCursorOffset(null);
+            }
+          });
+        }
+        else {
+          if (_floatingCursorScrollTimer != null) {
+            _floatingCursorScrollTimer!.cancel();
+            _floatingCursorScrollTimer = null;
+          }
+        }
+
+        // Only turn on the preview cursor if we are away from the end of the line (relatively to the font size)
+        if (adjustedClampedUpdatedOffset.dx > snappedNewOffset!.dx + render.textStyle.fontSize!) {
+          _floatingCursorController.setFloatingCursorPositions(
+            floatingCursorOffset: clampedUpdatedOffset,
+            previewCursorOffset: snappedNewOffset,
+            finalCursorOffset: snappedNewOffset,
+            finalCursorSelection:newSelection
+          );
+        }
+        else {
+          _floatingCursorController.setFloatingCursorPositions(
+            floatingCursorOffset: clampedUpdatedOffset,
+            finalCursorOffset: snappedNewOffset,
+            finalCursorSelection: newSelection
+          );
+        }
+
+        break;
+      case FloatingCursorDragState.End:
+        if (_floatingCursorScrollTimer != null) {
+          _floatingCursorScrollTimer!.cancel();
+          _floatingCursorScrollTimer = null;
+        }
+        selection = _floatingCursorController.value.finalCursorSelection!;
+        final CodeLinePosition finalPosition = CodeLinePosition(
+          index: selection.baseIndex,
+          offset: selection.baseOffset,
+          affinity: selection.baseAffinity);
+
+        final Offset? finalOffset = render.calculateTextPositionViewportOffset(finalPosition);
+
+        // If the final selection is in not the viewport, make it visible without animating the floating cursor.
+        // Otherwise, play the floating cursor reset animation.
+        if (finalOffset != null && (finalOffset.dx < 0 || finalOffset.dy < 0)) {
+          render.makePositionCenterIfInvisible(
+            CodeLinePosition(
+              index: selection.baseIndex,
+              offset: selection.baseOffset,
+              affinity: selection.baseAffinity),
+            animated: true);
+            _floatingCursorController.disableFloatingCursor();
+        }
+        else {
+          _floatingCursorController.animateDisableFloatingCursor();
+        }
+
+
+    }
+  }
+
+  @override
+  void didChangeInputControl(TextInputControl? oldControl, TextInputControl? newControl) {
+  }
+
+  @override
+  void performSelector(String selectorName) {
+  }
+
+  @override
+  void insertContent(KeyboardInsertedContent content) {
+  }
+
+  bool onFocusReceived() => false;
+
+  void ensureInput() {
+    if (_focusNode.hasFocus) {
+      if (!_readOnly) {
+        _openInputConnection();
+      }
+    } else {
+      _focusNode.requestFocus();
+    }
+  }
+
+  @override
+  void notifyListeners() {
+    // Do nothing here.
+    super.notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    super.dispose();
+    _closeInputConnectionIfNeeded();
+    _controller.removeListener(_onCodeEditingChanged);
+    _focusNode.removeListener(_onFocusChanged);
+  }
+
+  bool get _hasInputConnection => _textInputConnection?.attached ?? false;
+
+  void _onCodeEditingChanged() {
+    _updateRemoteEditingValueIfNeeded();
+    _updateRemoteComposingIfNeeded();
+  }
+
+  /// 校验改写后输入法是否仍按旧文本提交增量
+  ///
+  /// 增量以输入法侧文本为基准，与镜像文本对不上说明输入法没有接受改写结果，
+  /// 此后每条增量都会被当作失配丢弃。这里再重建一次输入会话，
+  /// 让输入法放弃旧文本，避免输入永久失效。
+  void _resyncImeIfDesynced(List<TextEditingDelta> deltas) {
+    if (!_pendingImeResync) {
+      return;
+    }
+    _pendingImeResync = false;
+    final TextEditingValue? remoteValue = _remoteEditingValue;
+    if (deltas.isEmpty || remoteValue == null) {
+      _imeResyncAttempts = 0;
+      return;
+    }
+    if (deltas.first.oldText == remoteValue.text) {
+      _imeResyncAttempts = 0;
+      return;
+    }
+    _updateRemoteEditingValueIfNeeded();
+    // 连续重建仍失配时不再反复重建，避免输出每一键都关闭重开输入法
+    if (_imeResyncAttempts >= 2) {
+      return;
+    }
+    _imeResyncAttempts += 1;
+    _restartImeInput();
+  }
+
+  /// 重建输入法的输入会话
+  ///
+  /// 仅重发镜像文本时输入法自身维护的文本不会被改写；关闭并重新建立输入连接
+  /// 会重建输入法侧缓冲，使其重新从当前镜像读取文本，与退格键让输入法
+  /// 重置文本后恢复输入的效果一致。
+  void _restartImeInput() {
+    _pendingImeResync = true;
+    if (!_hasInputConnection) {
+      return;
+    }
+    _closeInputConnectionIfNeeded();
+    _openInputConnection();
+  }
+
+  void _updateRemoteEditingValueIfNeeded() {
+    if (!_hasInputConnection) {
+      return;
+    }
+    TextEditingValue localValue = _buildTextEditingValue();
+    if (localValue == _remoteEditingValue) {
+      return;
+    }
+    if (localValue.composing.isValid && max(localValue.composing.start, localValue.composing.end) > localValue.text.length) {
+      localValue = localValue.copyWith(
+        composing: TextRange.empty
+      );
+    }
+    // print('post text ${localValue.text}');
+    // print('post selection ${localValue.selection}');
+    // print('post composing ${localValue.composing}');
+    _remoteEditingValue = localValue;
+
+    _textInputConnection!.setEditingState(localValue);
+  }
+
+  void _updateRemoteComposingIfNeeded({
+    bool retry = false
+  }) {
+    if (!_hasInputConnection) {
+      return;
+    }
+    final _CodeFieldRender? render = _editorKey?.currentContext?.findRenderObject() as _CodeFieldRender?;
+    if (render == null) {
+      return;
+    }
+    final TextRange composing = _remoteEditingValue?.composing ?? TextRange.empty;
+    Offset? composingStart;
+    // 仅在存在实际组合文本时上报组合区域；
+    // 无效组合范围换算出的坐标会落在行首，干扰输入法窗口的定位
+    if (composing.isValid && !composing.isCollapsed) {
+      composingStart = render.calculateTextPositionViewportOffset(selection.base.copyWith(
+        offset: composing.start
+      ));
+      final Offset? composingEnd = render.calculateTextPositionViewportOffset(selection.extent.copyWith(
+        offset: composing.end
+      ));
+      if (composingStart != null && composingEnd != null) {
+        _textInputConnection!.setComposingRect(Rect.fromPoints(composingStart, composingEnd + Offset(0, render.lineHeight)));
+      }
+    }
+    final Offset? caret = render.calculateTextPositionViewportOffset(selection.base) ?? composingStart;
+    if (caret != null) {
+      _textInputConnection!.setCaretRect(Rect.fromLTWH(caret.dx, caret.dy, render.cursorWidth, render.lineHeight));
+    } else if (!retry) {
+      Future.delayed(const Duration(milliseconds: 10), () {
+        _updateRemoteComposingIfNeeded(
+          retry: true
+        );
+      });
+    }
+  }
+
+  void _updateRemoteEditableSizeAndTransform() {
+    if (!_hasInputConnection) {
+      return;
+    }
+    final _CodeFieldRender? render = _editorKey?.currentContext?.findRenderObject() as _CodeFieldRender?;
+    if (render == null || !render.hasSize) {
+      return;
+    }
+    _textInputConnection!.setEditableSizeAndTransform(render.size, render.getTransformTo(null));
+  }
+
+  void _onFocusChanged() {
+    _openOrCloseInputConnectionIfNeeded();
+  }
+
+  void _openOrCloseInputConnectionIfNeeded() {
+    if (_focusNode.hasFocus && !_readOnly) {
+      _cancelDeferredClose();
+      if (_focusNode.consumeKeyboardToken()) {
+        _openInputConnection();
+      }
+    } else {
+      // 不在此刻直接断开：同一帧内焦点往往已交给另一个输入框
+      // （如从正文点到章节标题），立即断开会让引擎先清空客户端收起输入法，
+      // 紧接着新输入框 show 又把键盘拉起，形成“瞬间关闭又回弹”。
+      _scheduleDeferredClose();
+    }
+  }
+
+  /// 失焦后延迟断开输入连接
+  ///
+  /// 延迟到下一帧末之后执行，给接管焦点的新输入框留出建立连接的时机：
+  /// 届时引擎当前客户端已易主，此处的关闭请求不会再影响键盘。
+  /// 若这一帧内没有其他输入框接手（例如点击空白处），
+  /// 断开只是晚一拍，键盘照常收起。
+  void _scheduleDeferredClose() {
+    if (!_hasInputConnection) {
+      _controller.clearComposing();
+      return;
+    }
+    _cancelDeferredClose();
+    _deferredCloseElapsed = 0;
+    _deferredClosePendingTicks = 0;
+    _pollDeferredClose();
+  }
+
+  /// 轮询等待焦点落定后再断连
+  ///
+  /// 只等一帧不够：点击另一个输入框时，失焦发生在按下，对方取焦点发生在
+  /// 抬起，中间这段时间主焦点是空的或停在路由作用域上。此时断连会先收起
+  /// 输入法，等对方接上再拉起，表现为键盘闪关又回弹。故按「焦点是否还在
+  /// 转移中」轮询，直到确认没人接手才断连。
+  void _pollDeferredClose() {
+    _deferredCloseTimer = Timer(const Duration(milliseconds: _deferredCloseStepMs), () {
+      _deferredCloseTimer = null;
+      _deferredCloseElapsed += _deferredCloseStepMs;
+      if (_focusNode.hasFocus) {
+        // 焦点回到正文，取消断连
+        _deferredClosePendingTicks = 0;
+        return;
+      }
+      // 焦点已交给另一个输入框，键盘由它接管：
+      // 此时调用 close 会让引擎先收起输入法、再由对方重新拉起，键盘会闪一下。
+      if (_focusTakenByOtherTextInput()) {
+        // 只丢弃引用，不发关闭指令，键盘保持不动；
+        // 下次本编辑器获焦时连接为空，会重新 attach。
+        _textInputConnection = null;
+        _deferredClosePendingTicks = 0;
+        return;
+      }
+      if (_focusInTransition()) {
+        // 焦点仍在转移中：继续等，超时后仍无人接手才判定为真正失焦
+        if (_deferredCloseElapsed < _deferredCloseMaxWaitMs) {
+          _pollDeferredClose();
+          return;
+        }
+      } else if (++_deferredClosePendingTicks < 2) {
+        // 焦点落到确定的非输入节点：再确认一次，避免瞬时抖动误断
+        _pollDeferredClose();
+        return;
+      }
+      _closeInputConnectionIfNeeded();
+      _controller.clearComposing();
+    });
+  }
+
+  /// 主焦点是否还悬在转移过程中（没有节点接手）
+  bool _focusInTransition() {
+    final FocusNode? next = FocusManager.instance.primaryFocus;
+    return next == null || next is FocusScopeNode || next.context == null;
+  }
+
+  /// 当前焦点是否落在另一个文本输入框里
+  ///
+  /// 标准输入框以 [EditableTextState] 判定，自绘编辑器以 [CodeEditor] 判定。
+  bool _focusTakenByOtherTextInput() {
+    final FocusNode? next = FocusManager.instance.primaryFocus;
+    if (next == null || next == _focusNode) {
+      return false;
+    }
+    final BuildContext? context = next.context;
+    if (context == null) {
+      return false;
+    }
+    if (context.findAncestorStateOfType<EditableTextState>() != null) {
+      return true;
+    }
+    return context.findAncestorWidgetOfExactType<CodeEditor>() != null;
+  }
+
+  void _cancelDeferredClose() {
+    _deferredCloseTimer?.cancel();
+    _deferredCloseTimer = null;
+    _deferredCloseElapsed = 0;
+    _deferredClosePendingTicks = 0;
+  }
+
+  void _openInputConnection() {
+    final BuildContext? context = _editorKey?.currentContext;
+    if (context == null) {
+      return;
+    }
+    if (!_hasInputConnection) {
+      // Fix PlatformException issue on new flutter version.
+      // See https://github.com/reqable/re-editor/issues/83
+      final TextInputConnection connection = TextInput.attach(this,
+        _TextInputConfiguration(
+          flutterViewId: View.maybeOf(context)?.viewId ?? 0,
+          enableDeltaModel: true,
+          inputAction: TextInputAction.newline,
+          autocorrect: false,
+          smartDashesType: SmartDashesType.disabled,
+          smartQuotesType: SmartQuotesType.disabled,
+          textCapitalization: TextCapitalization.none,
+          keyboardAppearance: Theme.of(context).brightness,
+        ),
+      );
+      _remoteEditingValue = _buildTextEditingValue();
+      connection.setEditingState(_remoteEditingValue!);
+      connection.show();
+      _textInputConnection = connection;
+    } else {
+      _textInputConnection?.show();
+    }
+    _updateRemoteComposingIfNeeded();
+    _updateRemoteEditableSizeAndTransform();
+  }
+
+  void _closeInputConnectionIfNeeded() {
+    _cancelDeferredClose();
+    if (_hasInputConnection) {
+      _textInputConnection!.close();
+    }
+    _textInputConnection = null;
+  }
+
+  /// 构建推送给输入法的镜像文本
+  ///
+  /// 镜像只包含光标所在行的文本，移动端额外在镜像两端追加零宽哨兵，
+  /// 使输入法方向键在行首与行尾仍有移动余量。
+  TextEditingValue _buildTextEditingValue() {
+    final TextSelection textSelection;
+    if (selection.isSameLine) {
+      textSelection = TextSelection(
+        baseOffset: selection.baseOffset,
+        extentOffset: selection.extentOffset
+      );
+    } else {
+      if (selection.baseIndex < selection.extentIndex) {
+        textSelection = TextSelection(
+          baseOffset: selection.baseOffset,
+          extentOffset: codeLines[selection.baseIndex].length
+        );
+      } else {
+        textSelection = TextSelection(
+          baseOffset: 0,
+          extentOffset: selection.baseOffset
+        );
+      }
+    }
+    return TextEditingValue(
+      text: codeLines[selection.baseIndex].text,
+      selection: textSelection,
+      composing: composing
+    ).appendPrefixIfNecessary().appendSuffixIfNecessary();
+  }
+
+}
+
+class _SmartTextEditingDelta {
+
+  /// 内置的成对符号（起始与结束不同）
+  static const List<_ClosureSymbol> _defaultClosureSymbols = [
+    _ClosureSymbol('{', '}'),
+    _ClosureSymbol('[', ']'),
+    _ClosureSymbol('(', ')'),
+  ];
+
+  /// 内置的引号符号（起始与结束相同）
+  static const List<String> _defaultQuoteSymbols = [
+    '\'', '"', '`'
+  ];
+
+  /// 内置的可包裹选区的成对符号
+  static const List<_ClosureSymbol> _defaultWrapSymbols = [
+    _ClosureSymbol('{', '}'),
+    _ClosureSymbol('[', ']'),
+    _ClosureSymbol('(', ')'),
+    _ClosureSymbol('\'', '\''),
+    _ClosureSymbol('"', '"'),
+    _ClosureSymbol('`', '`'),
+  ];
+
+  /// 生效的成对符号（起始与结束不同）
+  final List<_ClosureSymbol> _closureSymbols;
+
+  /// 生效的引号符号（起始与结束相同）
+  final List<String> _quoteSymbols;
+
+  /// 生效的可包裹选区的成对符号
+  final List<_ClosureSymbol> _wrapSymbols;
+
+  final TextEditingDelta _delta;
+
+  /// [pairs] 为空时沿用内置符号表，否则按传入的符号表构造成对与引号两类符号
+  _SmartTextEditingDelta(this._delta, [List<CodeSymbolPair>? pairs])
+    : _closureSymbols = pairs == null
+        ? _defaultClosureSymbols
+        : pairs
+            .where((e) => e.left != e.right)
+            .map((e) => _ClosureSymbol(e.left, e.right))
+            .toList(),
+      _quoteSymbols = pairs == null
+        ? _defaultQuoteSymbols
+        : pairs
+            .where((e) => e.left == e.right)
+            .map((e) => e.left)
+            .toList(),
+      _wrapSymbols = pairs == null
+        ? _defaultWrapSymbols
+        : pairs.map((e) => _ClosureSymbol(e.left, e.right)).toList();
+
+  TextEditingDelta apply(CodeLineSelection selection) {
+    TextEditingDelta delta = _delta;
+    if (delta is TextEditingDeltaInsertion) {
+      delta = _smartInsertion(delta);
+    } else if (delta is TextEditingDeltaReplacement) {
+      delta = _smartReplacement(delta, selection);
+    }
+    return delta;
+  }
+
+  TextEditingDelta _smartInsertion(TextEditingDeltaInsertion delta) {
+    for (final _ClosureSymbol symbol in _closureSymbols) {
+      if (delta.textInserted == symbol.left) {
+        if (!_shouldAutoClosed(delta.oldText, delta.insertionOffset, symbol)) {
+          break;
+        }
+        return TextEditingDeltaInsertion(
+          oldText: delta.oldText,
+          textInserted: symbol.toString(),
+          insertionOffset: delta.insertionOffset,
+          selection: delta.selection,
+          composing: delta.composing,
+        );
+      } else if (delta.textInserted == symbol.right) {
+        if (!_shouldSkipClosed(delta.oldText, delta.insertionOffset, symbol)) {
+          break;
+        }
+        return TextEditingDeltaNonTextUpdate(
+          oldText: delta.oldText,
+          selection: TextSelection.collapsed(
+            offset: delta.insertionOffset + 1
+          ),
+          composing: delta.composing
+        );
+      }
+    }
+    for (final String symbol in _quoteSymbols) {
+      if (delta.textInserted != symbol) {
+        continue;
+      }
+      if (!_shouldAutoQuoted(delta.oldText, symbol, delta.insertionOffset)) {
+        break;
+      }
+      return TextEditingDeltaInsertion(
+        oldText: delta.oldText,
+        textInserted: symbol * 2,
+        insertionOffset: delta.insertionOffset,
+        selection: delta.selection,
+        composing: delta.composing,
+      );
+    }
+    return delta;
+  }
+
+  TextEditingDelta _smartReplacement(TextEditingDeltaReplacement delta, CodeLineSelection selection) {
+    if (!selection.isSameLine) {
+      return delta;
+    }
+    if (delta.replacementText.length > 1) {
+      return delta;
+    }
+    final int index = _wrapSymbols.indexWhere((element) => element.left == delta.replacementText);
+    if (index < 0) {
+      return delta;
+    }
+    final _ClosureSymbol symbol = _wrapSymbols[index];
+    return TextEditingDeltaReplacement(
+      oldText: delta.oldText,
+      replacementText: symbol.left + delta.textReplaced + symbol.right,
+      replacedRange: delta.replacedRange,
+      selection: TextSelection(
+        baseOffset: selection.startOffset + 1,
+        extentOffset: selection.endOffset + 1
+      ),
+      composing: delta.composing
+    );
+  }
+
+  bool _shouldAutoClosed(String text, int offset, _ClosureSymbol symbol) {
+    final Characters characters = text.characters;
+    if (characters.isEmpty) {
+      return true;
+    }
+    int leftSymbolCount = 0;
+    int rightSymbolCount = 0;
+    for (int i = 0; i < characters.length; i++) {
+      final String character = characters.elementAt(i);
+      if (i <= offset) {
+        if (character == symbol.left) {
+          leftSymbolCount++;
+        } else if (character == symbol.right) {
+          leftSymbolCount--;
+        }
+      } else {
+        if (character == symbol.left) {
+          rightSymbolCount--;
+        } else if (character == symbol.right) {
+          rightSymbolCount++;
+        }
+      }
+    }
+    return max(0, leftSymbolCount) >= rightSymbolCount;
+  }
+
+  bool _shouldSkipClosed(String text, int offset, _ClosureSymbol symbol) {
+    if (text.isEmpty) {
+      return false;
+    }
+    if (offset == text.length) {
+      return false;
+    }
+    return text.substring(offset, offset + 1) == symbol.right;
+  }
+
+  bool _shouldAutoQuoted(String text, String symbol, int offset) {
+    final Characters characters = text.characters;
+    if (characters.isEmpty) {
+      return true;
+    }
+    int leftSymbolCount = 0;
+    int rightSymbolCount = 0;
+    for (int i = 0; i < characters.length; i++) {
+      final String character = characters.elementAt(i);
+      if (i < offset) {
+        if (character == symbol) {
+          leftSymbolCount++;
+        }
+      } else {
+        if (character == symbol) {
+          rightSymbolCount++;
+        }
+      }
+    }
+    if (leftSymbolCount == 0 && rightSymbolCount == 0) {
+      return true;
+    }
+    if (rightSymbolCount == 0) {
+      return leftSymbolCount % 2 == 0;
+    }
+    if (leftSymbolCount == 0) {
+      return rightSymbolCount % 2 == 0;
+    }
+    return leftSymbolCount % 2 == rightSymbolCount % 2;
+  }
+
+}
+
+class _ClosureSymbol {
+  final String left;
+  final String right;
+
+  const _ClosureSymbol(this.left, this.right);
+
+  @override
+  String toString() {
+    return left + right;
+  }
+
+}
+
+const String _kPrefix = '\u200b';
+
+/// 镜像末尾追加的零宽哨兵
+///
+/// 输入法方向键只能在镜像文本内移动光标，末尾追加哨兵后光标位于行尾时
+/// 仍有一次向右移动的余量，使输入法上报的选区变更能够触发跨行光标移动。
+const String _kSuffix = '\u200b';
+
+extension _TextEditingValueExtension on TextEditingValue {
+
+  bool get startWithPrefix => text.startsWith(_kPrefix);
+
+  bool get endWithSuffix => text.endsWith(_kSuffix);
+
+  bool get usePrefix => kIsIOS || kIsAndroid;
+
+  TextEditingValue appendPrefixIfNecessary() {
+    if (!usePrefix) {
+      return this;
+    }
+    return copyWith(
+      text: '$_kPrefix$text',
+      selection: selection.copyWith(
+        baseOffset: selection.baseOffset + 1,
+        extentOffset: selection.extentOffset + 1,
+      ),
+      composing: composing.isValid ? TextRange(
+        start: composing.start + 1,
+        end: composing.end + 1
+      ) : composing
+    );
+  }
+
+  TextEditingValue removePrefixIfNecessary() {
+    if (!usePrefix) {
+      return this;
+    }
+    if (!startWithPrefix) {
+      return this;
+    }
+    return copyWith(
+      text: text.substring(1),
+      selection: selection.copyWith(
+        baseOffset: max(0, selection.baseOffset - 1),
+        extentOffset: max(0, selection.extentOffset - 1),
+      ),
+      composing: composing.isValid ? TextRange(
+        start: max(0, composing.start - 1),
+        end: max(0, composing.end - 1)
+      ) : null
+    );
+  }
+
+  TextEditingValue appendSuffixIfNecessary() {
+    if (!usePrefix) {
+      return this;
+    }
+    return copyWith(
+      text: '$text$_kSuffix'
+    );
+  }
+
+  TextEditingValue removeSuffixIfNecessary() {
+    if (!usePrefix) {
+      return this;
+    }
+    if (!endWithSuffix) {
+      return this;
+    }
+    final String newText = text.substring(0, text.length - 1);
+    return copyWith(
+      text: newText,
+      selection: selection.copyWith(
+        baseOffset: min(selection.baseOffset, newText.length),
+        extentOffset: min(selection.extentOffset, newText.length),
+      )
+    );
+  }
+
+}
+
+class _TextInputConfiguration extends TextInputConfiguration {
+
+  final int flutterViewId;
+
+  const _TextInputConfiguration({
+    required this.flutterViewId,
+    required super.enableDeltaModel,
+    required super.inputAction,
+    super.autocorrect = false,
+    super.smartDashesType = SmartDashesType.disabled,
+    super.smartQuotesType = SmartQuotesType.disabled,
+    super.textCapitalization = TextCapitalization.none,
+    super.keyboardAppearance,
+  });
+
+  @override
+  Map<String, dynamic> toJson() {
+    return {
+      ...super.toJson(),
+      'viewId': flutterViewId,
+    };
+  }
+
+}

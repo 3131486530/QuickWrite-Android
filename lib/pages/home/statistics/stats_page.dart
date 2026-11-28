@@ -1,0 +1,406 @@
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'package:quick_write/core/providers/bookshelf_provider.dart';
+import 'package:quick_write/core/providers/home_state_provider.dart';
+import 'package:quick_write/core/providers/writing_stats_provider.dart';
+import 'package:quick_write/core/services/chapter_word_count_service.dart';
+import 'package:quick_write/core/utils/platform_capabilities.dart';
+import 'package:quick_write/core/utils/typography_extension.dart';
+import 'package:quick_write/core/utils/word_count_utils.dart';
+import 'package:quick_write/shared/widgets/widgets.dart';
+import 'widgets/widgets.dart';
+
+/// 码字统计页面
+///
+/// 展示码字日历、今日数据、创作字数/时长折线图、数据总览。
+/// 顶部提供书籍筛选（全部或指定书籍），所有区块联动该筛选。
+class StatsPage extends StatefulWidget {
+  const StatsPage({super.key});
+
+  @override
+  State<StatsPage> createState() => _StatsPageState();
+}
+
+class _StatsPageState extends State<StatsPage> with WidgetsBindingObserver {
+  /// 首页导航状态，用于感知页面是否被切换到前台
+  HomeStateProvider? _homeState;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    // 页面初始化后加载数据
+    WidgetsBinding.instance.addPostFrameCallback((_) => _refreshIfActive());
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // 首页以 IndexedStack 保留各页状态，切回本页不会重新触发 initState，
+    // 因此监听导航索引变化，切到码字统计时主动拉取一次最新数据
+    final homeState = context.read<HomeStateProvider>();
+    if (!identical(homeState, _homeState)) {
+      _homeState?.removeListener(_onHomeStateChanged);
+      _homeState = homeState..addListener(_onHomeStateChanged);
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // 从后台回到前台时数据可能已被其他写入更新，重新拉取一次
+    if (state == AppLifecycleState.resumed) {
+      _refreshIfActive();
+    }
+  }
+
+  void _onHomeStateChanged() {
+    _refreshIfActive();
+  }
+
+  /// 仅在码字统计页为当前选中页时刷新，避免其它页面切换引发无谓查询
+  void _refreshIfActive() {
+    if (!mounted) return;
+    if (_homeState?.selectedIndex != HomePageEnum.stats.pageIndex) return;
+    context.read<WritingStatsProvider>().refresh();
+    // 今日章节字数由独立服务缓存，同步强制重载避免展示旧数据
+    ChapterWordCountService.instance.ensureLoaded(forceNotify: true);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _homeState?.removeListener(_onHomeStateChanged);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final statsProvider = context.watch<WritingStatsProvider>();
+    final bookshelf = context.watch<BookshelfProvider>();
+
+    // 桌面端为多列并排布局，移动端窄屏改为单列纵向排布
+    return PlatformCapabilities.isMobile
+        ? _buildMobileLayout(context, statsProvider, bookshelf)
+        : _buildDesktopLayout(context, statsProvider, bookshelf);
+  }
+
+  /// 桌面端布局：顶部工具栏 + 左右并排的统计区块
+  Widget _buildDesktopLayout(
+    BuildContext context,
+    WritingStatsProvider statsProvider,
+    BookshelfProvider bookshelf,
+  ) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return ListView(
+      padding: const EdgeInsets.all(24),
+      children: [
+        // 顶部标题栏：标题 + 统计设置 + 书籍筛选 + 刷新
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Text('码字统计', style: context.headlineMedium?.copyWith(
+            fontWeight: FontWeight.bold,
+            letterSpacing: 0.2,
+          ),),
+            const SizedBox(width: 8),
+            _buildStatsSettingsButton(context, statsProvider),
+            const Spacer(),
+            // 书籍筛选下拉框
+            SizedBox(
+              width: 200,
+              child: CustomDropdown(
+                width: 200,
+                value: statsProvider.selectedBookUuid,
+                items: _buildBookItems(bookshelf),
+                onChanged: (value) => statsProvider.setSelectedBook(value),
+              ),
+            ),
+            const SizedBox(width: 8),
+            // 刷新按钮
+            _buildRefreshButton(context, statsProvider),
+          ],
+        ),
+        const SizedBox(height: 24),
+
+        // 统计区块（限制最大宽度并居中，避免窗口过宽时元素被拉伸失衡）
+        Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 1120),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // 第一行：今日数据（左）+ 码字日历（右）
+                IntrinsicHeight(
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      // 今日数据卡片
+                      Expanded(
+                        flex: 2,
+                        child: TodayStatsCard(
+                          stat: statsProvider.selectedDateStat,
+                          consecutiveDays: statsProvider.consecutiveDays,
+                        ),
+                      ),
+                      const SizedBox(width: 16),
+                      // 码字日历
+                      Expanded(
+                        flex: 3,
+                        child: WritingCalendar(
+                          month: statsProvider.calendarMonth,
+                          calendarStats: statsProvider.calendarStats,
+                          selectedDate: statsProvider.selectedDate,
+                          onDateSelected: (date) => statsProvider.setSelectedDate(date),
+                          onPreviousMonth: () => statsProvider.changeCalendarMonth(-1),
+                          onNextMonth: () => statsProvider.changeCalendarMonth(1),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                // 今日章节字数（仅开关开启时展示）
+                if (statsProvider.chapterWordCountEnabled) ...[
+                  const SizedBox(height: 16),
+                  const TodayChapterWordCountCard(),
+                ],
+                const SizedBox(height: 16),
+
+                // 本周/本月切换
+                Row(
+                  children: [
+                    Text('创作趋势', style: context.titleMedium?.copyWith(fontWeight: FontWeight.bold)),
+                    const SizedBox(width: 16),
+                    SizedBox(width: 200, child: _buildRangeSelector(statsProvider)),
+                  ],
+                ),
+                const SizedBox(height: 12),
+
+                // 第二行：字数统计图表 + 时长统计图表
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(child: _buildWordCountChart(context, statsProvider, colorScheme)),
+                    const SizedBox(width: 16),
+                    Expanded(child: _buildDurationChart(context, statsProvider, colorScheme)),
+                  ],
+                ),
+                const SizedBox(height: 16),
+
+                // 数据总览
+                OverviewCard(stats: statsProvider.overviewStats),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// 移动端布局：单列纵向排布，各区块独占整行避免横向挤压
+  Widget _buildMobileLayout(
+    BuildContext context,
+    WritingStatsProvider statsProvider,
+    BookshelfProvider bookshelf,
+  ) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+      children: [
+        // 顶部标题栏：标题居左，统计设置图标靠右
+        Row(
+          children: [
+            Text('码字统计', style: context.headlineSmall?.copyWith(fontWeight: FontWeight.bold)),
+            const Spacer(),
+            _buildStatsSettingsButton(
+              context,
+              statsProvider,
+              iconSize: 20,
+              offset: const Offset(0, -1),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+
+        // 书籍筛选下拉框（占满剩余宽度）+ 刷新按钮
+        Row(
+          children: [
+            Expanded(
+              child: CustomDropdown(
+                width: double.infinity,
+                value: statsProvider.selectedBookUuid,
+                items: _buildBookItems(bookshelf),
+                onChanged: (value) => statsProvider.setSelectedBook(value),
+              ),
+            ),
+            const SizedBox(width: 8),
+            _buildRefreshButton(context, statsProvider),
+          ],
+        ),
+        const SizedBox(height: 16),
+
+        // 今日数据卡片
+        TodayStatsCard(
+          stat: statsProvider.selectedDateStat,
+          consecutiveDays: statsProvider.consecutiveDays,
+        ),
+        // 今日章节字数（仅开关开启时展示）
+        if (statsProvider.chapterWordCountEnabled) ...[
+          const SizedBox(height: 12),
+          const TodayChapterWordCountCard(),
+        ],
+        const SizedBox(height: 12),
+
+        // 码字日历
+        WritingCalendar(
+          month: statsProvider.calendarMonth,
+          calendarStats: statsProvider.calendarStats,
+          selectedDate: statsProvider.selectedDate,
+          onDateSelected: (date) => statsProvider.setSelectedDate(date),
+          onPreviousMonth: () => statsProvider.changeCalendarMonth(-1),
+          onNextMonth: () => statsProvider.changeCalendarMonth(1),
+        ),
+        const SizedBox(height: 20),
+
+        // 本周/本月切换
+        Row(
+          children: [
+            Text('创作趋势', style: context.titleMedium?.copyWith(fontWeight: FontWeight.bold)),
+            const Spacer(),
+            SizedBox(width: 160, child: _buildRangeSelector(statsProvider)),
+          ],
+        ),
+        const SizedBox(height: 12),
+
+        // 字数统计图表 / 时长统计图表（纵向堆叠，保证图表绘图区宽度）
+        _buildWordCountChart(context, statsProvider, colorScheme),
+        const SizedBox(height: 12),
+        _buildDurationChart(context, statsProvider, colorScheme),
+        const SizedBox(height: 16),
+
+        // 数据总览
+        OverviewCard(stats: statsProvider.overviewStats),
+      ],
+    );
+  }
+
+  /// 构建码字统计设置入口
+  ///
+  /// 点击打开设置弹窗，集中管理粘贴字数、设定字数与空闲判定时间。
+  /// [iconSize] 控制图标大小，[offset] 用于微调图标的视觉位置
+  Widget _buildStatsSettingsButton(
+    BuildContext context,
+    WritingStatsProvider statsProvider, {
+    double iconSize = 16,
+    Offset offset = const Offset(0, 1),
+  }) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Transform.translate(
+      offset: offset,
+      child: CursorTooltipTarget(
+        showTooltip: true,
+        tooltipContent: Text('统计设置', style: context.bodySmall),
+        child: IconButton(
+          icon: const Icon(Icons.settings_rounded),
+          iconSize: iconSize,
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+          color: colorScheme.onSurfaceVariant,
+          onPressed: () => showWritingStatsSettingsDialog(
+            context: context,
+            provider: statsProvider,
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 构建刷新按钮
+  Widget _buildRefreshButton(BuildContext context, WritingStatsProvider statsProvider) {
+    return CursorTooltipTarget(
+      showTooltip: true,
+      tooltipContent: Text('刷新', style: context.bodySmall),
+      child: IconButton(icon: const Icon(Icons.refresh_rounded), onPressed: () => statsProvider.refresh()),
+    );
+  }
+
+  /// 构建本周/本月切换控件
+  Widget _buildRangeSelector(WritingStatsProvider statsProvider) {
+    return SegmentedControl(
+      labels: const ['本周', '本月'],
+      selectedIndex: statsProvider.chartRangeMode == ChartRangeMode.week ? 0 : 1,
+      onChanged: (index) =>
+          statsProvider.setChartRangeMode(index == 0 ? ChartRangeMode.week : ChartRangeMode.month),
+    );
+  }
+
+  /// 构建创作字数统计图表
+  Widget _buildWordCountChart(
+    BuildContext context,
+    WritingStatsProvider statsProvider,
+    ColorScheme colorScheme,
+  ) {
+    return StatsChartCard(
+      title: '创作字数统计',
+      icon: Icons.show_chart_rounded,
+      points: _toWordCountPoints(statsProvider.wordCountChartStats),
+      lineColor: colorScheme.primary,
+      valueLabel: '字数',
+      valueFormatter: _formatWordCountAxis,
+      tooltipValueFormatter: (v) => WordCountUtils.formatWordCountShort(v, wanThreshold: 100000),
+    );
+  }
+
+  /// 构建创作时长统计图表
+  Widget _buildDurationChart(
+    BuildContext context,
+    WritingStatsProvider statsProvider,
+    ColorScheme colorScheme,
+  ) {
+    return StatsChartCard(
+      title: '创作时长统计',
+      icon: Icons.timeline_rounded,
+      points: _toDurationPoints(statsProvider.durationChartStats),
+      lineColor: colorScheme.tertiary,
+      valueLabel: '时长',
+      valueFormatter: _formatDurationAxis,
+    );
+  }
+
+  /// 构建书籍筛选选项列表（含"全部书籍"）
+  List<DropdownItem> _buildBookItems(BookshelfProvider bookshelf) {
+    final items = <DropdownItem>[const DropdownItem(displayText: '全部书籍', value: '')];
+    for (final book in bookshelf.books) {
+      items.add(DropdownItem(displayText: book.title, value: book.uuid));
+    }
+    return items;
+  }
+
+  /// 将每日统计转为字数折线图数据点
+  List<ChartPoint> _toWordCountPoints(List stats) {
+    return stats.map((stat) {
+      return ChartPoint(label: '${stat.date.month}/${stat.date.day}', value: stat.wordsAdded);
+    }).toList();
+  }
+
+  /// 将每日统计转为时长折线图数据点
+  List<ChartPoint> _toDurationPoints(List stats) {
+    return stats.map((stat) {
+      return ChartPoint(label: '${stat.date.month}/${stat.date.day}', value: stat.durationSeconds);
+    }).toList();
+  }
+
+  /// Y 轴字数格式化（一万以上显示万）
+  String _formatWordCountAxis(int value) => WordCountUtils.formatWordCountShort(value);
+
+  /// Y 轴时长格式化（秒 -> 分钟/小时）
+  String _formatDurationAxis(int value) {
+    if (value <= 0) return '0';
+    if (value >= 3600) {
+      final hours = value / 3600.0;
+      return '${hours.toStringAsFixed(1).replaceAll(RegExp(r'\.0$'), '')}h';
+    }
+    return '${value ~/ 60}m';
+  }
+}

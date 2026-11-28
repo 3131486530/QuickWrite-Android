@@ -1,0 +1,280 @@
+import 'package:flutter/material.dart';
+import 'package:quick_write/core/providers/writing_session_tracker.dart';
+import 'package:quick_write/core/utils/typography_extension.dart';
+
+/// 码字统计区块
+///
+/// 展示今日码字、本次码字、码字速度与时长等会话统计数据。
+/// [showTitle] 为 false 时隐藏内置标题，仅保留统计卡片
+class WritingStatsSection extends StatelessWidget {
+  /// 会话统计追踪器，为空时展示占位提示
+  final WritingSessionTracker? tracker;
+
+  /// 是否展示内置的"码字统计"标题
+  final bool showTitle;
+
+  const WritingStatsSection({
+    super.key,
+    required this.tracker,
+    this.showTitle = true,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final tracker = this.tracker;
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // 标题行（可隐藏）
+        if (showTitle) ...[
+          Row(
+            children: [
+              Icon(Icons.insights_rounded, size: 16, color: colorScheme.primary),
+              const SizedBox(width: 6),
+              Text(
+                '码字统计',
+                style: context.bodySmall?.copyWith(fontWeight: FontWeight.w600, color: colorScheme.onSurfaceVariant),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+        ],
+        if (tracker == null)
+          _buildPlaceholder(context)
+        else
+          ListenableBuilder(
+            listenable: tracker,
+            builder: (context, _) {
+              return Column(
+                children: [
+                  // 今日码字（突出显示）
+                  _StatCard(
+                    icon: Icons.today_rounded,
+                    label: '今日码字',
+                    value: _formatNumber(tracker.todayWords),
+                    unit: '字',
+                    isHero: true,
+                  ),
+                  const SizedBox(height: 8),
+                  // 次要统计项（2列网格）
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _StatCard(
+                          icon: Icons.edit_note_rounded,
+                          label: '本次码字',
+                          value: _formatNumber(tracker.sessionWords),
+                          unit: '字',
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: _StatCard(
+                          icon: Icons.speed_rounded,
+                          label: '码字速度',
+                          value: _formatNumber(tracker.writingSpeed),
+                          unit: '字/分',
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _StatCard(
+                          icon: Icons.schedule_rounded,
+                          label: '码字时长',
+                          durationSeconds: tracker.sessionDurationSeconds,
+                          autoFit: true,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: _StatCard(
+                          icon: Icons.local_cafe_outlined,
+                          label: '空闲时长',
+                          durationSeconds: tracker.idleDurationSeconds,
+                          autoFit: true,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              );
+            },
+          ),
+      ],
+    );
+  }
+
+  /// 构建统计区占位（追踪器未初始化时显示）
+  Widget _buildPlaceholder(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Container(
+      height: 120,
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.3),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Center(
+        child: Text('统计数据加载中...', style: context.bodySmall?.copyWith(color: colorScheme.onSurfaceVariant)),
+      ),
+    );
+  }
+}
+
+/// 格式化数字，添加千位分隔符
+///
+/// 例如：3256 → "3,256"，-1024 → "-1,024"
+String _formatNumber(int n) {
+  final isNegative = n < 0;
+  final abs = n.abs();
+  final formatted = abs.toString().replaceAllMapped(RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'), (Match m) => '${m[1]},');
+  return isNegative ? '-$formatted' : formatted;
+}
+
+/// 统计数据卡片
+///
+/// 用于展示单项统计数据，包含图标、数值和标签。
+/// [isHero] 为 true 时使用更突出的样式（用于今日码字等核心指标）。
+/// [durationSeconds] 非空时按时长模式渲染，数字粗体、单位普通字重。
+/// [autoFit] 为 true 时数值文字随容器宽度自适应缩放。
+class _StatCard extends StatelessWidget {
+  /// 卡片图标
+  final IconData icon;
+
+  /// 数据标签
+  final String label;
+
+  /// 数据数值
+  final String value;
+
+  /// 数值单位
+  final String unit;
+
+  /// 是否使用突出样式
+  final bool isHero;
+
+  /// 时长秒数（非空时按时长模式渲染，忽略 [value]/[unit]）
+  final int? durationSeconds;
+
+  /// 数值是否随容器宽度自适应缩放
+  final bool autoFit;
+
+  const _StatCard({
+    required this.icon,
+    required this.label,
+    this.value = '',
+    this.unit = '',
+    this.isHero = false,
+    this.durationSeconds,
+    this.autoFit = false,
+  });
+
+  /// 构建时长富文本（数字粗体 + 单位普通字重）
+  ///
+  /// 数字与上方统计计数的字号一致，单位与统计单位的字号一致，
+  /// 使时长文本的最大字号不超过计数文本
+  Widget _buildDurationRichText(BuildContext context) {
+    final totalSeconds = durationSeconds!;
+    final hours = totalSeconds ~/ 3600;
+    final minutes = (totalSeconds % 3600) ~/ 60;
+    final seconds = totalSeconds % 60;
+
+    final colorScheme = Theme.of(context).colorScheme;
+    // 数字样式与统计计数相同
+    final numberStyle = context.titleLarge?.copyWith(
+      fontWeight: FontWeight.w600,
+      color: colorScheme.onSurface,
+    );
+    // 单位样式与统计单位相同
+    final unitStyle = context.bodySmall?.copyWith(color: colorScheme.onSurfaceVariant);
+
+    return Text.rich(
+      TextSpan(
+        children: [
+          TextSpan(text: hours.toString().padLeft(2, '0'), style: numberStyle),
+          TextSpan(text: ' 时 ', style: unitStyle),
+          TextSpan(text: minutes.toString().padLeft(2, '0'), style: numberStyle),
+          TextSpan(text: ' 分 ', style: unitStyle),
+          TextSpan(text: seconds.toString().padLeft(2, '0'), style: numberStyle),
+          TextSpan(text: ' 秒', style: unitStyle),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    // 时长模式：数字粗体 + 单位普通字重的富文本
+    // 普通模式：数值 + 单位
+    final Widget valueWidget;
+    if (durationSeconds != null) {
+      valueWidget = _buildDurationRichText(context);
+    } else {
+      valueWidget = Row(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.baseline,
+        textBaseline: TextBaseline.alphabetic,
+        children: [
+          Text(
+            value,
+            style: (isHero ? context.headlineSmall : context.titleLarge)?.copyWith(
+              fontWeight: isHero ? FontWeight.w700 : FontWeight.w600,
+              color: isHero ? colorScheme.primary : colorScheme.onSurface,
+            ),
+          ),
+          if (unit.isNotEmpty) ...[
+            const SizedBox(width: 4),
+            Text(unit, style: context.bodySmall?.copyWith(color: colorScheme.onSurfaceVariant)),
+          ],
+        ],
+      );
+    }
+
+    return Container(
+      padding: EdgeInsets.all(isHero ? 16 : 14),
+      decoration: BoxDecoration(
+        color: isHero
+            ? colorScheme.primary.withValues(alpha: 0.08)
+            : colorScheme.surfaceContainerHighest.withValues(alpha: 0.3),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // 图标 + 标签
+          Row(
+            children: [
+              Icon(icon, size: 16, color: isHero ? colorScheme.primary : colorScheme.onSurfaceVariant),
+              const SizedBox(width: 6),
+              Text(
+                label,
+                style: context.bodySmall?.copyWith(
+                  color: colorScheme.onSurfaceVariant,
+                  fontWeight: isHero ? FontWeight.w600 : FontWeight.normal,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          // autoFit 时用 FittedBox 包裹，使数值文字在容器宽度内自适应缩放
+          if (autoFit)
+            FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerLeft,
+              child: valueWidget,
+            )
+          else
+            valueWidget,
+        ],
+      ),
+    );
+  }
+}

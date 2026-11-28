@@ -1,0 +1,777 @@
+import 'dart:io';
+
+import 'package:crypto/crypto.dart';
+import 'package:isar/isar.dart';
+import 'package:quick_write/core/models/book.dart';
+import 'package:quick_write/core/models/chapter.dart';
+import 'package:quick_write/core/models/setting_item.dart';
+import 'package:quick_write/core/services/app_paths.dart';
+import 'package:quick_write/core/services/cloud_sync/chapter_archive.dart';
+import 'package:quick_write/core/services/cloud_sync/sync_models.dart';
+import 'package:quick_write/core/services/workspace/book_folder_service.dart';
+import 'package:quick_write/core/services/workspace/custom_highlight_service.dart';
+import 'package:quick_write/core/services/workspace/sensitive_word_service.dart';
+import 'package:quick_write/core/utils/platform_capabilities.dart';
+import 'package:quick_write/core/utils/relative_path_utils.dart';
+
+/// 书籍相关文件的逻辑键前缀
+const String _booksKeyPrefix = 'books/';
+
+/// 桌面端应用配置文件的逻辑键（沿用历史键名，保证既有云端数据可继续复用）
+const String _desktopAppSettingsKey = 'app/settings.json';
+
+/// 移动端应用配置文件的逻辑键
+const String _mobileAppSettingsKey = 'app/settings.mobile.json';
+
+/// 书籍的章节正文目录名
+const String _chaptersDirName = 'chapters';
+
+/// 书籍的设定项目录名
+const String _settingsDirName = 'settings';
+
+/// 以当前平台的分隔符拼接路径片段
+String _joinPath(List<String> parts) => parts.join(Platform.pathSeparator);
+
+/// 章节归档包中的一个章节成员
+class ChapterArchiveMember {
+  /// 章节 UUID，同时也是归档包内的文件名
+  final String uuid;
+
+  /// 章节正文在本地的绝对路径
+  final String localPath;
+
+  /// 章节正文的内容哈希（sha256 十六进制字符串），为空表示本地文件缺失
+  final String contentHash;
+
+  /// 章节正文的字节数
+  final int size;
+
+  const ChapterArchiveMember({
+    required this.uuid,
+    required this.localPath,
+    required this.contentHash,
+    required this.size,
+  });
+
+  /// 本地是否存在该章节正文
+  bool get exists => contentHash.isNotEmpty;
+
+  /// 转换为待打包章节
+  ChapterArchiveSource toSource() => ChapterArchiveSource(
+    uuid: uuid,
+    localPath: localPath,
+    hash: contentHash,
+    size: size,
+  );
+}
+
+/// 工作区索引结果
+///
+/// 既包含当前已存在的本地逻辑文件，也提供「逻辑键 → 本地路径」与
+/// 「归档包 → 章节成员」的解析能力，使远端新增的文件也能定位到它在本机的落点
+class WorkspaceIndex {
+  /// 当前已存在的本地文件
+  final List<LocalSyncFile> files;
+
+  /// 普通文件逻辑键 → 本地绝对路径
+  final Map<String, String> _plainPaths;
+
+  /// 章节归档包逻辑键 → 章节成员列表
+  final Map<String, List<ChapterArchiveMember>> _archiveMembers;
+
+  /// 目录映射：逻辑键前缀 → 本地目录
+  ///
+  /// 用于让「远端已存在、本地尚未落盘」的文件也能定位落点。
+  /// 这类文件没有本地记录可依据推导路径，只能按键前缀映射到对应目录
+  final Map<String, String> _dirMappings;
+
+  /// 章节正文哈希缓存，供调用方写回状态存储
+  final Map<String, LocalHashCacheEntry> chapterHashCache;
+
+  const WorkspaceIndex({
+    required this.files,
+    required Map<String, String> plainPaths,
+    required Map<String, List<ChapterArchiveMember>> archiveMembers,
+    required Map<String, String> dirMappings,
+    required this.chapterHashCache,
+  }) : _plainPaths = plainPaths,
+       _archiveMembers = archiveMembers,
+       _dirMappings = dirMappings;
+
+  /// 解析逻辑键对应的本地绝对路径
+  ///
+  /// 返回 null 表示无法定位：远端存在该文件，但本地数据库尚未记录对应实体
+  String? localPathOf(String key) {
+    final plainPath = _plainPaths[key];
+    if (plainPath != null) return plainPath;
+
+    // 目录映射：远端新增的文件按键前缀还原为本地目录中的路径
+    for (final entry in _dirMappings.entries) {
+      if (key.startsWith(entry.key)) {
+        final relativeSegments = key.substring(entry.key.length).split('/');
+        return _joinPath([entry.value, ...relativeSegments]);
+      }
+    }
+
+    // 归档包以章节正文所在目录作为其本地位置
+    final members = _archiveMembers[key];
+    if (members != null && members.isNotEmpty) {
+      return File(members.first.localPath).parent.path;
+    }
+
+    return null;
+  }
+
+  /// 获取归档包的章节成员列表
+  ///
+  /// 返回 null 表示该逻辑键不是归档包
+  List<ChapterArchiveMember>? archiveMembersOf(String key) =>
+      _archiveMembers[key];
+
+  /// 获取归档包中指定章节的本地路径
+  String? chapterPathOf(String key, String chapterUuid) {
+    final members = _archiveMembers[key];
+    if (members == null) return null;
+    for (final member in members) {
+      if (member.uuid == chapterUuid) return member.localPath;
+    }
+    return null;
+  }
+}
+
+/// 工作区索引器
+///
+/// 将本地数据库记录与磁盘文件映射为「逻辑文件表」，供同步比对使用。
+/// 索引范围包括：
+/// - 书籍的章节正文（归档包模式下按每 [kChapterChunkSize] 章合并，其余情况逐章）
+/// - 书籍的设定项正文、伴生文件与备注图片、封面、自定义高亮配置
+/// - 全局敏感词词库
+/// - 用户自定义的取名词典
+/// - 用户自定义主题
+/// - 应用配置文件
+///
+/// 为提高性能，文件内容哈希优先复用哈希缓存或基线中记录的结果，
+/// 仅当文件大小或修改时间发生变化时才重新计算
+class WorkspaceIndexer {
+  const WorkspaceIndexer();
+
+  // ================= 索引入口 =================
+
+  /// 扫描工作区，生成索引结果
+  ///
+  /// [isar] 应用数据库实例
+  /// [baselines] 同步基线，用于复用文件哈希并据此判断文件是否变化
+  /// [cachedHashes] 上次扫描记录的章节哈希，文件未变化时直接复用
+  /// [packChapters] 是否把章节合并为归档包
+  ///
+  /// 只有坚果云这类限制请求次数的平台才需要归档包：整包上传用一次请求传输上百章；
+  /// 其他平台逐章上传，改动一章只传一章，避免整包重传带来的流量浪费
+  Future<WorkspaceIndex> scan({
+    required Isar isar,
+    required Map<String, SyncBaselineRecord> baselines,
+    required Map<String, LocalHashCacheEntry> cachedHashes,
+    bool packChapters = true,
+  }) async {
+    final files = <LocalSyncFile>[];
+    final plainPaths = <String, String>{};
+    final archiveMembers = <String, List<ChapterArchiveMember>>{};
+    final dirMappings = <String, String>{};
+    final collectedHashes = <String, LocalHashCacheEntry>{};
+
+    await _collectBooks(
+      isar: isar,
+      baselines: baselines,
+      cachedHashes: cachedHashes,
+      files: files,
+      plainPaths: plainPaths,
+      archiveMembers: archiveMembers,
+      dirMappings: dirMappings,
+      collectedHashes: collectedHashes,
+      packChapters: packChapters,
+    );
+
+    // 用户自定义的取名词典
+    await _collectDicts(
+      baselines: baselines,
+      files: files,
+      plainPaths: plainPaths,
+      dirMappings: dirMappings,
+    );
+
+    // 用户自定义主题
+    await _collectThemes(
+      baselines: baselines,
+      files: files,
+      plainPaths: plainPaths,
+      dirMappings: dirMappings,
+    );
+
+    // 应用配置文件：桌面端与移动端的配置互不通用，这里只登记当前平台的那一份。
+    // 另一平台的配置键不会登记到本地路径映射中，同步引擎据此把它从远端清单中过滤掉，
+    // 因此不会被下载到本机；云端同时保存两份，由两端各自上传维护
+    final bool isMobile = PlatformCapabilities.isMobile;
+    await _collectPlainFile(
+      baselines: baselines,
+      files: files,
+      plainPaths: plainPaths,
+      key: isMobile ? _mobileAppSettingsKey : _desktopAppSettingsKey,
+      localPath: isMobile ? AppPaths.instance.mobileConfigFilePath : AppPaths.instance.desktopConfigFilePath,
+    );
+
+    // 敏感词词库：全局共用，与书籍无关，因此作为应用级文件同步
+    await _collectPlainFile(
+      baselines: baselines,
+      files: files,
+      plainPaths: plainPaths,
+      key: kSensitiveWordSyncKey,
+      localPath: AppPaths.instance.sensitiveWordFilePath,
+    );
+
+    return WorkspaceIndex(
+      files: files,
+      plainPaths: plainPaths,
+      archiveMembers: archiveMembers,
+      dirMappings: dirMappings,
+      chapterHashCache: collectedHashes,
+    );
+  }
+
+  // ================= 书籍相关文件 =================
+
+  /// 收集书籍相关的全部同步文件
+  Future<void> _collectBooks({
+    required Isar isar,
+    required Map<String, SyncBaselineRecord> baselines,
+    required Map<String, LocalHashCacheEntry> cachedHashes,
+    required List<LocalSyncFile> files,
+    required Map<String, String> plainPaths,
+    required Map<String, List<ChapterArchiveMember>> archiveMembers,
+    required Map<String, String> dirMappings,
+    required Map<String, LocalHashCacheEntry> collectedHashes,
+    required bool packChapters,
+  }) async {
+    final books = await isar.bookModels.where().findAll();
+    if (books.isEmpty) return;
+
+    final worksPath = await AppPaths.instance.getBooksPath();
+
+    // 按书籍分组，避免每本书都遍历一次全量章节与设定项
+    final chaptersByBook = _groupByBookUuid(
+      await isar.chapterModels.where().findAll(),
+      (chapter) => chapter.bookUuid,
+    );
+    final settingItemsByBook = _groupByBookUuid(
+      await isar.settingItemModels.where().findAll(),
+      (item) => item.bookUuid,
+    );
+
+    for (final book in books) {
+      if (book.uuid.isEmpty || book.title.isEmpty) continue;
+      final bookFolder = _joinPath([worksPath, book.title]);
+
+      // 章节正文：坚果云等限制请求次数的平台按每 kChapterChunkSize 章合并为一个归档包，
+      // 其余平台逐章作为独立文件同步，改动一章只需传输一章
+      if (packChapters) {
+        await _collectChapterChunks(
+          bookUuid: book.uuid,
+          chapters: chaptersByBook[book.uuid] ?? const <ChapterModel>[],
+          bookFolder: bookFolder,
+          baselines: baselines,
+          cachedHashes: cachedHashes,
+          files: files,
+          archiveMembers: archiveMembers,
+          collectedHashes: collectedHashes,
+        );
+      } else {
+        await _collectChapterFiles(
+          bookUuid: book.uuid,
+          chapters: chaptersByBook[book.uuid] ?? const <ChapterModel>[],
+          bookFolder: bookFolder,
+          baselines: baselines,
+          cachedHashes: cachedHashes,
+          files: files,
+          plainPaths: plainPaths,
+          collectedHashes: collectedHashes,
+        );
+      }
+
+      // 备注图片统一登记「书籍/图片目录」前缀映射，
+      // 使远端新增的图片也能定位到本机的 settings 目录
+      dirMappings['$_booksKeyPrefix${book.uuid}/$kSettingImagesKeySegment/'] =
+          _joinPath([bookFolder, _settingsDirName]);
+
+      // 备注图片按目录扫描，同一目录下的多个设定项只需扫描一次
+      final Set<String> scannedImageDirs = {};
+
+      // 设定项正文
+      for (final item
+          in settingItemsByBook[book.uuid] ?? const <SettingItemModel>[]) {
+        if (item.filePath.isEmpty) continue;
+        final String settingLocalPath = _joinPath([
+          bookFolder,
+          _settingsDirName,
+          relativePathToPlatform(item.filePath),
+        ]);
+        await _collectPlainFile(
+          baselines: baselines,
+          files: files,
+          plainPaths: plainPaths,
+          key: settingSyncKeyOf(book.uuid, item.uuid),
+          localPath: settingLocalPath,
+        );
+
+        // 大纲合并伴生文件：关键词、关联与备注统一存放
+        final String? metaLocalPath =
+            BookFolderService.outlineMetaFilePath(settingLocalPath);
+        if (metaLocalPath != null) {
+          await _collectPlainFile(
+            baselines: baselines,
+            files: files,
+            plainPaths: plainPaths,
+            key: settingCompanionSyncKeyOf(
+              book.uuid,
+              item.uuid,
+              BookFolderService.outlineMetaFileSuffix,
+            ),
+            localPath: metaLocalPath,
+          );
+        }
+
+        // 节点附加图片：设定项文件所在目录下的 image 文件夹
+        final String? imageDirPath =
+            BookFolderService.settingImageDirectory(settingLocalPath);
+        if (imageDirPath != null && scannedImageDirs.add(imageDirPath)) {
+          await _collectSettingImages(
+            bookUuid: book.uuid,
+            settingsDirPath: _joinPath([bookFolder, _settingsDirName]),
+            imageDirPath: imageDirPath,
+            baselines: baselines,
+            files: files,
+            plainPaths: plainPaths,
+          );
+        }
+      }
+
+      // 封面（远端保留原扩展名，避免不同格式互相覆盖）
+      if (book.coverFileName.isNotEmpty) {
+        await _collectPlainFile(
+          baselines: baselines,
+          files: files,
+          plainPaths: plainPaths,
+          key:
+              '$_booksKeyPrefix${book.uuid}/cover${_extensionOf(book.coverFileName)}',
+          localPath: _joinPath([bookFolder, book.coverFileName]),
+        );
+      }
+
+      // 自定义高亮配置
+      await _collectPlainFile(
+        baselines: baselines,
+        files: files,
+        plainPaths: plainPaths,
+        key: '$_booksKeyPrefix${book.uuid}/$kCustomHighlightFileName',
+        localPath: _joinPath([bookFolder, kCustomHighlightFileName]),
+      );
+    }
+  }
+
+  /// 收集一本书的章节归档包
+  ///
+  /// 章节按顺序每 [kChapterChunkSize] 章划分为一块，
+  /// 两端依据同一份章节顺序能够推导出完全相同的分块，无需额外的分块元数据
+  Future<void> _collectChapterChunks({
+    required String bookUuid,
+    required List<ChapterModel> chapters,
+    required String bookFolder,
+    required Map<String, SyncBaselineRecord> baselines,
+    required Map<String, LocalHashCacheEntry> cachedHashes,
+    required List<LocalSyncFile> files,
+    required Map<String, List<ChapterArchiveMember>> archiveMembers,
+    required Map<String, LocalHashCacheEntry> collectedHashes,
+  }) async {
+    if (chapters.isEmpty) return;
+
+    // 按全局顺序排列，顺序相同时以 UUID 兜底，保证分块结果稳定
+    final sorted = List<ChapterModel>.from(chapters)
+      ..sort((a, b) {
+        final byOrder = a.orderIndex.compareTo(b.orderIndex);
+        return byOrder != 0 ? byOrder : a.uuid.compareTo(b.uuid);
+      });
+
+    final chaptersDirPath = _joinPath([bookFolder, _chaptersDirName]);
+
+    for (var start = 0; start < sorted.length; start += kChapterChunkSize) {
+      final chunkIndex = start ~/ kChapterChunkSize;
+      final end = start + kChapterChunkSize;
+      final slice = sorted.sublist(
+        start,
+        end > sorted.length ? sorted.length : end,
+      );
+      final chunkKey = chapterChunkKey(bookUuid, chunkIndex);
+
+      var allExist = true;
+      var totalSize = 0;
+      DateTime? latestModified;
+      final members = <ChapterArchiveMember>[];
+
+      for (final chapter in slice) {
+        if (chapter.uuid.isEmpty || chapter.filePath.isEmpty) {
+          allExist = false;
+          continue;
+        }
+
+        final localPath = _joinPath([
+          chaptersDirPath,
+          relativePathToPlatform(chapter.filePath),
+        ]);
+        final cacheKey = chapterSyncKeyOf(bookUuid, chapter.uuid);
+        final resolved = await _resolveFileContent(
+          cacheKey,
+          localPath,
+          baselines,
+          cachedHashes: cachedHashes,
+        );
+
+        if (resolved == null) {
+          allExist = false;
+          members.add(
+            ChapterArchiveMember(
+              uuid: chapter.uuid,
+              localPath: localPath,
+              contentHash: '',
+              size: 0,
+            ),
+          );
+          continue;
+        }
+
+        members.add(
+          ChapterArchiveMember(
+            uuid: chapter.uuid,
+            localPath: localPath,
+            contentHash: resolved.hash,
+            size: resolved.size,
+          ),
+        );
+        collectedHashes[cacheKey] = LocalHashCacheEntry(
+          hash: resolved.hash,
+          size: resolved.size,
+          modifiedMs: resolved.modifiedAt.millisecondsSinceEpoch,
+        );
+
+        totalSize += resolved.size;
+        if (latestModified == null ||
+            resolved.modifiedAt.isAfter(latestModified)) {
+          latestModified = resolved.modifiedAt;
+        }
+      }
+
+      archiveMembers[chunkKey] = members;
+
+      // 仅在全部章节正文均存在时才把归档包视为本地文件；
+      // 任一章缺失说明本地归档不完整，交由比对阶段按「本地不存在」处理
+      if (!allExist || members.isEmpty) continue;
+
+      final manifest = buildManifest([
+        for (final member in members) member.toSource(),
+      ]);
+      files.add(
+        LocalSyncFile(
+          key: chunkKey,
+          localPath: chaptersDirPath,
+          size: totalSize,
+          modifiedAt: latestModified!,
+          contentHash: manifestHashOf(manifest),
+        ),
+      );
+    }
+  }
+
+  /// 逐章收集章节正文
+  ///
+  /// 每章是一个独立的同步单元，逻辑键沿用「书籍/章节」的固定格式，
+  /// 与归档包模式共用同一套哈希缓存，切换平台后无需重建状态
+  Future<void> _collectChapterFiles({
+    required String bookUuid,
+    required List<ChapterModel> chapters,
+    required String bookFolder,
+    required Map<String, SyncBaselineRecord> baselines,
+    required Map<String, LocalHashCacheEntry> cachedHashes,
+    required List<LocalSyncFile> files,
+    required Map<String, String> plainPaths,
+    required Map<String, LocalHashCacheEntry> collectedHashes,
+  }) async {
+    if (chapters.isEmpty) return;
+
+    final chaptersDirPath = _joinPath([bookFolder, _chaptersDirName]);
+
+    for (final chapter in chapters) {
+      if (chapter.uuid.isEmpty || chapter.filePath.isEmpty) continue;
+
+      final key = chapterSyncKeyOf(bookUuid, chapter.uuid);
+      final localPath = _joinPath([
+        chaptersDirPath,
+        relativePathToPlatform(chapter.filePath),
+      ]);
+      // 无论文件是否存在都登记路径，便于远端新增的同名章节定位落点
+      plainPaths[key] = localPath;
+
+      final resolved = await _resolveFileContent(
+        key,
+        localPath,
+        baselines,
+        cachedHashes: cachedHashes,
+      );
+      if (resolved == null) continue;
+
+      files.add(
+        LocalSyncFile(
+          key: key,
+          localPath: localPath,
+          size: resolved.size,
+          modifiedAt: resolved.modifiedAt,
+          contentHash: resolved.hash,
+        ),
+      );
+      collectedHashes[key] = LocalHashCacheEntry(
+        hash: resolved.hash,
+        size: resolved.size,
+        modifiedMs: resolved.modifiedAt.millisecondsSinceEpoch,
+      );
+    }
+  }
+
+  // ================= 自定义词典文件 =================
+
+  /// 收集用户自定义的取名词典文件
+  ///
+  /// 每个词典是一个独立的 JSON 文件，整体存放于应用目录下的 dict 文件夹。
+  /// 同时登记「键前缀 → 词典目录」的映射，使远端存在而本地缺失的词典
+  /// 也能定位到本机落点，从而在其它设备上补齐
+  Future<void> _collectDicts({
+    required Map<String, SyncBaselineRecord> baselines,
+    required List<LocalSyncFile> files,
+    required Map<String, String> plainPaths,
+    required Map<String, String> dirMappings,
+  }) async {
+    final dictDirPath = await AppPaths.instance.getDictPath();
+    dirMappings[kDictKeyPrefix] = dictDirPath;
+
+    final dir = Directory(dictDirPath);
+    if (!await dir.exists()) return;
+
+    await for (final entity in dir.list()) {
+      if (entity is! File || !entity.path.endsWith(kDictFileExtension)) {
+        continue;
+      }
+      final fileName = entity.path.split(Platform.pathSeparator).last;
+      await _collectPlainFile(
+        baselines: baselines,
+        files: files,
+        plainPaths: plainPaths,
+        key: '$kDictKeyPrefix$fileName',
+        localPath: entity.path,
+      );
+    }
+  }
+
+  // ================= 自定义主题文件 =================
+
+  /// 收集用户自定义主题文件
+  ///
+  /// 每个主题是一个独立的 JSON 文件，整体存放于应用目录下的 theme 文件夹。
+  /// 同时登记「键前缀 → 主题目录」的映射，使远端存在而本地缺失的主题
+  /// 也能定位到本机落点，从而在其它设备上补齐
+  Future<void> _collectThemes({
+    required Map<String, SyncBaselineRecord> baselines,
+    required List<LocalSyncFile> files,
+    required Map<String, String> plainPaths,
+    required Map<String, String> dirMappings,
+  }) async {
+    final themeDirPath = await AppPaths.instance.getThemePath();
+    dirMappings[kThemeKeyPrefix] = themeDirPath;
+
+    final dir = Directory(themeDirPath);
+    if (!await dir.exists()) return;
+
+    await for (final entity in dir.list()) {
+      if (entity is! File || !entity.path.endsWith(kThemeFileExtension)) {
+        continue;
+      }
+      final fileName = entity.path.split(Platform.pathSeparator).last;
+      await _collectPlainFile(
+        baselines: baselines,
+        files: files,
+        plainPaths: plainPaths,
+        key: '$kThemeKeyPrefix$fileName',
+        localPath: entity.path,
+      );
+    }
+  }
+
+  // ================= 文件收集 =================
+
+  /// 收集普通文件
+  ///
+  /// 无论文件是否存在都会登记其本地路径，便于远端新增的同名文件定位落点
+  Future<void> _collectPlainFile({
+    required Map<String, SyncBaselineRecord> baselines,
+    required List<LocalSyncFile> files,
+    required Map<String, String> plainPaths,
+    required String key,
+    required String localPath,
+  }) async {
+    plainPaths[key] = localPath;
+
+    final resolved = await _resolveFileContent(key, localPath, baselines);
+    if (resolved == null) return;
+
+    files.add(
+      LocalSyncFile(
+        key: key,
+        localPath: localPath,
+        size: resolved.size,
+        modifiedAt: resolved.modifiedAt,
+        contentHash: resolved.hash,
+      ),
+    );
+  }
+
+  /// 收集设定项 image 目录下的全部图片
+  ///
+  /// 图片目录直接位于设定项文件所在目录下，逻辑键记录其相对 settings 目录的路径，
+  /// 云端按同一相对路径还原，使不同分组下的同名图片互不覆盖。
+  Future<void> _collectSettingImages({
+    required String bookUuid,
+    required String settingsDirPath,
+    required String imageDirPath,
+    required Map<String, SyncBaselineRecord> baselines,
+    required List<LocalSyncFile> files,
+    required Map<String, String> plainPaths,
+  }) async {
+    final Directory dir = Directory(imageDirPath);
+    if (!await dir.exists()) return;
+
+    // 图片目录相对 settings 目录的路径，例如 `image` 或 `人物/image`
+    final String relativeDir = _relativePathOf(imageDirPath, settingsDirPath);
+
+    await for (final entity in dir.list(followLinks: false)) {
+      if (entity is! File) continue;
+      final String fileName = entity.path.split(Platform.pathSeparator).last;
+      // 跳过空的以及同步过程产生的临时文件
+      if (fileName.isEmpty || fileName.endsWith(kSyncTempSuffix)) continue;
+
+      final String relativeKey =
+          relativeDir.isEmpty ? fileName : '$relativeDir/$fileName';
+      await _collectPlainFile(
+        baselines: baselines,
+        files: files,
+        plainPaths: plainPaths,
+        key: settingImageSyncKeyOf(bookUuid, relativeKey),
+        localPath: entity.path,
+      );
+    }
+  }
+
+  /// 计算 [path] 相对 [parentPath] 的路径，统一使用正斜杠分隔
+  ///
+  /// 路径不在父目录下时返回空字符串，交由调用方按目录自身处理。
+  String _relativePathOf(String path, String parentPath) {
+    final String prefix = parentPath.endsWith(Platform.pathSeparator)
+        ? parentPath
+        : '$parentPath${Platform.pathSeparator}';
+    if (!path.startsWith(prefix)) return '';
+    return path
+        .substring(prefix.length)
+        .split(Platform.pathSeparator)
+        .join('/');
+  }
+
+  /// 解析文件内容特征
+  ///
+  /// 文件不存在时返回 null；文件大小与修改时间均与哈希缓存或基线一致时，
+  /// 直接复用已记录的哈希，避免重复读取文件内容
+  Future<_ResolvedContent?> _resolveFileContent(
+    String key,
+    String localPath,
+    Map<String, SyncBaselineRecord> baselines, {
+    Map<String, LocalHashCacheEntry> cachedHashes = const {},
+  }) async {
+    final file = File(localPath);
+    if (!await file.exists()) return null;
+
+    final stat = await file.stat();
+
+    // 哈希缓存记录的是最近一次扫描的结果，优先复用
+    final cached = cachedHashes[key];
+    if (cached != null &&
+        cached.matches(size: stat.size, modifiedAt: stat.modified)) {
+      return _ResolvedContent(
+        hash: cached.hash,
+        size: stat.size,
+        modifiedAt: stat.modified,
+      );
+    }
+
+    final baseline = baselines[key];
+    if (baseline != null &&
+        !baseline.deleted &&
+        baseline.localHash != null &&
+        baseline.localSize == stat.size &&
+        baseline.localModifiedMs == stat.modified.millisecondsSinceEpoch) {
+      return _ResolvedContent(
+        hash: baseline.localHash!,
+        size: stat.size,
+        modifiedAt: stat.modified,
+      );
+    }
+
+    // 以流式方式计算哈希，避免大文件一次性读入内存
+    final digest = await sha256.bind(file.openRead()).first;
+    return _ResolvedContent(
+      hash: digest.toString(),
+      size: stat.size,
+      modifiedAt: stat.modified,
+    );
+  }
+
+  // ================= 工具方法 =================
+
+  /// 按书籍 UUID 对记录分组
+  Map<String, List<T>> _groupByBookUuid<T>(
+    List<T> items,
+    String Function(T item) bookUuidOf,
+  ) {
+    final grouped = <String, List<T>>{};
+    for (final item in items) {
+      grouped.putIfAbsent(bookUuidOf(item), () => []).add(item);
+    }
+    return grouped;
+  }
+
+  /// 获取路径中的扩展名（含点号），无扩展名时返回空字符串
+  String _extensionOf(String path) {
+    final dotIndex = path.lastIndexOf('.');
+    final separatorIndex = path.lastIndexOf(Platform.pathSeparator);
+    if (dotIndex <= separatorIndex) return '';
+    return path.substring(dotIndex);
+  }
+}
+
+/// 已解析的文件内容特征
+class _ResolvedContent {
+  /// 内容哈希（sha256 十六进制字符串）
+  final String hash;
+
+  /// 文件大小（字节）
+  final int size;
+
+  /// 文件最后修改时间
+  final DateTime modifiedAt;
+
+  const _ResolvedContent({
+    required this.hash,
+    required this.size,
+    required this.modifiedAt,
+  });
+}

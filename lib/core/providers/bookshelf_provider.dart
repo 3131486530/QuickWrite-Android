@@ -1,0 +1,909 @@
+import 'dart:io';
+import 'package:flutter/material.dart';
+import 'package:flutter_reorderable_grid_view/widgets/widgets.dart';
+import 'package:quick_write/core/models/book.dart';
+import 'package:quick_write/core/models/chapter.dart';
+import 'package:quick_write/core/models/group.dart';
+import 'package:quick_write/core/models/recycle_bin.dart';
+import 'package:quick_write/core/models/volume.dart';
+import 'package:quick_write/core/services/app_paths.dart';
+import 'package:quick_write/core/services/database_service.dart';
+import 'package:quick_write/core/services/book_import_service.dart';
+import 'package:quick_write/core/services/cloud_sync/cloud_sync_service.dart';
+import 'package:quick_write/core/services/data_integrity_service.dart';
+import 'package:quick_write/core/services/workspace/book_folder_service.dart';
+import 'package:isar/isar.dart';
+import 'package:uuid/uuid.dart';
+import 'package:path/path.dart' as p;
+
+/// 数据完整性校验提示的推进状态
+enum _IntegrityPromptState {
+  /// 存在问题时可以弹出提示
+  ready,
+
+  /// 提示已弹出，避免重复弹出
+  showing,
+
+  /// 用户选择稍后处理，重新进入界面时再次提示
+  deferred,
+
+  /// 用户已完成处理，本次启动不再提示
+  resolved,
+}
+
+/// 书架状态管理 Provider
+/// 
+/// 管理书架中的书籍数据，负责以下处理：
+/// - 加载数据库中的书籍和分组
+/// - 提供书籍和分组的读取、修改、删除操作
+/// - 批量操作（恢复、删除）
+/// - 书籍的拖拽排序
+class BookshelfProvider extends ChangeNotifier {
+  late Isar _isar;
+  List<BookModel> _allBooks = []; // 私有数据：书籍列表
+  List<GroupModel> _allGroups = []; // 私有数据：分组列表
+  bool _isInitialized = false;
+  bool get isInitialized => _isInitialized;
+
+  /// 是否正在拖拽排序书籍
+  bool _isReorderingBooks = false;
+  bool get isReorderingBooks => _isReorderingBooks;
+
+  /// 拖拽排序期间是否有被推迟的书架刷新
+  bool _refreshDeferredForReorder = false;
+
+  /// 本次拖拽是否已进入排序回调
+  bool _reorderCallbackHandled = false;
+  
+  /// 暴露 Isar 实例（用于全文索引服务）
+  Isar get isar => _isar;
+  
+  /// 数据完整性校验结果（启动时检测）
+  IntegrityCheckResult? _integrityCheckResult;
+  IntegrityCheckResult? get integrityCheckResult => _integrityCheckResult;
+
+  /// 完整性校验提示的推进状态
+  _IntegrityPromptState _integrityPromptState = _IntegrityPromptState.ready;
+
+  /// 是否仍需向用户提示校验结果
+  ///
+  /// 用户选择稍后处理时会暂停提示，待重新进入界面并重新检测后再提示
+  bool get shouldShowIntegrityDialog =>
+      _integrityPromptState == _IntegrityPromptState.ready &&
+      (_integrityCheckResult?.hasIssues ?? false);
+
+  /// 标记校验提示已弹出
+  void beginIntegrityPrompt() {
+    _integrityPromptState = _IntegrityPromptState.showing;
+  }
+
+  /// 结束本轮校验提示
+  ///
+  /// [resolved] 为 true 表示用户已完成清理或恢复，本次启动不再提示；
+  /// 为 false 表示用户选择稍后处理，重新进入界面时会重新检测并再次提示
+  void completeIntegrityPrompt({required bool resolved}) {
+    _integrityPromptState = resolved
+        ? _IntegrityPromptState.resolved
+        : _IntegrityPromptState.deferred;
+  }
+
+  /// 重新进入界面时刷新校验结果
+  ///
+  /// 仅在上次选择稍后处理时重新检测，使再次提示反映期间同步等操作后的最新状态
+  Future<void> refreshIntegrityPrompt() async {
+    if (_integrityPromptState != _IntegrityPromptState.deferred) return;
+
+    _integrityCheckResult =
+        await DataIntegrityService.instance.checkIntegrity(_isar);
+    _integrityPromptState = _IntegrityPromptState.ready;
+    notifyListeners();
+  }
+
+  /// 安全移动文件夹
+  /// 
+  /// 在 Windows 上，rename 可能因为权限问题失败，所以使用复制+删除的方式
+  Future<void> _moveDirectorySafely(String sourcePath, String targetPath) async {
+    final sourceDir = Directory(sourcePath);
+    final targetDir = Directory(targetPath);
+    
+    if (!sourceDir.existsSync()) return;
+    
+    // 先尝试直接重命名（更快）
+    try {
+      await sourceDir.rename(targetPath);
+      return;
+    } catch (e) {
+      // 如果失败，使用复制+删除的方式
+    }
+    
+    // 创建目标目录
+    await targetDir.create(recursive: true);
+    
+    // 递归复制所有文件和子目录
+    await for (final entity in sourceDir.list(recursive: true)) {
+      final relativePath = p.relative(entity.path, from: sourcePath);
+      final newEntityPath = p.join(targetPath, relativePath);
+      
+      if (entity is File) {
+        await File(entity.path).copy(newEntityPath);
+      } else if (entity is Directory) {
+        await Directory(newEntityPath).create(recursive: true);
+      }
+    }
+    
+    // 删除源目录
+    await sourceDir.delete(recursive: true);
+  }
+
+  /// 供右侧网格使用的 Getter：按用户的拖拽顺序 (orderIndex) 排列
+  List<BookModel> get books {
+    // 每次获取时，确保返回的是按 orderIndex 升序排列的列表
+    // (toList() 是为了防止外部直接修改原数组)
+    return _allBooks.toList()
+      ..sort((a, b) => a.orderIndex.compareTo(b.orderIndex));
+  }
+
+  /// 获取所有分组（按 orderIndex 排序）
+  List<GroupModel> get groups {
+    return _allGroups.toList()
+      ..sort((a, b) => a.orderIndex.compareTo(b.orderIndex));
+  }
+
+  /// 供左侧大封面使用的 Getter：按修改时间 (updatedAt) 找出最新的一本
+  BookModel? get recentBook {
+    if (_allBooks.isEmpty) return null;
+
+    // 使用 reduce 找出 updatedAt 最大的那本书 (距离现在最近的时间)
+    return _allBooks.reduce((currentBook, nextBook) {
+      return currentBook.updatedAt.isAfter(nextBook.updatedAt)
+          ? currentBook
+          : nextBook;
+    });
+  }
+
+  // 构造函数中异步初始化数据库
+  BookshelfProvider() {
+    _initDatabase();
+  }
+
+  /// 初始化 Isar 并加载数据
+  Future<void> _initDatabase() async {
+    // 确保 AppPaths 已初始化
+    if (!AppPaths.instance.isInitialized) {
+      await AppPaths.instance.initialize();
+    }
+
+    // 打开数据库（已打开时复用现有实例）
+    _isar = await DatabaseService.instance.open();
+
+    // 从数据库中拉取所有数据
+    await _loadBooks();
+    await _loadGroups();
+
+    _isInitialized = true;
+    notifyListeners();
+
+    // 启动同步会从云端补齐本地缺失的文件，校验需等其结束再进行，
+    // 否则会读到同步前的过期状态，导致缺失项已被恢复却仍被提示
+    await CloudSyncService.instance.awaitStartupSync();
+
+    _integrityCheckResult = await DataIntegrityService.instance.checkIntegrity(_isar);
+    notifyListeners();
+  }
+
+  /// 从 Isar 查出所有书籍
+  Future<void> _loadBooks() async {
+    // .where().findAll() 瞬间查出所有数据
+    _allBooks = await _isar.bookModels.where().findAll();
+  }
+
+  /// 从 Isar 查出所有分组
+  Future<void> _loadGroups() async {
+    _allGroups = await _isar.groupModels.where().findAll();
+  }
+
+  /// 刷新书架数据
+  /// 
+  /// 重新从数据库加载所有书籍和分组数据
+  Future<void> refresh() async {
+    // 拖拽排序期间不重载书架：拖拽中的列表被替换会让卡片位置错乱，
+    // 本次刷新推迟到排序结果落盘后补做
+    if (_isReorderingBooks) {
+      _refreshDeferredForReorder = true;
+      return;
+    }
+    _refreshDeferredForReorder = false;
+
+    // 记录刷新前的修改时间，用于识别封面可能已变化的书籍
+    final previousUpdatedAt = {
+      for (final book in _allBooks) book.uuid: book.updatedAt,
+    };
+
+    await _loadBooks();
+    await _loadGroups();
+
+    // 拖拽排序在刷新过程中开始：保持界面不变，等排序结束后再补做刷新
+    if (_isReorderingBooks) {
+      _refreshDeferredForReorder = true;
+      return;
+    }
+
+    _evictChangedCoverCaches(previousUpdatedAt);
+    notifyListeners();
+  }
+
+  /// 清除封面已变化的书籍封面缓存
+  ///
+  /// 仅处理修改时间发生变化的书籍，避免每次刷新都重新解码全部封面造成书架闪烁
+  void _evictChangedCoverCaches(Map<String, DateTime> previousUpdatedAt) {
+    for (final book in _allBooks) {
+      final previous = previousUpdatedAt[book.uuid];
+      if (previous != null && previous == book.updatedAt) continue;
+
+      final coverPath = BookFolderService().coverFilePath(book);
+      if (coverPath.isEmpty) continue;
+
+      final coverFile = File(coverPath);
+      if (coverFile.existsSync()) {
+        FileImage(coverFile).evict();
+      }
+    }
+  }
+
+  /// 根据分组 ID 获取书籍列表
+  /// 
+  /// [groupId] 分组 UUID，空字符串表示"全部作品"
+  List<BookModel> getBooksByGroup(String groupId) {
+    if (groupId.isEmpty) {
+      return books;
+    }
+    return _allBooks
+        .where((book) => book.groupId == groupId)
+        .toList()
+      ..sort((a, b) => a.orderIndex.compareTo(b.orderIndex));
+  }
+
+  /// 根据分组 UUID 获取分组
+  GroupModel? getGroupByUuid(String uuid) {
+    try {
+      return _allGroups.firstWhere((group) => group.uuid == uuid);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 标记书籍拖拽排序开始
+  ///
+  /// 拖拽期间暂缓书架重载，避免列表在拖拽过程中被替换
+  void beginBookReorder() {
+    _isReorderingBooks = true;
+    _reorderCallbackHandled = false;
+  }
+
+  /// 标记书籍拖拽排序结束
+  ///
+  /// 排序回调紧随拖拽结束执行，被推迟的刷新由 [reorderBooks] 在排序落盘后补做；
+  /// 拖拽取消或位置未变时不会进入排序回调，这里在下一事件循环补做刷新，
+  /// 避免推迟的刷新一直不执行
+  void endBookReorder() {
+    _isReorderingBooks = false;
+    if (!_refreshDeferredForReorder) return;
+
+    Future.microtask(() {
+      if (_reorderCallbackHandled) return;
+      _refreshDeferredForReorder = false;
+      refresh();
+    });
+  }
+
+  /// 处理 UI 拖拽并持久化到数据库
+  /// 
+  /// [reorderedListFunction] 拖拽排序函数
+  /// [groupId] 当前分组 ID，用于分组内排序。空字符串表示书架（未分组），null 表示全部作品
+  Future<void> reorderBooks(
+    ReorderedListFunction reorderedListFunction, {
+    String? groupId,
+  }) async {
+    // 标记本次拖拽已由排序回调接管刷新
+    _reorderCallbackHandled = true;
+
+    // 根据分组获取当前书籍列表
+    List<BookModel> currentOrderedBooks;
+    if (groupId == null) {
+      // 全部作品
+      currentOrderedBooks = books;
+    } else if (groupId.isEmpty) {
+      // 书架（未分组）
+      currentOrderedBooks = _allBooks
+          .where((book) => book.groupId.isEmpty)
+          .toList()
+        ..sort((a, b) => a.orderIndex.compareTo(b.orderIndex));
+    } else {
+      // 指定分组
+      currentOrderedBooks = _allBooks
+          .where((book) => book.groupId == groupId)
+          .toList()
+        ..sort((a, b) => a.orderIndex.compareTo(b.orderIndex));
+    }
+
+    // 得到用户拖拽改变后的新数组
+    List<BookModel> newOrderedBooks =
+        reorderedListFunction(currentOrderedBooks) as List<BookModel>;
+
+    // 当前分组内书籍占用的全局序号，用于在保持全局位置的前提下调整组内顺序，
+    // 避免分组内排序与「全部作品」共用序号时产生重复
+    final orderSlots = [for (final book in currentOrderedBooks) book.orderIndex]
+      ..sort();
+
+    // 排序变更时间，用于让云同步识别本次顺序调整
+    final now = DateTime.now();
+
+    // Isar 事务 (Transaction)：极速批量更新数据库
+    // writeTxn 保证了这段代码要么全部成功，要么全部回滚，绝对安全
+    await _isar.writeTxn(() async {
+      for (int i = 0; i < newOrderedBooks.length; i++) {
+        final book = newOrderedBooks[i];
+        final targetOrderIndex = orderSlots[i];
+
+        // 只有当新的序号和原来的序号不同时，才去改数据库，节省性能
+        if (book.orderIndex != targetOrderIndex) {
+          book.orderIndex = targetOrderIndex; // 直接修改对象的属性
+          // 更新排序变更时间，使排序结果能被同步识别，避免被远端的旧序号覆盖；
+          // 不修改 updatedAt，避免拖动排序影响「最近编辑」的判定
+          book.orderUpdatedAt = now;
+          await _isar.bookModels.put(book); // put() 会根据 id 自动更新这一行数据
+        }
+      }
+    });
+
+    // 通知 UI 重绘
+    notifyListeners();
+
+    // 排序结果已落盘，交由云同步服务安排一次同步
+    CloudSyncService.instance.notifyLocalChange();
+
+    // 补做拖拽期间被推迟的书架刷新
+    if (_refreshDeferredForReorder) {
+      _refreshDeferredForReorder = false;
+      await refresh();
+    }
+  }
+
+  /// 新建一本书
+  /// 
+  /// 返回值：
+  /// - 0: 创建成功
+  /// - 1: 书名已存在，创建失败
+  Future<int> addBook({
+    required String bookTitle,
+    String coverFileName = '',
+    String synopsis = '',
+  }) async {
+    // 重名检测：书名不能重复
+    final isDuplicate = _allBooks.any((book) => book.title == bookTitle);
+    if (isDuplicate) {
+      return 1;
+    }
+
+    final now = DateTime.now();
+    final newUuid = const Uuid().v4(); // 生成 UUID
+
+    // 先把所有现有书的 orderIndex +1，腾出第一个位置，并记录本次顺序调整
+    for (var book in _allBooks) {
+      book.orderIndex++;
+      book.orderUpdatedAt = now;
+    }
+
+    // 创建 BookModel 实例
+    final newBook = BookModel()
+      ..uuid = newUuid
+      ..title = bookTitle
+      ..coverFileName = coverFileName
+      ..synopsis = synopsis
+      ..wordCount = 0
+      ..latestChapter = '暂无章节'
+      ..createdAt = now
+      ..updatedAt = now
+      ..orderIndex = 0; // 新书放在网格的最前面
+
+    // 存入 Isar 数据库（新书 + 更新后的旧书序号）
+    await _isar.writeTxn(() async {
+      await _isar.bookModels.put(newBook);
+      if (_allBooks.isNotEmpty) {
+        await _isar.bookModels.putAll(_allBooks);
+      }
+    });
+
+    // 更新内存数据并通知 UI 重绘
+    _allBooks.insert(0, newBook);
+    notifyListeners();
+
+    // 新书已落盘，交由云同步服务安排一次同步
+    CloudSyncService.instance.notifyLocalChange();
+
+    return 0;
+  }
+
+  /// 导入书籍
+  /// 
+  /// [importResult] 导入服务返回的结果
+  /// 返回导入成功的书籍模型
+  Future<BookModel?> importBook(ImportResult importResult) async {
+    if (!importResult.success || importResult.chapters.isEmpty) {
+      return null;
+    }
+    
+    debugPrint('开始导入书籍: ${importResult.bookTitle}, 章节数: ${importResult.chapters.length}');
+    
+    final now = DateTime.now();
+    final bookUuid = const Uuid().v4();
+    
+    // 先把所有现有书的 orderIndex +1，腾出第一个位置，并记录本次顺序调整
+    for (var book in _allBooks) {
+      book.orderIndex++;
+      book.orderUpdatedAt = now;
+    }
+    
+    // 创建 BookModel 实例
+    final newBook = BookModel()
+      ..uuid = bookUuid
+      ..title = importResult.bookTitle
+      ..coverFileName = ''
+      ..synopsis = ''
+      ..wordCount = importResult.totalWordCount
+      ..latestChapter = importResult.chapters.last.title
+      ..createdAt = now
+      ..updatedAt = now
+      ..orderIndex = 0;
+    
+    // 为所有章节设置 bookUuid
+    for (final chapter in importResult.chapters) {
+      chapter.bookUuid = bookUuid;
+    }
+    
+    // 为所有分卷设置 bookUuid
+    for (final volume in importResult.volumes) {
+      volume.bookUuid = bookUuid;
+    }
+    
+    debugPrint('开始写入数据库...');
+    final stopwatch = Stopwatch()..start();
+    
+    // 存入数据库（只存元数据，不存内容）
+    await _isar.writeTxn(() async {
+      // 存入书籍
+      await _isar.bookModels.put(newBook);
+      debugPrint('书籍信息已存入，耗时: ${stopwatch.elapsedMilliseconds}ms');
+      
+      // 存入所有分卷
+      if (importResult.volumes.isNotEmpty) {
+        await _isar.volumeModels.putAll(importResult.volumes);
+      }
+      
+      // 存入所有章节元数据
+      await _isar.chapterModels.putAll(importResult.chapters);
+      debugPrint('章节元数据已存入，耗时: ${stopwatch.elapsedMilliseconds}ms');
+      
+      // 更新其他书籍的序号
+      if (_allBooks.isNotEmpty) {
+        await _isar.bookModels.putAll(_allBooks);
+      }
+    });
+    
+    debugPrint('数据库写入完成，总耗时: ${stopwatch.elapsedMilliseconds}ms');
+    
+    // 更新内存数据
+    _allBooks.insert(0, newBook);
+    notifyListeners();
+
+    // 导入的书籍已落盘，交由云同步服务安排一次同步
+    CloudSyncService.instance.notifyLocalChange();
+
+    return newBook;
+  }
+
+  /// 删除一本书（移入回收站）
+  /// 
+  /// 不再直接删除，而是将书籍移动到回收站
+  Future<void> deleteBook(BookModel book) async {
+    // 获取书籍文件夹路径
+    final worksPath = await AppPaths.instance.getBooksPath();
+    final bookFolderPath = '$worksPath${Platform.pathSeparator}${book.title}';
+    
+    // 生成回收站文件夹名称（使用 UUID）
+    final recycleFolderName = const Uuid().v4();
+    
+    // 获取回收站路径
+    final recycleBinPath = await AppPaths.instance.getRecycleBinPath();
+    final recycleFolderPath = '$recycleBinPath${Platform.pathSeparator}$recycleFolderName';
+    
+    // 移动文件夹到回收站（使用安全移动方法）
+    final bookDirectory = Directory(bookFolderPath);
+    if (bookDirectory.existsSync()) {
+      await _moveDirectorySafely(bookFolderPath, recycleFolderPath);
+    }
+    
+    // 创建回收站记录
+    final recycleBinItem = RecycleBinModel.fromBookModel(book, recycleFolderName);
+    
+    // 从 Isar 数据库中删除书籍记录（保留章节，恢复时需要）
+    await _isar.writeTxn(() async {
+      // 删除书籍记录（章节保留，恢复时需要）
+      await _isar.bookModels.delete(book.id);
+      // 存入回收站记录
+      await _isar.recycleBinModels.put(recycleBinItem);
+    });
+
+    // 更新内存数据并通知 UI 重绘
+    _allBooks.removeWhere((b) => b.uuid == book.uuid);
+    
+    // 先按 orderIndex 排序，确保顺序正确后再重新整理序号
+    _allBooks.sort((a, b) => a.orderIndex.compareTo(b.orderIndex));
+    
+    // 因为删了一本书，后面书的 orderIndex 断层了，重新整理一下序号
+    // 序号发生变化的书同步记录排序变更时间，保证新顺序能覆盖云端的旧序号
+    final reorderTime = DateTime.now();
+    for (int i = 0; i < _allBooks.length; i++) {
+      final book = _allBooks[i];
+      if (book.orderIndex == i) continue;
+      book.orderIndex = i;
+      book.orderUpdatedAt = reorderTime;
+    }
+    // 把整理好的新序号存进数据库
+    await _isar.writeTxn(() async {
+      await _isar.bookModels.putAll(_allBooks);
+    });
+
+    notifyListeners();
+
+    // 删除结果已落盘，交由云同步服务安排一次同步
+    CloudSyncService.instance.notifyLocalChange();
+  }
+
+  /// 批量删除书籍（移入回收站）
+  /// 
+  /// [books] 要删除的书籍列表
+  /// 相比循环调用 deleteBook，这个方法只执行一次数据库事务，避免唯一索引冲突
+  Future<void> deleteBooks(List<BookModel> books) async {
+    if (books.isEmpty) return;
+
+    // 收集所有要删除的书籍 ID 和 UUID
+    final idsToDelete = books.map((b) => b.id).toList();
+    final uuidsToDelete = books.map((b) => b.uuid).toSet();
+
+    // 获取路径
+    final worksPath = await AppPaths.instance.getBooksPath();
+    final recycleBinPath = await AppPaths.instance.getRecycleBinPath();
+    
+    // 创建回收站记录列表
+    final recycleBinItems = <RecycleBinModel>[];
+    
+    // 移动所有文件夹到回收站
+    for (final book in books) {
+      final bookFolderPath = '$worksPath${Platform.pathSeparator}${book.title}';
+      final bookDirectory = Directory(bookFolderPath);
+      
+      if (bookDirectory.existsSync()) {
+        // 生成回收站文件夹名称（使用 UUID）
+        final recycleFolderName = const Uuid().v4();
+        final recycleFolderPath = '$recycleBinPath${Platform.pathSeparator}$recycleFolderName';
+        
+        // 移动文件夹（使用安全移动方法）
+        await _moveDirectorySafely(bookFolderPath, recycleFolderPath);
+        
+        // 创建回收站记录
+        final recycleBinItem = RecycleBinModel.fromBookModel(book, recycleFolderName);
+        recycleBinItems.add(recycleBinItem);
+      }
+    }
+
+    // 在一个事务中删除所有书籍记录（保留章节，恢复时需要），并存入回收站
+    await _isar.writeTxn(() async {
+      // 删除书籍记录（章节保留，恢复时需要）
+      await _isar.bookModels.deleteAll(idsToDelete);
+      // 存入回收站记录
+      await _isar.recycleBinModels.putAll(recycleBinItems);
+    });
+
+    // 更新内存数据
+    _allBooks.removeWhere((b) => uuidsToDelete.contains(b.uuid));
+
+    // 先按 orderIndex 排序，确保顺序正确后再重新整理序号
+    _allBooks.sort((a, b) => a.orderIndex.compareTo(b.orderIndex));
+
+    // 重新整理序号，并记录排序变更时间，保证新顺序能覆盖云端的旧序号
+    final reorderTime = DateTime.now();
+    for (int i = 0; i < _allBooks.length; i++) {
+      final book = _allBooks[i];
+      if (book.orderIndex == i) continue;
+      book.orderIndex = i;
+      book.orderUpdatedAt = reorderTime;
+    }
+
+    // 一次性更新所有剩余书籍的序号
+    await _isar.writeTxn(() async {
+      await _isar.bookModels.putAll(_allBooks);
+    });
+
+    notifyListeners();
+
+    // 删除结果已落盘，交由云同步服务安排一次同步
+    CloudSyncService.instance.notifyLocalChange();
+  }
+
+  /// 从回收站恢复书籍
+  /// 
+  /// [recycledBook] 回收站记录
+  /// [newTitle] 新书名（如果有重名冲突）
+  /// 返回恢复是否成功
+  Future<bool> restoreFromRecycleBin(RecycleBinModel recycledBook, {String? newTitle}) async {
+    try {
+      // 获取路径
+      final recycleBinPath = await AppPaths.instance.getRecycleBinPath();
+      final worksPath = await AppPaths.instance.getBooksPath();
+      
+      // 回收站中的文件夹路径
+      final recycleFolderPath = '$recycleBinPath${Platform.pathSeparator}${recycledBook.recycleFolderName}';
+      
+      // 恢复后的文件夹名称（使用新标题或原标题）
+      final restoredFolderName = newTitle ?? recycledBook.title;
+      String finalFolderName = restoredFolderName;
+      String finalFolderPath = '$worksPath${Platform.pathSeparator}$finalFolderName';
+      
+      // 检查目标路径是否已存在，如果存在则添加后缀
+      int suffix = 1;
+      while (Directory(finalFolderPath).existsSync()) {
+        finalFolderName = '$restoredFolderName ($suffix)';
+        finalFolderPath = '$worksPath${Platform.pathSeparator}$finalFolderName';
+        suffix++;
+      }
+      
+      // 移动文件夹（使用安全移动方法）
+      final recycleDir = Directory(recycleFolderPath);
+      if (recycleDir.existsSync()) {
+        await _moveDirectorySafely(recycleFolderPath, finalFolderPath);
+      }
+      
+      // 创建恢复后的 BookModel
+      final restoredBook = recycledBook.toBookModel(
+        newTitle: finalFolderName,
+        newOrderIndex: 0, // 恢复到最前面
+      );
+      
+      // 把现有所有书的 orderIndex +1，腾出第一个位置，并记录本次顺序调整
+      final reorderTime = DateTime.now();
+      for (var book in _allBooks) {
+        book.orderIndex++;
+        book.orderUpdatedAt = reorderTime;
+      }
+      
+      // 在一个事务中：删除回收站记录、存入书籍记录、更新其他书籍序号
+      await _isar.writeTxn(() async {
+        await _isar.recycleBinModels.delete(recycledBook.id);
+        await _isar.bookModels.put(restoredBook);
+        if (_allBooks.isNotEmpty) {
+          await _isar.bookModels.putAll(_allBooks);
+        }
+      });
+      
+      // 更新内存数据
+      _allBooks.insert(0, restoredBook);
+      notifyListeners();
+
+      // 恢复结果已落盘，交由云同步服务安排一次同步
+      CloudSyncService.instance.notifyLocalChange();
+
+      return true;
+    } catch (e) {
+      debugPrint('恢复书籍失败: $e');
+      return false;
+    }
+  }
+
+  // ================= 分组管理方法 =================
+
+  /// 新建分组
+  /// 
+  /// 返回值：
+  /// - 0: 创建成功
+  /// - 1: 分组名已存在
+  Future<int> addGroup({required String name}) async {
+    // 重名检测
+    final isDuplicate = _allGroups.any((group) => group.name == name);
+    if (isDuplicate) {
+      return 1;
+    }
+
+    final newUuid = const Uuid().v4();
+    final now = DateTime.now();
+    final newGroup = GroupModel()
+      ..uuid = newUuid
+      ..name = name
+      ..orderIndex = _allGroups.length
+      ..createdAt = now
+      ..updatedAt = now;
+
+    await _isar.writeTxn(() async {
+      await _isar.groupModels.put(newGroup);
+    });
+
+    _allGroups.add(newGroup);
+    notifyListeners();
+
+    // 分组已落盘，交由云同步服务安排一次同步
+    CloudSyncService.instance.notifyLocalChange();
+    return 0;
+  }
+
+  /// 重命名分组
+  /// 
+  /// 返回值：
+  /// - 0: 成功
+  /// - 1: 分组名已存在
+  /// - 2: 分组不存在
+  Future<int> renameGroup({required String groupUuid, required String newName}) async {
+    // 重名检测（排除自己）
+    final isDuplicate = _allGroups.any(
+      (group) => group.name == newName && group.uuid != groupUuid,
+    );
+    if (isDuplicate) {
+      return 1;
+    }
+
+    final group = getGroupByUuid(groupUuid);
+    if (group == null) {
+      return 2;
+    }
+
+    group.name = newName;
+    group.updatedAt = DateTime.now();
+    await _isar.writeTxn(() async {
+      await _isar.groupModels.put(group);
+    });
+
+    notifyListeners();
+
+    // 分组变更已落盘，交由云同步服务安排一次同步
+    CloudSyncService.instance.notifyLocalChange();
+    return 0;
+  }
+
+  /// 删除分组
+  /// 
+  /// [groupUuid] 要删除的分组 UUID
+  /// [moveBooksToUngrouped] 是否将分组内的书籍移到"未分组"
+  Future<void> deleteGroup(String groupUuid, {bool moveBooksToUngrouped = true}) async {
+    final group = getGroupByUuid(groupUuid);
+    if (group == null) return;
+
+    // 删除分组
+    await _isar.writeTxn(() async {
+      await _isar.groupModels.delete(group.id);
+    });
+
+    _allGroups.removeWhere((g) => g.uuid == groupUuid);
+
+    // 处理分组内的书籍
+    if (moveBooksToUngrouped) {
+      // 将书籍移到"未分组"，并更新修改时间以便同步时识别该变更
+      final now = DateTime.now();
+      for (final book in _allBooks.where((b) => b.groupId == groupUuid)) {
+        book.groupId = '';
+        book.updatedAt = now;
+      }
+      await _isar.writeTxn(() async {
+        for (final book in _allBooks.where((b) => b.groupId == '')) {
+          await _isar.bookModels.put(book);
+        }
+      });
+    }
+
+    // 重新整理分组序号
+    final reorderTime = DateTime.now();
+    for (int i = 0; i < _allGroups.length; i++) {
+      _allGroups[i].orderIndex = i;
+      _allGroups[i].updatedAt = reorderTime;
+    }
+    await _isar.writeTxn(() async {
+      await _isar.groupModels.putAll(_allGroups);
+    });
+
+    notifyListeners();
+
+    // 分组变更已落盘，交由云同步服务安排一次同步
+    CloudSyncService.instance.notifyLocalChange();
+  }
+
+  /// 将书籍移动到指定分组
+  /// 
+  /// [bookUuids] 要移动的书籍 UUID 列表
+  /// [groupUuid] 目标分组 UUID，空字符串表示"未分组"
+  Future<void> moveBooksToGroup(List<String> bookUuids, String groupUuid) async {
+    // 更新修改时间，使分组变更能被同步识别
+    final now = DateTime.now();
+    for (final uuid in bookUuids) {
+      final book = _allBooks.firstWhere((b) => b.uuid == uuid);
+      book.groupId = groupUuid;
+      book.updatedAt = now;
+    }
+
+    await _isar.writeTxn(() async {
+      for (final uuid in bookUuids) {
+        final book = _allBooks.firstWhere((b) => b.uuid == uuid);
+        await _isar.bookModels.put(book);
+      }
+    });
+
+    notifyListeners();
+
+    // 分组变更已落盘，交由云同步服务安排一次同步
+    CloudSyncService.instance.notifyLocalChange();
+  }
+
+  /// 更新书籍信息
+  /// 
+  /// [bookUuid] 书籍 UUID
+  /// [title] 新书名
+  /// [synopsis] 新简介
+  /// [coverFileName] 新封面文件名
+  Future<void> updateBookInfo({
+    required String bookUuid,
+    required String title,
+    required String synopsis,
+    required String coverFileName,
+  }) async {
+    final book = _allBooks.firstWhere((b) => b.uuid == bookUuid);
+    final bookFolderService = BookFolderService();
+
+    // 清除旧封面缓存（书名变化时封面文件随之移动到新的作品目录）
+    final oldCoverPath = bookFolderService.coverFilePath(book);
+    if (oldCoverPath.isNotEmpty) {
+      final oldCoverFile = File(oldCoverPath);
+      if (oldCoverFile.existsSync()) {
+        FileImage(oldCoverFile).evict();
+      }
+    }
+
+    book.title = title;
+    book.synopsis = synopsis;
+    book.coverFileName = coverFileName;
+    book.updatedAt = DateTime.now();
+
+    // 清除新封面缓存（更换了封面文件时）
+    final newCoverPath = bookFolderService.coverFilePath(book);
+    if (newCoverPath.isNotEmpty && newCoverPath != oldCoverPath) {
+      final newCoverFile = File(newCoverPath);
+      if (newCoverFile.existsSync()) {
+        FileImage(newCoverFile).evict();
+      }
+    }
+
+    await _isar.writeTxn(() async {
+      await _isar.bookModels.put(book);
+    });
+
+    notifyListeners();
+
+    // 书籍信息已落盘，交由云同步服务安排一次同步
+    CloudSyncService.instance.notifyLocalChange();
+  }
+
+  /// 重排分组顺序
+  Future<void> reorderGroups(List<GroupModel> newOrderedGroups) async {
+    final now = DateTime.now();
+    for (int i = 0; i < newOrderedGroups.length; i++) {
+      newOrderedGroups[i].orderIndex = i;
+      newOrderedGroups[i].updatedAt = now;
+    }
+
+    await _isar.writeTxn(() async {
+      await _isar.groupModels.putAll(newOrderedGroups);
+    });
+
+    _allGroups = newOrderedGroups;
+    notifyListeners();
+
+    // 排序结果已落盘，交由云同步服务安排一次同步
+    CloudSyncService.instance.notifyLocalChange();
+  }
+}

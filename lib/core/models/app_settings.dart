@@ -1,0 +1,1400 @@
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:quick_write/core/constants/word_count_floating_mode.dart';
+import 'package:quick_write/core/models/quick_phrase.dart';
+import 'package:quick_write/core/models/text_replacement_rule.dart';
+
+/// 应用全局设置模型类
+/// 
+/// 该类定义了应用的所有设置项，使用 JSON 序列化/反序列化来支持配置文件的读写
+class AppSettings {
+  // ================= 主题设置 =================
+  /// 主题模式：light（亮色）、dark（暗色）、system（跟随系统）
+  final String themeMode;
+
+  /// 暗色模式下是否让封面变暗
+  /// true: 暗色模式下封面会添加遮罩变暗
+  /// false: 封面保持原样
+  final bool dimCoverInDarkMode;
+
+  /// 当前激活的自定义主题 ID
+  /// null 表示使用内置主题（跟随系统/亮色/暗色）
+  final String? activeCustomThemeId;
+
+  // ================= 应用界面字体设置 =================
+  /// 应用界面字体名称
+  /// null 表示跟随系统默认字体
+  final String? appFontFamily;
+
+  /// 应用界面字号缩放倍数
+  /// 1.0 为默认大小，小于 1.0 更小、大于 1.0 更大，仅影响应用界面文字
+  final double appFontScale;
+
+  // ================= 多窗口设置 =================
+  /// 是否在新窗口中打开工作台
+  /// true: 工作台在新窗口中打开
+  /// false: 工作台在当前窗口中打开
+  final bool openWorkspaceInNewWindow;
+
+  /// 关闭主窗口时的行为
+  /// 'ask' - 每次关闭时询问
+  /// 'exit' - 直接退出程序
+  /// 'tray' - 最小化至托盘
+  /// 多窗口模式下该行为固定为 'tray'
+  final String closeWindowAction;
+
+  // ================= 启动与恢复设置 =================
+  /// 是否在启动时自动打开上一次编辑的作品
+  final bool autoOpenLastWorkOnStartup;
+
+  /// 是否在打开作品时恢复上一次退出时打开的标签页
+  final bool restoreTabsOnOpenWork;
+
+  // ================= 更新设置 =================
+
+  /// 是否在启动时自动检查更新
+  /// true: 启动后自动向更新源查询新版本，发现新版本时以红点提醒
+  /// false: 不自动检查，也不显示红点，仅在用户在关于页手动点击「检查更新」时查询
+  final bool autoCheckUpdate;
+
+  // ================= 编辑器字体设置 =================
+  
+  /// 字体名称
+  final String fontFamily;
+  
+  /// 字体大小（单位：像素）
+  final double fontSize;
+  
+  /// 是否加粗
+  final bool isBold;
+  
+  /// 是否斜体
+  final bool isItalic;
+  
+  /// 是否下划线
+  final bool isUnderline;
+  
+  /// 正文字体颜色（亮色主题，十六进制字符串）
+  final String? fontColorLight;
+
+  /// 正文字体颜色（暗色主题，十六进制字符串）
+  final String? fontColorDark;
+
+  // ================= 大纲编辑器字体设置 =================
+
+  /// 大纲编辑器字体名称
+  final String outlineFontFamily;
+
+  /// 大纲编辑器字体大小（单位：像素）
+  final double outlineFontSize;
+
+  /// 大纲标题字体名称
+  ///
+  /// null 表示跟随大纲编辑器字体
+  final String? outlineTitleFontFamily;
+
+  /// 大纲标题字体大小（单位：像素）
+  final double outlineTitleFontSize;
+
+  /// 大纲标题对齐方式
+  /// 'center' - 居中 / 'left' - 向左对齐
+  final String outlineTitleAlignment;
+
+  /// 大纲标题颜色（亮色主题，十六进制字符串）
+  final String? outlineTitleColorLight;
+
+  /// 大纲标题颜色（暗色主题，十六进制字符串）
+  final String? outlineTitleColorDark;
+
+  /// 大纲正文字体颜色（亮色主题，十六进制字符串）
+  final String? outlineContentColorLight;
+
+  /// 大纲正文字体颜色（暗色主题，十六进制字符串）
+  final String? outlineContentColorDark;
+
+  // ================= 布局设置（右侧边栏 - 布局设置面板）=================
+  
+  /// 是否显示章节标题
+  final bool showChapterTitle;
+  
+  /// 章节标题顶边距（单位：像素）
+  final double chapterTitleTopMargin;
+  
+  /// 章节标题字体大小（单位：像素）
+  final double chapterTitleFontSize;
+
+  /// 章节标题字体名称
+  ///
+  /// null 表示使用系统默认字体；该字体独立于正文字体与界面字体
+  final String? chapterTitleFontFamily;
+  
+  /// 章节标题对齐方式
+  /// 'center' - 居中 / 'left' - 向左对齐
+  final String chapterTitleAlignment;
+  
+  /// 章节标题颜色（亮色主题，十六进制字符串）
+  final String? chapterTitleColorLight;
+
+  /// 章节标题颜色（暗色主题，十六进制字符串）
+  final String? chapterTitleColorDark;
+  
+  /// 页面顶边距（单位：百分比）
+  final double topMargin;
+  
+  /// 页面左右边距（单位：百分比）
+  final double horizontalMargin;
+  
+  /// 页面底边距（单位：百分比）
+  final double bottomMargin;
+  
+  /// 是否开启纸张模式
+  /// 开启后正文编辑器内容以 A4 纸宽度显示，并具备纸张背景色与投影效果
+  final bool isPageViewEnabled;
+
+  /// 滚动条是否常驻显示
+  /// true: 滚动条始终可见，不会自动隐藏
+  /// false: 滚动条在空闲时自动隐藏
+  final bool scrollbarAlwaysVisible;
+
+  // ================= 编辑器背景设置 =================
+
+  /// 编辑器背景色模式
+  /// 'default' - 跟随主题：背景色取当前主题的编辑器默认底色
+  /// 'custom' - 自定义：背景色取下方配置的自定义颜色
+  final String editorBackgroundMode;
+
+  /// 编辑器背景色（亮色主题，十六进制字符串）
+  final String? editorBackgroundColorLight;
+
+  /// 编辑器背景色（暗色主题，十六进制字符串）
+  final String? editorBackgroundColorDark;
+
+  /// 纸张模式背景淡化开关
+  /// 开启后，纸张模式下纸张外的背景相对纸张颜色做淡化处理，突出显示纸张
+  final bool dimPaperBackground;
+
+  // ================= 大纲编辑器布局设置 =================
+
+  /// 大纲编辑器顶边距（单位：百分比）
+  final double outlineTopMargin;
+
+  /// 大纲编辑器左右边距（单位：百分比）
+  final double outlineHorizontalMargin;
+
+  /// 大纲编辑器底边距（单位：百分比）
+  final double outlineBottomMargin;
+
+  /// 大纲编辑器节点间距（单位：像素）
+  final double outlineNodeSpacing;
+
+  /// 大纲编辑器页面视图模式
+  /// 'adaptive' - 自适应：取消宽度限制，不居中，节点区域自适应容器宽度
+  /// 'default' - 默认：限制 A4 宽度并居中，不显示纸张样式
+  /// 'paper' - 纸张：在默认基础上显示 A4 纸张背景与投影效果
+  final String outlinePageViewMode;
+
+  /// 是否显示大纲编辑器底部的快捷键提示（仅桌面端生效）
+  final bool outlineBottomHintEnabled;
+
+  /// 大纲编辑器是否显示大纲标题
+  final bool outlineShowTitle;
+
+  // ================= 排版设置（右侧边栏 - 排版设置面板）=================
+  
+  /// 字间距（单位：像素，负值表示紧凑）
+  final double letterSpacing;
+  
+  /// 行间距倍数（1.0 = 单倍行距）
+  final double lineHeight;
+  
+  /// 是否开启首行缩进
+  final bool isFirstLineIndentEnabled;
+
+  /// 是否用全角空格实现首行缩进
+  ///
+  /// 关闭时首行缩进由编辑器排版实现，正文不写入缩进字符；
+  /// 开启后按原有方式在行首写入两个全角空格。行首已带全角空格的正文
+  /// 仍按字符缩进显示，不会叠加视觉缩进。
+  final bool isFullWidthSpaceIndentEnabled;
+
+  /// 是否开启自动空行（段间距）
+  final bool autoLineBreak;
+  
+  /// 是否显示行间线条
+  final bool showLineSeparator;
+
+  /// 行间线样式：'solid'（实线）或 'dashed'（虚线）
+  final String lineSeparatorStyle;
+
+  /// 行间线不透明度（0.0 ~ 1.0，1.0 为完全不透明）
+  final double lineSeparatorOpacity;
+
+  /// 是否开启对话高亮
+  final bool dialogueHighlightEnabled;
+
+  /// 对话高亮颜色（亮色主题，十六进制字符串，为 null 时使用默认颜色）
+  final String? dialogueHighlightColorLight;
+
+  /// 对话高亮颜色（暗色主题，十六进制字符串，为 null 时使用默认颜色）
+  final String? dialogueHighlightColorDark;
+
+  // ================= 其他设置（右侧边栏 - 其他设置面板）=================
+  
+  /// 是否开启自动保存
+  final bool autoSaveEnabled;
+  
+  /// 是否开启自动备份
+  final bool autoBackupEnabled;
+  
+  /// 备份间隔（单位：分钟）
+  final int backupInterval;
+
+  /// 历史记录保存天数
+  /// 1~365 表示保留对应天数内的备份，0 表示永久保留
+  final int historyRetentionDays;
+
+  /// 打开文件时光标定位模式
+  /// 'default' - 默认（光标位于文件开头）
+  /// 'end' - 定位至文末（光标位于文件末尾 / 大纲最后一个节点）
+  /// 'lastEdit' - 上一次编辑位置
+  final String openChapterCursorMode;
+
+  /// 是否启用静态光标
+  ///
+  /// 开启后正文编辑器的光标不再闪烁，保持常亮显示
+  final bool staticCursorEnabled;
+
+  /// 是否启用呼吸式顺滑光标
+  ///
+  /// 开启后光标以平滑的透明度渐变做呼吸动画（渐亮渐暗，无硬切换）。
+  /// 与 [staticCursorEnabled] 互斥，同时只会有一种光标动画生效。
+  final bool breathingCursorEnabled;
+
+  /// 光标颜色（亮色主题，十六进制字符串）
+  ///
+  /// null 表示跟随主题主色
+  final String? cursorColorLight;
+
+  /// 光标颜色（暗色主题，十六进制字符串）
+  ///
+  /// null 表示跟随主题主色
+  final String? cursorColorDark;
+
+  /// 是否显示底部信息栏（章节与大纲编辑器底部的状态栏）
+  final bool bottomStatusBarEnabled;
+
+  /// 是否启用预览模式
+  /// 开启后，单击章节/设定/备份预览以预览模式打开，再次单击其他项时替换当前预览标签页
+  /// 关闭后，所有标签页均以固定模式打开
+  final bool previewModeEnabled;
+
+  /// 是否显示移动端键盘上方的快捷输入栏
+  final bool quickInputBarEnabled;
+
+  /// 是否开启标点符号自动补全
+  /// 开启后输入成对符号的起始符号时自动补出结束符号，光标置于两者之间
+  final bool punctuationAutoCompleteEnabled;
+
+  /// 是否开启成对符号回车跳出
+  /// 开启后光标位于成对符号（如双引号、括号）之间时，按下回车跳过结束符号
+  final bool pairedSymbolEnterJumpEnabled;
+
+  /// 快捷输入栏右侧操作区左侧图标的动作标识
+  /// 取值见 QuickInputAction：none、quickPhrase、keywordToggle、settings、findReplace、fullTextSearch、randomName
+  /// none 表示该位置不显示图标
+  final String quickInputBarLeftAction;
+
+  /// 快捷输入栏右侧操作区右侧图标的动作标识，取值同 [quickInputBarLeftAction]
+  final String quickInputBarRightAction;
+
+  /// 快捷输入栏右侧操作区第三个图标的动作标识，取值同 [quickInputBarLeftAction]，
+  /// 'none' 表示不占用位置
+  final String quickInputBarThirdAction;
+
+  /// 大纲编辑器底部快捷输入（自定义符号栏）面板是否默认展开
+  ///
+  /// 关掉后唤起键盘不再自动弹出该面板，需要时点工具栏图标手动展开
+  final bool outlineQuickInputPanelOpen;
+
+  /// 快捷输入栏的自定义符号列表（文本格式，一行一个符号）
+  ///
+  /// 写法与源码一致：符号用单引号包裹，成对符号在逗号后追加
+  /// `closing: '结束符号'`。null 表示使用内置默认符号列表
+  final String? quickInputSymbolsText;
+
+  /// 快捷短语列表（移动端）
+  ///
+  /// 每条短语包含点击后键入正文的内容与列表中的显示文本
+  final List<QuickPhrase> quickPhrases;
+
+  /// 正文自动替换规则
+  ///
+  /// 每条规则包含输入的原文本与替换后的文本，输入原文本结束时自动改写
+  final List<TextReplacementRule> textReplacementRules;
+
+  /// 是否启用正文自动替换
+  ///
+  /// 关闭时规则保持保存但不生效，输入不再被自动改写
+  final bool autoReplaceEnabled;
+
+  // ================= 字数浮窗设置（移动端）=================
+
+  /// 是否启用字数浮窗
+  /// 开启后在编辑器中叠加一层半透明浮窗，实时显示当前标签页字数
+  final bool wordCountFloatingEnabled;
+
+  /// 字数浮窗显示位置
+  /// 'topLeft' - 左上 / 'topRight' - 右上 / 'bottomLeft' - 左下 / 'bottomRight' - 右下
+  final String wordCountFloatingPosition;
+
+  /// 字数浮窗是否额外显示码字速度
+  final bool wordCountFloatingSpeedEnabled;
+
+  /// 字数浮窗是否显示本章字数
+  final bool wordCountFloatingWordCountEnabled;
+
+  /// 字数浮窗是否隐藏字数后面的「字」后缀
+  ///
+  /// 开启后浮窗只显示数字，避免在极简样式下多占一个字的宽度
+  final bool wordCountFloatingHideWordSuffix;
+
+  /// 字数浮窗显示样式（标准、精简、极简）
+  final WordCountFloatingMode wordCountFloatingMode;
+
+  // ================= 码字统计设置 =================
+
+  /// 码字统计是否包含粘贴字数
+  ///
+  /// 关闭时统计与码字速度均排除粘贴产生的字数
+  final bool statsIncludePasteWords;
+
+  /// 码字统计是否包含设定字数
+  ///
+  /// 开启时设定项的编辑字数计入统计，设定编辑也参与码字时长计时；
+  /// 关闭时两者均不计入
+  final bool statsIncludeSettingWords;
+
+  /// 码字统计是否按章节记录今日字数
+  ///
+  /// 开启后只保留当天各章节的字数，跨天自动清空，不累计历史
+  final bool statsChapterWordCountEnabled;
+
+  /// 空闲判定阈值（秒）
+  ///
+  /// 超过该时间无编辑活动即视为空闲，停止累计码字时长
+  final int statsIdleThresholdSeconds;
+
+  // ================= 默认配置常量 =================
+
+  /// 关闭主窗口行为：每次询问
+  static const String closeActionAsk = 'ask';
+
+  /// 关闭主窗口行为：直接退出程序
+  static const String closeActionExit = 'exit';
+
+  /// 关闭主窗口行为：最小化至托盘
+  static const String closeActionTray = 'tray';
+
+  /// 章节标题对齐方式：居中
+  static const String chapterTitleAlignCenter = 'center';
+
+  /// 章节标题对齐方式：向左对齐
+  static const String chapterTitleAlignLeft = 'left';
+
+  /// 大纲标题对齐方式：居中
+  static const String outlineTitleAlignCenter = 'center';
+
+  /// 大纲标题对齐方式：向左对齐
+  static const String outlineTitleAlignLeft = 'left';
+
+  /// 应用默认设置常量
+  static const AppSettings defaults = AppSettings();
+
+  /// 移动端默认设置常量
+  ///
+  /// 与桌面端的差异仅在大纲编辑器左右边距：移动端大纲编辑器自带左侧留白，
+  /// 右侧为贴边显示的行尾竖条，无需额外的左右边距，故默认值为 0
+  static const AppSettings mobileDefaults = AppSettings(outlineHorizontalMargin: 0.0);
+
+
+  // ================= 构造函数 =================
+  const AppSettings({
+    this.themeMode = 'system',
+    // 暗色模式下封面变暗
+    this.dimCoverInDarkMode = false,
+    // 自定义主题
+    this.activeCustomThemeId,
+    // 应用界面字体
+    this.appFontFamily, // 应用界面字体名称（null 表示跟随系统默认字体）
+    this.appFontScale = 1.0, // 应用界面字号缩放倍数（1.0 为默认大小）
+    // 多窗口设置
+    this.openWorkspaceInNewWindow = false,
+    this.closeWindowAction = closeActionAsk, // 关闭主窗口时的行为
+    // 启动与恢复设置
+    this.autoOpenLastWorkOnStartup = false, // 是否在启动时自动打开上一次编辑的作品
+    this.restoreTabsOnOpenWork = true, // 是否在打开作品时恢复上一次退出时的标签页
+    // 更新设置
+    this.autoCheckUpdate = true, // 是否在启动时自动检查更新
+    // 工作台布局设置
+    this.showChapterTitle = true, // 是否显示章节标题
+    this.chapterTitleTopMargin = 16.0, // 章节标题顶边距（单位：像素）
+    this.chapterTitleFontSize = 24.0, // 章节标题字体大小（单位：像素）
+    this.chapterTitleFontFamily, // 章节标题字体名称（null 表示系统默认字体）
+    this.chapterTitleAlignment = chapterTitleAlignCenter, // 章节标题对齐方式
+    this.chapterTitleColorLight, // 章节标题颜色（亮色主题，十六进制字符串）
+    this.chapterTitleColorDark, // 章节标题颜色（暗色主题，十六进制字符串）
+    this.topMargin = 4.0, // 页面顶边距（单位：百分比）
+    this.horizontalMargin = 4.0, // 页面左右边距（单位：百分比）
+    this.bottomMargin = 40.0, // 页面底边距（单位：百分比）
+    this.isPageViewEnabled = false, // 纸张模式
+    this.scrollbarAlwaysVisible = false, // 滚动条是否常驻显示
+    // 编辑器背景设置
+    this.editorBackgroundMode = 'default', // 编辑器背景色模式（default 跟随主题 / custom 自定义）
+    this.editorBackgroundColorLight, // 编辑器背景色（亮色主题，十六进制字符串）
+    this.editorBackgroundColorDark, // 编辑器背景色（暗色主题，十六进制字符串）
+    this.dimPaperBackground = false, // 纸张模式背景淡化开关
+    // 大纲编辑器布局设置
+    this.outlineTopMargin = 4.0, // 大纲编辑器顶边距（单位：百分比）
+    this.outlineHorizontalMargin = 4.0, // 大纲编辑器左右边距（单位：百分比）
+    this.outlineBottomMargin = 20.0, // 大纲编辑器底边距（单位：百分比）
+    this.outlineNodeSpacing = 0.0, // 大纲编辑器节点间距（单位：像素）
+    this.outlinePageViewMode = 'default', // 大纲编辑器页面视图模式
+    this.outlineBottomHintEnabled = true, // 是否显示大纲编辑器底部的快捷键提示
+    this.outlineShowTitle = false, // 是否在大纲编辑器第一个节点上方显示大纲标题
+    // 工作台排版设置
+    this.letterSpacing = 0.7, // 字间距（单位：像素，负值表示紧凑）
+    this.lineHeight = 1.8, // 行间距倍数（1.0 = 单倍行距）
+    this.isFirstLineIndentEnabled = true, // 是否开启首行缩进
+    this.isFullWidthSpaceIndentEnabled = false, // 是否用全角空格实现首行缩进
+    this.autoLineBreak = true, // 是否开启自动空行
+    this.showLineSeparator = false, // 是否显示行间线条
+    this.lineSeparatorStyle = 'dashed', // 行间线样式（dashed/solid）
+    this.lineSeparatorOpacity = 0.3, // 行间线不透明度
+    this.dialogueHighlightEnabled = false, // 是否开启对话高亮
+    this.dialogueHighlightColorLight, // 对话高亮颜色（亮色主题）
+    this.dialogueHighlightColorDark, // 对话高亮颜色（暗色主题）
+    // 字体设置
+    this.fontFamily = 'Microsoft YaHei', // 字体名称
+    this.fontSize = 16.0, // 字体大小（单位：像素）
+    this.isBold = false, // 是否加粗
+    this.isItalic = false, // 是否斜体
+    this.isUnderline = false, // 是否下划线
+    this.fontColorLight, // 正文字体颜色（亮色主题，十六进制字符串）
+    this.fontColorDark, // 正文字体颜色（暗色主题，十六进制字符串）
+    // 大纲编辑器字体设置
+    this.outlineFontFamily = 'Microsoft YaHei', // 大纲编辑器字体名称
+    this.outlineFontSize = 16.0, // 大纲编辑器字体大小（单位：像素）
+    this.outlineTitleFontFamily, // 大纲标题字体名称（null 跟随大纲字体）
+    this.outlineTitleFontSize = 26.0, // 大纲标题字体大小（单位：像素）
+    this.outlineTitleAlignment = outlineTitleAlignLeft, // 大纲标题对齐方式
+    this.outlineTitleColorLight, // 大纲标题颜色（亮色主题，十六进制字符串）
+    this.outlineTitleColorDark, // 大纲标题颜色（暗色主题，十六进制字符串）
+    this.outlineContentColorLight, // 大纲正文字体颜色（亮色主题，十六进制字符串）
+    this.outlineContentColorDark, // 大纲正文字体颜色（暗色主题，十六进制字符串）
+    // 其他设置
+    this.autoSaveEnabled = false, // 是否开启自动保存
+    this.autoBackupEnabled = true, // 是否开启自动备份
+    this.backupInterval = 10, // 备份间隔（单位：分钟）
+    this.historyRetentionDays = 30, // 历史记录保存天数
+    this.openChapterCursorMode = 'default', // 打开文件时光标定位模式
+    this.staticCursorEnabled = false, // 静态光标（光标不闪烁）
+    this.breathingCursorEnabled = false, // 呼吸式顺滑光标（淡入淡出呼吸动画）
+    this.cursorColorLight, // 光标颜色（亮色主题，null 跟随主题主色）
+    this.cursorColorDark, // 光标颜色（暗色主题，null 跟随主题主色）
+    this.bottomStatusBarEnabled = true, // 是否显示底部信息栏
+    this.previewModeEnabled = true, // 是否启用预览模式
+    this.quickInputBarEnabled = true, // 是否显示快捷输入栏（移动端）
+    this.punctuationAutoCompleteEnabled = true, // 是否开启标点符号自动补全（移动端）
+    this.pairedSymbolEnterJumpEnabled = false, // 是否开启成对符号回车跳出
+    this.quickInputBarLeftAction = 'quickPhrase', // 快捷输入栏右侧操作区左侧图标
+    this.quickInputBarRightAction = 'settings',
+    this.quickInputBarThirdAction = 'none',
+    this.outlineQuickInputPanelOpen = false, // 快捷输入栏右侧操作区右侧图标
+    this.quickInputSymbolsText, // 快捷输入栏自定义符号列表（null 表示使用默认列表）
+    this.quickPhrases = const [], // 快捷短语列表（移动端）
+    this.textReplacementRules = const [], // 正文自动替换规则
+    this.autoReplaceEnabled = false, // 是否启用正文自动替换（默认关闭）
+    // 字数浮窗设置（移动端）
+    this.wordCountFloatingEnabled = false, // 是否启用字数浮窗
+    this.wordCountFloatingPosition = 'topRight', // 字数浮窗显示位置（默认右上）
+    this.wordCountFloatingSpeedEnabled = false, // 字数浮窗是否显示码字速度
+    this.wordCountFloatingWordCountEnabled = true, // 字数浮窗是否显示本章字数
+    this.wordCountFloatingHideWordSuffix = false, // 字数浮窗是否隐藏「字」后缀
+    this.wordCountFloatingMode = WordCountFloatingMode.defaultMode, // 字数浮窗显示样式
+    // 码字统计设置
+    this.statsIncludePasteWords = false, // 码字统计是否包含粘贴字数
+    this.statsIncludeSettingWords = false, // 码字统计是否包含设定字数
+    this.statsChapterWordCountEnabled = false, // 码字统计是否按章节记录今日字数
+    this.statsIdleThresholdSeconds = 15, // 空闲判定阈值（单位：秒）
+  });
+
+  // ================= JSON 序列化 =================
+  
+  /// 从 JSON Map 创建 AppSettings 实例
+  /// 所有默认值均从 defaults 常量获取，确保与构造函数一致
+  /// 支持新的嵌套 JSON 结构：global、editor 两大类
+  factory AppSettings.fromJson(Map<String, dynamic> json) {
+    // 全局设置
+    final globalJson = json['global'] as Map<String, dynamic>? ?? {};
+    final themeJson = globalJson['theme'] as Map<String, dynamic>? ?? {};
+
+    // 编辑器设置
+    final editorJson = json['editor'] as Map<String, dynamic>? ?? {};
+    final fontJson = editorJson['font'] as Map<String, dynamic>? ?? {};
+    final fontColorJson = fontJson['color'] as Map<String, dynamic>? ?? {};
+    final layoutJson = editorJson['layout'] as Map<String, dynamic>? ?? {};
+    final chapterTitleJson = layoutJson['chapterTitle'] as Map<String, dynamic>? ?? {};
+    final chapterTitleColorJson = chapterTitleJson['color'] as Map<String, dynamic>? ?? {};
+    final pageJson = layoutJson['page'] as Map<String, dynamic>? ?? {};
+    final backgroundJson = layoutJson['background'] as Map<String, dynamic>? ?? {};
+    final backgroundColorJson = backgroundJson['color'] as Map<String, dynamic>? ?? {};
+    final outlineLayoutJson = layoutJson['outline'] as Map<String, dynamic>? ?? {};
+    final typographyJson = editorJson['typography'] as Map<String, dynamic>? ?? {};
+    final autoSaveJson = editorJson['autoSave'] as Map<String, dynamic>? ?? {};
+    final autoBackupJson = editorJson['autoBackup'] as Map<String, dynamic>? ?? {};
+    final wordCountFloatingJson = editorJson['wordCountFloating'] as Map<String, dynamic>? ?? {};
+    final writingStatsJson = editorJson['writingStats'] as Map<String, dynamic>? ?? {};
+    final textReplacementJson = editorJson['textReplacement'] as Map<String, dynamic>? ?? {};
+
+    return AppSettings(
+      // 主题设置（全局）
+      themeMode: themeJson['mode'] as String? ?? defaults.themeMode,
+      dimCoverInDarkMode: themeJson['dimCoverInDarkMode'] as bool? ?? defaults.dimCoverInDarkMode,
+      activeCustomThemeId: themeJson['activeCustomThemeId'] as String?,
+
+      // 应用界面字体（全局）
+      appFontFamily: globalJson['appFontFamily'] as String? ?? defaults.appFontFamily,
+      appFontScale: (globalJson['appFontScale'] as num?)?.toDouble() ?? defaults.appFontScale,
+      
+      // 多窗口设置（全局）
+      openWorkspaceInNewWindow: globalJson['openWorkspaceInNewWindow'] as bool? ?? defaults.openWorkspaceInNewWindow,
+      closeWindowAction: globalJson['closeWindowAction'] as String? ?? defaults.closeWindowAction,
+
+      // 启动与恢复设置（全局）
+      autoOpenLastWorkOnStartup: globalJson['autoOpenLastWorkOnStartup'] as bool? ?? defaults.autoOpenLastWorkOnStartup,
+      restoreTabsOnOpenWork: globalJson['restoreTabsOnOpenWork'] as bool? ?? defaults.restoreTabsOnOpenWork,
+
+      // 更新设置（全局）
+      autoCheckUpdate: globalJson['autoCheckUpdate'] as bool? ?? defaults.autoCheckUpdate,
+      
+      // 布局设置（编辑器）
+      showChapterTitle: chapterTitleJson['show'] as bool? ?? defaults.showChapterTitle,
+      chapterTitleTopMargin: (chapterTitleJson['topMargin'] as num?)?.toDouble() ?? defaults.chapterTitleTopMargin,
+      chapterTitleFontSize: (chapterTitleJson['fontSize'] as num?)?.toDouble() ?? defaults.chapterTitleFontSize,
+      chapterTitleFontFamily: chapterTitleJson['family'] as String? ?? defaults.chapterTitleFontFamily,
+      chapterTitleAlignment: chapterTitleJson['alignment'] as String? ?? defaults.chapterTitleAlignment,
+      chapterTitleColorLight: chapterTitleColorJson['light'] as String? ?? defaults.chapterTitleColorLight,
+      chapterTitleColorDark: chapterTitleColorJson['dark'] as String? ?? defaults.chapterTitleColorDark,
+      topMargin: (pageJson['topMargin'] as num?)?.toDouble() ?? defaults.topMargin,
+      horizontalMargin: (pageJson['horizontalMargin'] as num?)?.toDouble() ?? defaults.horizontalMargin,
+      bottomMargin: (pageJson['bottomMargin'] as num?)?.toDouble() ?? defaults.bottomMargin,
+      isPageViewEnabled: pageJson['viewEnabled'] as bool? ?? defaults.isPageViewEnabled,
+      scrollbarAlwaysVisible: pageJson['scrollbarAlwaysVisible'] as bool? ?? defaults.scrollbarAlwaysVisible,
+
+      // 编辑器背景设置（编辑器）
+      editorBackgroundMode: backgroundJson['mode'] as String? ?? defaults.editorBackgroundMode,
+      editorBackgroundColorLight: backgroundColorJson['light'] as String? ?? defaults.editorBackgroundColorLight,
+      editorBackgroundColorDark: backgroundColorJson['dark'] as String? ?? defaults.editorBackgroundColorDark,
+      dimPaperBackground: backgroundJson['dimPaper'] as bool? ?? defaults.dimPaperBackground,
+
+      // 大纲编辑器布局设置（编辑器）
+      outlineTopMargin: (outlineLayoutJson['topMargin'] as num?)?.toDouble() ?? defaults.outlineTopMargin,
+      outlineHorizontalMargin: (outlineLayoutJson['horizontalMargin'] as num?)?.toDouble() ?? defaults.outlineHorizontalMargin,
+      outlineBottomMargin: (outlineLayoutJson['bottomMargin'] as num?)?.toDouble() ?? defaults.outlineBottomMargin,
+      outlineNodeSpacing: (outlineLayoutJson['nodeSpacing'] as num?)?.toDouble() ?? defaults.outlineNodeSpacing,
+      outlinePageViewMode: outlineLayoutJson['pageViewMode'] as String? ?? defaults.outlinePageViewMode,
+      outlineBottomHintEnabled: outlineLayoutJson['bottomHintEnabled'] as bool? ?? defaults.outlineBottomHintEnabled,
+      outlineShowTitle: outlineLayoutJson['showTitle'] as bool? ?? defaults.outlineShowTitle,
+
+      // 排版设置（编辑器）
+      letterSpacing: (typographyJson['letterSpacing'] as num?)?.toDouble() ?? defaults.letterSpacing,
+      lineHeight: (typographyJson['lineHeight'] as num?)?.toDouble() ?? defaults.lineHeight,
+      isFirstLineIndentEnabled: typographyJson['firstLineIndent'] as bool? ?? defaults.isFirstLineIndentEnabled,
+      isFullWidthSpaceIndentEnabled: typographyJson['fullWidthSpaceIndent'] as bool? ?? defaults.isFullWidthSpaceIndentEnabled,
+      autoLineBreak: typographyJson['autoLineBreak'] as bool? ?? defaults.autoLineBreak,
+      showLineSeparator: typographyJson['lineSeparator'] as bool? ?? defaults.showLineSeparator,
+      lineSeparatorStyle: typographyJson['lineSeparatorStyle'] as String? ?? defaults.lineSeparatorStyle,
+      lineSeparatorOpacity: (typographyJson['lineSeparatorOpacity'] as num?)?.toDouble() ?? defaults.lineSeparatorOpacity,
+      dialogueHighlightEnabled: typographyJson['dialogueHighlight'] as bool? ?? defaults.dialogueHighlightEnabled,
+      dialogueHighlightColorLight: typographyJson['dialogueHighlightColorLight'] as String? ?? defaults.dialogueHighlightColorLight,
+      dialogueHighlightColorDark: typographyJson['dialogueHighlightColorDark'] as String? ?? defaults.dialogueHighlightColorDark,
+      
+      // 字体设置（编辑器）
+      fontFamily: fontJson['family'] as String? ?? defaults.fontFamily,
+      fontSize: (fontJson['size'] as num?)?.toDouble() ?? defaults.fontSize,
+      isBold: fontJson['bold'] as bool? ?? defaults.isBold,
+      isItalic: fontJson['italic'] as bool? ?? defaults.isItalic,
+      isUnderline: fontJson['underline'] as bool? ?? defaults.isUnderline,
+      fontColorLight: fontColorJson['light'] as String? ?? defaults.fontColorLight,
+      fontColorDark: fontColorJson['dark'] as String? ?? defaults.fontColorDark,
+
+      // 大纲编辑器字体设置（编辑器）
+      outlineFontFamily: fontJson['outlineFamily'] as String? ?? defaults.outlineFontFamily,
+      outlineFontSize: (fontJson['outlineSize'] as num?)?.toDouble() ?? defaults.outlineFontSize,
+      outlineTitleFontFamily:
+          fontJson['outlineTitleFamily'] as String? ?? defaults.outlineTitleFontFamily,
+      outlineTitleFontSize:
+          (fontJson['outlineTitleSize'] as num?)?.toDouble() ?? defaults.outlineTitleFontSize,
+      outlineTitleAlignment:
+          fontJson['outlineTitleAlign'] as String? ?? defaults.outlineTitleAlignment,
+      outlineTitleColorLight:
+          fontJson['outlineTitleColorLight'] as String? ?? defaults.outlineTitleColorLight,
+      outlineTitleColorDark:
+          fontJson['outlineTitleColorDark'] as String? ?? defaults.outlineTitleColorDark,
+      outlineContentColorLight:
+          fontJson['outlineContentColorLight'] as String? ?? defaults.outlineContentColorLight,
+      outlineContentColorDark:
+          fontJson['outlineContentColorDark'] as String? ?? defaults.outlineContentColorDark,
+
+      // 其他设置（编辑器）
+      autoSaveEnabled: autoSaveJson['enabled'] as bool? ?? defaults.autoSaveEnabled,
+      autoBackupEnabled: autoBackupJson['enabled'] as bool? ?? defaults.autoBackupEnabled,
+      backupInterval: autoBackupJson['interval'] as int? ?? defaults.backupInterval,
+      historyRetentionDays: autoBackupJson['historyRetentionDays'] as int? ?? defaults.historyRetentionDays,
+      openChapterCursorMode: autoBackupJson['openCursorMode'] as String? ?? defaults.openChapterCursorMode,
+      staticCursorEnabled: autoBackupJson['staticCursor'] as bool? ?? defaults.staticCursorEnabled,
+      breathingCursorEnabled: autoBackupJson['breathingCursor'] as bool? ?? defaults.breathingCursorEnabled,
+      cursorColorLight: autoBackupJson['cursorColorLight'] as String? ?? defaults.cursorColorLight,
+      cursorColorDark: autoBackupJson['cursorColorDark'] as String? ?? defaults.cursorColorDark,
+      bottomStatusBarEnabled:
+          autoBackupJson['bottomStatusBar'] as bool? ?? defaults.bottomStatusBarEnabled,
+      previewModeEnabled: autoBackupJson['previewModeEnabled'] as bool? ?? defaults.previewModeEnabled,
+      quickInputBarEnabled: autoBackupJson['quickInputBarEnabled'] as bool? ?? defaults.quickInputBarEnabled,
+      punctuationAutoCompleteEnabled: autoBackupJson['punctuationAutoCompleteEnabled'] as bool? ?? defaults.punctuationAutoCompleteEnabled,
+      pairedSymbolEnterJumpEnabled: autoBackupJson['pairedSymbolEnterJumpEnabled'] as bool? ?? defaults.pairedSymbolEnterJumpEnabled,
+      quickInputBarLeftAction: autoBackupJson['quickInputBarLeftAction'] as String? ?? defaults.quickInputBarLeftAction,
+      quickInputBarRightAction: autoBackupJson['quickInputBarRightAction'] as String? ?? defaults.quickInputBarRightAction,
+      quickInputBarThirdAction: autoBackupJson['quickInputBarThirdAction'] as String? ?? defaults.quickInputBarThirdAction,
+      outlineQuickInputPanelOpen: autoBackupJson['outlineQuickInputPanelOpen'] as bool? ?? defaults.outlineQuickInputPanelOpen,
+      quickInputSymbolsText: autoBackupJson['quickInputSymbolsText'] as String?,
+      quickPhrases: _parseQuickPhrases(autoBackupJson['quickPhrases']),
+
+      // 正文自动替换规则（编辑器）
+      textReplacementRules: _parseTextReplacementRules(textReplacementJson['rules']),
+      autoReplaceEnabled: textReplacementJson['enabled'] as bool? ?? defaults.autoReplaceEnabled,
+
+      // 字数浮窗设置（编辑器）
+      wordCountFloatingEnabled: wordCountFloatingJson['enabled'] as bool? ?? defaults.wordCountFloatingEnabled,
+      wordCountFloatingPosition: wordCountFloatingJson['position'] as String? ?? defaults.wordCountFloatingPosition,
+      wordCountFloatingSpeedEnabled: wordCountFloatingJson['speedEnabled'] as bool? ?? defaults.wordCountFloatingSpeedEnabled,
+      wordCountFloatingWordCountEnabled:
+          wordCountFloatingJson['wordCountEnabled'] as bool? ?? defaults.wordCountFloatingWordCountEnabled,
+      wordCountFloatingHideWordSuffix:
+          wordCountFloatingJson['hideWordSuffix'] as bool? ?? defaults.wordCountFloatingHideWordSuffix,
+      wordCountFloatingMode: WordCountFloatingMode.fromId(wordCountFloatingJson['mode'] as String?),
+
+      // 码字统计设置（编辑器）
+      statsIncludePasteWords: writingStatsJson['includePasteWords'] as bool? ?? defaults.statsIncludePasteWords,
+      statsIncludeSettingWords: writingStatsJson['includeSettingWords'] as bool? ?? defaults.statsIncludeSettingWords,
+      statsChapterWordCountEnabled: writingStatsJson['chapterWordCountEnabled'] as bool? ??
+          defaults.statsChapterWordCountEnabled,
+      statsIdleThresholdSeconds: writingStatsJson['idleThresholdSeconds'] as int? ?? defaults.statsIdleThresholdSeconds,
+    );
+  }
+
+  /// 解析快捷短语列表
+  ///
+  /// 配置文件中该字段缺失或格式异常时返回空列表，忽略无法识别及内容为空的条目
+  static List<QuickPhrase> _parseQuickPhrases(Object? raw) {
+    if (raw is! List) return const [];
+    return raw
+        .whereType<Map>()
+        .map((item) => QuickPhrase.fromJson(Map<String, dynamic>.from(item)))
+        .where((phrase) => phrase.content.isNotEmpty)
+        .toList(growable: false);
+  }
+
+  /// 解析正文自动替换规则
+  ///
+  /// 配置文件中该字段缺失或格式异常时返回空列表，
+  /// 仅要求原文本非空；替换文本允许为空，表示命中后删除原文本
+  static List<TextReplacementRule> _parseTextReplacementRules(Object? raw) {
+    if (raw is! List) return const [];
+    return raw
+        .whereType<Map>()
+        .map((item) => TextReplacementRule.fromJson(Map<String, dynamic>.from(item)))
+        .where((rule) => rule.trigger.isNotEmpty)
+        .toList(growable: false);
+  }
+
+  /// 将 AppSettings 实例转换为 JSON Map
+  /// 设置项分为两大类：全局设置、编辑器设置
+  Map<String, dynamic> toJson() {
+    return {
+      // 全局设置
+      'global': {
+        // 主题设置
+        'theme': {
+          'mode': themeMode,
+          'dimCoverInDarkMode': dimCoverInDarkMode,
+          'activeCustomThemeId': activeCustomThemeId,
+        },
+        // 应用界面字体
+        'appFontFamily': appFontFamily,
+        'appFontScale': appFontScale,
+        // 多窗口设置
+        'openWorkspaceInNewWindow': openWorkspaceInNewWindow,
+        'closeWindowAction': closeWindowAction,
+        // 启动与恢复设置
+        'autoOpenLastWorkOnStartup': autoOpenLastWorkOnStartup,
+        'restoreTabsOnOpenWork': restoreTabsOnOpenWork,
+        // 更新设置
+        'autoCheckUpdate': autoCheckUpdate,
+      },
+      // 编辑器设置
+      'editor': {
+        // 字体设置
+        'font': {
+          'family': fontFamily,
+          'size': fontSize,
+          'bold': isBold,
+          'italic': isItalic,
+          'underline': isUnderline,
+          'color': {
+            'light': fontColorLight,
+            'dark': fontColorDark,
+          },
+          'outlineFamily': outlineFontFamily,
+          'outlineSize': outlineFontSize,
+          'outlineTitleFamily': outlineTitleFontFamily,
+          'outlineTitleSize': outlineTitleFontSize,
+          'outlineTitleAlign': outlineTitleAlignment,
+          'outlineTitleColorLight': outlineTitleColorLight,
+          'outlineTitleColorDark': outlineTitleColorDark,
+          'outlineContentColorLight': outlineContentColorLight,
+          'outlineContentColorDark': outlineContentColorDark,
+        },
+        // 布局设置
+        'layout': {
+          'chapterTitle': {
+            'show': showChapterTitle,
+            'topMargin': chapterTitleTopMargin,
+            'fontSize': chapterTitleFontSize,
+            'family': chapterTitleFontFamily,
+            'alignment': chapterTitleAlignment,
+            'color': {
+              'light': chapterTitleColorLight,
+              'dark': chapterTitleColorDark,
+            },
+          },
+          'page': {
+            'topMargin': topMargin,
+            'horizontalMargin': horizontalMargin,
+            'bottomMargin': bottomMargin,
+            'viewEnabled': isPageViewEnabled,
+            'scrollbarAlwaysVisible': scrollbarAlwaysVisible,
+          },
+          'background': {
+            'mode': editorBackgroundMode,
+            'color': {
+              'light': editorBackgroundColorLight,
+              'dark': editorBackgroundColorDark,
+            },
+            'dimPaper': dimPaperBackground,
+          },
+          'outline': {
+            'topMargin': outlineTopMargin,
+            'horizontalMargin': outlineHorizontalMargin,
+            'bottomMargin': outlineBottomMargin,
+            'nodeSpacing': outlineNodeSpacing,
+            'pageViewMode': outlinePageViewMode,
+            'bottomHintEnabled': outlineBottomHintEnabled,
+            'showTitle': outlineShowTitle,
+          },
+        },
+        // 排版设置
+        'typography': {
+          'letterSpacing': letterSpacing,
+          'lineHeight': lineHeight,
+          'firstLineIndent': isFirstLineIndentEnabled,
+          'fullWidthSpaceIndent': isFullWidthSpaceIndentEnabled,
+          'autoLineBreak': autoLineBreak,
+          'lineSeparator': showLineSeparator,
+          'lineSeparatorStyle': lineSeparatorStyle,
+          'lineSeparatorOpacity': lineSeparatorOpacity,
+          'dialogueHighlight': dialogueHighlightEnabled,
+          'dialogueHighlightColorLight': dialogueHighlightColorLight,
+          'dialogueHighlightColorDark': dialogueHighlightColorDark,
+        },
+        // 其他设置
+        'autoSave': {
+          'enabled': autoSaveEnabled,
+        },
+        'autoBackup': {
+          'enabled': autoBackupEnabled,
+          'interval': backupInterval,
+          'historyRetentionDays': historyRetentionDays,
+          'openCursorMode': openChapterCursorMode,
+          'staticCursor': staticCursorEnabled,
+          'breathingCursor': breathingCursorEnabled,
+          'cursorColorLight': cursorColorLight,
+          'cursorColorDark': cursorColorDark,
+          'bottomStatusBar': bottomStatusBarEnabled,
+          'previewModeEnabled': previewModeEnabled,
+          'quickInputBarEnabled': quickInputBarEnabled,
+          'punctuationAutoCompleteEnabled': punctuationAutoCompleteEnabled,
+          'pairedSymbolEnterJumpEnabled': pairedSymbolEnterJumpEnabled,
+          'quickInputBarLeftAction': quickInputBarLeftAction,
+          'quickInputBarRightAction': quickInputBarRightAction,
+          'quickInputBarThirdAction': quickInputBarThirdAction,
+          'outlineQuickInputPanelOpen': outlineQuickInputPanelOpen,
+          'quickInputSymbolsText': quickInputSymbolsText,
+          'quickPhrases': quickPhrases.map((phrase) => phrase.toJson()).toList(growable: false),
+        },
+        // 字数浮窗设置（移动端）
+        'wordCountFloating': {
+          'enabled': wordCountFloatingEnabled,
+          'position': wordCountFloatingPosition,
+          'speedEnabled': wordCountFloatingSpeedEnabled,
+          'wordCountEnabled': wordCountFloatingWordCountEnabled,
+          'hideWordSuffix': wordCountFloatingHideWordSuffix,
+          'mode': wordCountFloatingMode.id,
+        },
+        // 正文自动替换规则
+        'textReplacement': {
+          'enabled': autoReplaceEnabled,
+          'rules': textReplacementRules.map((rule) => rule.toJson()).toList(growable: false),
+        },
+        // 码字统计设置
+        'writingStats': {
+          'includePasteWords': statsIncludePasteWords,
+          'includeSettingWords': statsIncludeSettingWords,
+          'chapterWordCountEnabled': statsChapterWordCountEnabled,
+          'idleThresholdSeconds': statsIdleThresholdSeconds,
+        },
+      },
+    };
+  }
+
+  // ================= 辅助方法 =================
+  
+  /// copyWith 中用于区分"未传入参数"和"传入 null"的哨兵值
+  static const Object _unset = Object();
+
+  /// 创建设置副本，用于更新部分设置项
+  ///
+  /// 对于 nullable 颜色字段（如 chapterTitleColorLight），使用 Object? 类型参数 + 哨兵值，
+  /// 以支持将字段重置为 null（默认值）。传入 null 表示重置，不传入表示保持原值。
+  AppSettings copyWith({
+    String? themeMode,
+    // 暗色模式下封面变暗
+    bool? dimCoverInDarkMode,
+    // 自定义主题
+    Object? activeCustomThemeId = _unset,
+    // 应用界面字体（传入 null 表示重置为跟随系统默认字体）
+    Object? appFontFamily = _unset,
+    double? appFontScale,
+    // 多窗口设置
+    bool? openWorkspaceInNewWindow,
+    String? closeWindowAction,
+    // 启动与恢复设置
+    bool? autoOpenLastWorkOnStartup,
+    bool? restoreTabsOnOpenWork,
+    // 更新设置
+    bool? autoCheckUpdate,
+    // 布局设置（右侧边栏 - 布局设置面板）
+    bool? showChapterTitle,
+    double? chapterTitleTopMargin,
+    double? chapterTitleFontSize,
+    Object? chapterTitleFontFamily = _unset,
+    String? chapterTitleAlignment,
+    Object? chapterTitleColorLight = _unset,
+    Object? chapterTitleColorDark = _unset,
+    double? topMargin,
+    double? horizontalMargin,
+    double? bottomMargin,
+    bool? isPageViewEnabled,
+    bool? scrollbarAlwaysVisible,
+    // 编辑器背景设置
+    String? editorBackgroundMode,
+    Object? editorBackgroundColorLight = _unset,
+    Object? editorBackgroundColorDark = _unset,
+    bool? dimPaperBackground,
+    // 大纲编辑器布局设置
+    double? outlineTopMargin,
+    double? outlineHorizontalMargin,
+    double? outlineBottomMargin,
+    double? outlineNodeSpacing,
+    String? outlinePageViewMode,
+    bool? outlineBottomHintEnabled,
+    bool? outlineShowTitle,
+    // 排版设置（右侧边栏 - 排版设置面板）
+    double? letterSpacing,
+    double? lineHeight,
+    bool? isFirstLineIndentEnabled,
+    bool? isFullWidthSpaceIndentEnabled,
+    bool? autoLineBreak,
+    bool? showLineSeparator,
+    String? lineSeparatorStyle,
+    double? lineSeparatorOpacity,
+    bool? dialogueHighlightEnabled,
+    Object? dialogueHighlightColorLight = _unset,
+    Object? dialogueHighlightColorDark = _unset,
+    // 字体设置
+    String? fontFamily,
+    double? fontSize,
+    bool? isBold,
+    bool? isItalic,
+    bool? isUnderline,
+    Object? fontColorLight = _unset,
+    Object? fontColorDark = _unset,
+    // 大纲编辑器字体设置
+    String? outlineFontFamily,
+    double? outlineFontSize,
+    Object? outlineTitleFontFamily = _unset,
+    double? outlineTitleFontSize,
+    String? outlineTitleAlignment,
+    Object? outlineTitleColorLight = _unset,
+    Object? outlineTitleColorDark = _unset,
+    Object? outlineContentColorLight = _unset,
+    Object? outlineContentColorDark = _unset,
+    // 其他设置（右侧边栏 - 其他设置面板）
+    bool? autoSaveEnabled,
+    bool? autoBackupEnabled,
+    int? backupInterval,
+    int? historyRetentionDays,
+    String? openChapterCursorMode,
+    bool? staticCursorEnabled,
+    bool? breathingCursorEnabled,
+    Object? cursorColorLight = _unset,
+    Object? cursorColorDark = _unset,
+    bool? bottomStatusBarEnabled,
+    bool? previewModeEnabled,
+    bool? quickInputBarEnabled,
+    bool? punctuationAutoCompleteEnabled,
+    bool? pairedSymbolEnterJumpEnabled,
+    // 快捷输入栏右侧操作区图标
+    String? quickInputBarLeftAction,
+    String? quickInputBarRightAction,
+    String? quickInputBarThirdAction,
+    bool? outlineQuickInputPanelOpen,
+    // 快捷输入栏自定义符号列表（传入 null 表示恢复默认列表）
+    Object? quickInputSymbolsText = _unset,
+    // 快捷短语列表（移动端）
+    List<QuickPhrase>? quickPhrases,
+    // 正文自动替换规则
+    List<TextReplacementRule>? textReplacementRules,
+    // 字数浮窗设置（移动端）
+    bool? autoReplaceEnabled,
+    bool? wordCountFloatingEnabled,
+    String? wordCountFloatingPosition,
+    bool? wordCountFloatingSpeedEnabled,
+    bool? wordCountFloatingWordCountEnabled,
+    bool? wordCountFloatingHideWordSuffix,
+    WordCountFloatingMode? wordCountFloatingMode,
+    // 码字统计设置
+    bool? statsIncludePasteWords,
+    bool? statsIncludeSettingWords,
+    bool? statsChapterWordCountEnabled,
+    int? statsIdleThresholdSeconds,
+  }) {
+    return AppSettings(
+      themeMode: themeMode ?? this.themeMode,
+      // 暗色模式下封面变暗
+      dimCoverInDarkMode: dimCoverInDarkMode ?? this.dimCoverInDarkMode,
+      // 自定义主题
+      activeCustomThemeId: activeCustomThemeId == _unset ? this.activeCustomThemeId : activeCustomThemeId as String?,
+      // 应用界面字体
+      appFontFamily: appFontFamily == _unset ? this.appFontFamily : appFontFamily as String?,
+      appFontScale: appFontScale ?? this.appFontScale,
+      // 多窗口设置
+      openWorkspaceInNewWindow: openWorkspaceInNewWindow ?? this.openWorkspaceInNewWindow,
+      closeWindowAction: closeWindowAction ?? this.closeWindowAction,
+      // 启动与恢复设置
+      autoOpenLastWorkOnStartup: autoOpenLastWorkOnStartup ?? this.autoOpenLastWorkOnStartup,
+      restoreTabsOnOpenWork: restoreTabsOnOpenWork ?? this.restoreTabsOnOpenWork,
+      // 更新设置
+      autoCheckUpdate: autoCheckUpdate ?? this.autoCheckUpdate,
+      // 布局设置（右侧边栏 - 布局设置面板）
+      showChapterTitle: showChapterTitle ?? this.showChapterTitle,
+      chapterTitleTopMargin: chapterTitleTopMargin ?? this.chapterTitleTopMargin,
+      chapterTitleFontSize: chapterTitleFontSize ?? this.chapterTitleFontSize,
+      chapterTitleFontFamily: chapterTitleFontFamily == _unset
+          ? this.chapterTitleFontFamily
+          : chapterTitleFontFamily as String?,
+      chapterTitleAlignment: chapterTitleAlignment ?? this.chapterTitleAlignment,
+      chapterTitleColorLight: chapterTitleColorLight == _unset ? this.chapterTitleColorLight : chapterTitleColorLight as String?,
+      chapterTitleColorDark: chapterTitleColorDark == _unset ? this.chapterTitleColorDark : chapterTitleColorDark as String?,
+      topMargin: topMargin ?? this.topMargin,
+      horizontalMargin: horizontalMargin ?? this.horizontalMargin,
+      bottomMargin: bottomMargin ?? this.bottomMargin,
+      isPageViewEnabled: isPageViewEnabled ?? this.isPageViewEnabled,
+      scrollbarAlwaysVisible: scrollbarAlwaysVisible ?? this.scrollbarAlwaysVisible,
+      // 编辑器背景设置
+      editorBackgroundMode: editorBackgroundMode ?? this.editorBackgroundMode,
+      editorBackgroundColorLight: editorBackgroundColorLight == _unset ? this.editorBackgroundColorLight : editorBackgroundColorLight as String?,
+      editorBackgroundColorDark: editorBackgroundColorDark == _unset ? this.editorBackgroundColorDark : editorBackgroundColorDark as String?,
+      dimPaperBackground: dimPaperBackground ?? this.dimPaperBackground,
+      // 大纲编辑器布局设置
+      outlineTopMargin: outlineTopMargin ?? this.outlineTopMargin,
+      outlineHorizontalMargin: outlineHorizontalMargin ?? this.outlineHorizontalMargin,
+      outlineBottomMargin: outlineBottomMargin ?? this.outlineBottomMargin,
+      outlineNodeSpacing: outlineNodeSpacing ?? this.outlineNodeSpacing,
+      outlinePageViewMode: outlinePageViewMode ?? this.outlinePageViewMode,
+      outlineBottomHintEnabled: outlineBottomHintEnabled ?? this.outlineBottomHintEnabled,
+      outlineShowTitle: outlineShowTitle ?? this.outlineShowTitle,
+      // 排版设置（右侧边栏 - 排版设置面板）
+      letterSpacing: letterSpacing ?? this.letterSpacing,
+      lineHeight: lineHeight ?? this.lineHeight,
+      isFirstLineIndentEnabled: isFirstLineIndentEnabled ?? this.isFirstLineIndentEnabled,
+      isFullWidthSpaceIndentEnabled: isFullWidthSpaceIndentEnabled ?? this.isFullWidthSpaceIndentEnabled,
+      autoLineBreak: autoLineBreak ?? this.autoLineBreak,
+      showLineSeparator: showLineSeparator ?? this.showLineSeparator,
+      lineSeparatorStyle: lineSeparatorStyle ?? this.lineSeparatorStyle,
+      lineSeparatorOpacity: lineSeparatorOpacity ?? this.lineSeparatorOpacity,
+      dialogueHighlightEnabled: dialogueHighlightEnabled ?? this.dialogueHighlightEnabled,
+      dialogueHighlightColorLight: dialogueHighlightColorLight == _unset ? this.dialogueHighlightColorLight : dialogueHighlightColorLight as String?,
+      dialogueHighlightColorDark: dialogueHighlightColorDark == _unset ? this.dialogueHighlightColorDark : dialogueHighlightColorDark as String?,
+      // 字体设置
+      fontFamily: fontFamily ?? this.fontFamily,
+      fontSize: fontSize ?? this.fontSize,
+      isBold: isBold ?? this.isBold,
+      isItalic: isItalic ?? this.isItalic,
+      isUnderline: isUnderline ?? this.isUnderline,
+      fontColorLight: fontColorLight == _unset ? this.fontColorLight : fontColorLight as String?,
+      fontColorDark: fontColorDark == _unset ? this.fontColorDark : fontColorDark as String?,
+      // 大纲编辑器字体设置
+      outlineFontFamily: outlineFontFamily ?? this.outlineFontFamily,
+      outlineFontSize: outlineFontSize ?? this.outlineFontSize,
+      outlineTitleFontFamily: outlineTitleFontFamily == _unset
+          ? this.outlineTitleFontFamily
+          : outlineTitleFontFamily as String?,
+      outlineTitleFontSize: outlineTitleFontSize ?? this.outlineTitleFontSize,
+      outlineTitleAlignment: outlineTitleAlignment ?? this.outlineTitleAlignment,
+      outlineTitleColorLight: outlineTitleColorLight == _unset
+          ? this.outlineTitleColorLight
+          : outlineTitleColorLight as String?,
+      outlineTitleColorDark: outlineTitleColorDark == _unset
+          ? this.outlineTitleColorDark
+          : outlineTitleColorDark as String?,
+      outlineContentColorLight: outlineContentColorLight == _unset
+          ? this.outlineContentColorLight
+          : outlineContentColorLight as String?,
+      outlineContentColorDark: outlineContentColorDark == _unset
+          ? this.outlineContentColorDark
+          : outlineContentColorDark as String?,
+      // 其他设置（右侧边栏 - 其他设置面板）
+      autoSaveEnabled: autoSaveEnabled ?? this.autoSaveEnabled,
+      autoBackupEnabled: autoBackupEnabled ?? this.autoBackupEnabled,
+      backupInterval: backupInterval ?? this.backupInterval,
+      historyRetentionDays: historyRetentionDays ?? this.historyRetentionDays,
+      openChapterCursorMode: openChapterCursorMode ?? this.openChapterCursorMode,
+      staticCursorEnabled: staticCursorEnabled ?? this.staticCursorEnabled,
+      breathingCursorEnabled: breathingCursorEnabled ?? this.breathingCursorEnabled,
+      cursorColorLight:
+          cursorColorLight == _unset ? this.cursorColorLight : cursorColorLight as String?,
+      cursorColorDark:
+          cursorColorDark == _unset ? this.cursorColorDark : cursorColorDark as String?,
+      bottomStatusBarEnabled: bottomStatusBarEnabled ?? this.bottomStatusBarEnabled,
+      previewModeEnabled: previewModeEnabled ?? this.previewModeEnabled,
+      quickInputBarEnabled: quickInputBarEnabled ?? this.quickInputBarEnabled,
+      punctuationAutoCompleteEnabled: punctuationAutoCompleteEnabled ?? this.punctuationAutoCompleteEnabled,
+      pairedSymbolEnterJumpEnabled: pairedSymbolEnterJumpEnabled ?? this.pairedSymbolEnterJumpEnabled,
+      // 快捷输入栏右侧操作区图标
+      quickInputBarLeftAction: quickInputBarLeftAction ?? this.quickInputBarLeftAction,
+      quickInputBarRightAction: quickInputBarRightAction ?? this.quickInputBarRightAction,
+      quickInputBarThirdAction: quickInputBarThirdAction ?? this.quickInputBarThirdAction,
+      outlineQuickInputPanelOpen: outlineQuickInputPanelOpen ?? this.outlineQuickInputPanelOpen,
+      // 快捷输入栏自定义符号列表
+      quickInputSymbolsText: quickInputSymbolsText == _unset ? this.quickInputSymbolsText : quickInputSymbolsText as String?,
+      // 快捷短语列表
+      quickPhrases: quickPhrases ?? this.quickPhrases,
+      // 正文自动替换规则
+      textReplacementRules: textReplacementRules ?? this.textReplacementRules,
+      autoReplaceEnabled: autoReplaceEnabled ?? this.autoReplaceEnabled,
+      // 字数浮窗设置（移动端）
+      wordCountFloatingEnabled: wordCountFloatingEnabled ?? this.wordCountFloatingEnabled,
+      wordCountFloatingPosition: wordCountFloatingPosition ?? this.wordCountFloatingPosition,
+      wordCountFloatingSpeedEnabled: wordCountFloatingSpeedEnabled ?? this.wordCountFloatingSpeedEnabled,
+      wordCountFloatingWordCountEnabled:
+          wordCountFloatingWordCountEnabled ?? this.wordCountFloatingWordCountEnabled,
+      wordCountFloatingHideWordSuffix:
+          wordCountFloatingHideWordSuffix ?? this.wordCountFloatingHideWordSuffix,
+      wordCountFloatingMode: wordCountFloatingMode ?? this.wordCountFloatingMode,
+      // 码字统计设置
+      statsIncludePasteWords: statsIncludePasteWords ?? this.statsIncludePasteWords,
+      statsIncludeSettingWords: statsIncludeSettingWords ?? this.statsIncludeSettingWords,
+      statsChapterWordCountEnabled: statsChapterWordCountEnabled ?? this.statsChapterWordCountEnabled,
+      statsIdleThresholdSeconds: statsIdleThresholdSeconds ?? this.statsIdleThresholdSeconds,
+    );
+  }
+
+  /// 将 ThemeMode 转换为字符串
+  static String themeModeToString(ThemeMode mode) {
+    switch (mode) {
+      case ThemeMode.light:
+        return 'light';
+      case ThemeMode.dark:
+        return 'dark';
+      case ThemeMode.system:
+        return 'system';
+    }
+  }
+
+  /// 将字符串转换为 ThemeMode
+  static ThemeMode stringToThemeMode(String mode) {
+    switch (mode) {
+      case 'light':
+        return ThemeMode.light;
+      case 'dark':
+        return ThemeMode.dark;
+      case 'system':
+      default:
+        return ThemeMode.system;
+    }
+  }
+
+  /// 获取当前的 ThemeMode 对象
+  ThemeMode get themeModeValue => stringToThemeMode(themeMode);
+
+  @override
+  String toString() {
+    return 'AppSettings(themeMode: $themeMode, appFontFamily: $appFontFamily, appFontScale: $appFontScale, openWorkspaceInNewWindow: $openWorkspaceInNewWindow, fontFamily: $fontFamily, fontSize: $fontSize, outlineFontFamily: $outlineFontFamily, outlineFontSize: $outlineFontSize)';
+  }
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    return other is AppSettings && 
+           other.themeMode == themeMode &&
+           other.dimCoverInDarkMode == dimCoverInDarkMode &&
+           other.activeCustomThemeId == activeCustomThemeId &&
+           // 应用界面字体
+           other.appFontFamily == appFontFamily &&
+           other.appFontScale == appFontScale &&
+           other.openWorkspaceInNewWindow == openWorkspaceInNewWindow &&
+           other.closeWindowAction == closeWindowAction &&
+           // 启动与恢复设置
+           other.autoOpenLastWorkOnStartup == autoOpenLastWorkOnStartup &&
+           other.restoreTabsOnOpenWork == restoreTabsOnOpenWork &&
+           // 更新设置
+           other.autoCheckUpdate == autoCheckUpdate &&
+           // 布局设置（右侧边栏 - 布局设置面板）
+           other.showChapterTitle == showChapterTitle &&
+           other.chapterTitleTopMargin == chapterTitleTopMargin &&
+           other.chapterTitleFontSize == chapterTitleFontSize &&
+           other.chapterTitleFontFamily == chapterTitleFontFamily &&
+           other.chapterTitleAlignment == chapterTitleAlignment &&
+           other.chapterTitleColorLight == chapterTitleColorLight &&
+           other.chapterTitleColorDark == chapterTitleColorDark &&
+           other.topMargin == topMargin &&
+           other.horizontalMargin == horizontalMargin &&
+           other.bottomMargin == bottomMargin &&
+           other.isPageViewEnabled == isPageViewEnabled &&
+           other.scrollbarAlwaysVisible == scrollbarAlwaysVisible &&
+           // 编辑器背景设置
+           other.editorBackgroundMode == editorBackgroundMode &&
+           other.editorBackgroundColorLight == editorBackgroundColorLight &&
+           other.editorBackgroundColorDark == editorBackgroundColorDark &&
+           other.dimPaperBackground == dimPaperBackground &&
+           // 大纲编辑器布局设置
+           other.outlineTopMargin == outlineTopMargin &&
+           other.outlineHorizontalMargin == outlineHorizontalMargin &&
+           other.outlineBottomMargin == outlineBottomMargin &&
+           other.outlineNodeSpacing == outlineNodeSpacing &&
+           other.outlinePageViewMode == outlinePageViewMode &&
+           other.outlineBottomHintEnabled == outlineBottomHintEnabled &&
+           other.outlineShowTitle == outlineShowTitle &&
+           // 排版设置（右侧边栏 - 排版设置面板）
+           other.letterSpacing == letterSpacing &&
+           other.lineHeight == lineHeight &&
+           other.isFirstLineIndentEnabled == isFirstLineIndentEnabled &&
+           other.isFullWidthSpaceIndentEnabled == isFullWidthSpaceIndentEnabled &&
+           other.autoLineBreak == autoLineBreak &&
+           other.showLineSeparator == showLineSeparator &&
+           other.lineSeparatorStyle == lineSeparatorStyle &&
+           other.lineSeparatorOpacity == lineSeparatorOpacity &&
+           other.dialogueHighlightEnabled == dialogueHighlightEnabled &&
+           other.dialogueHighlightColorLight == dialogueHighlightColorLight &&
+           other.dialogueHighlightColorDark == dialogueHighlightColorDark &&
+           // 字体设置
+           other.fontFamily == fontFamily &&
+           other.fontSize == fontSize &&
+           other.isBold == isBold &&
+           other.isItalic == isItalic &&
+           other.isUnderline == isUnderline &&
+           other.fontColorLight == fontColorLight &&
+           other.fontColorDark == fontColorDark &&
+           // 大纲编辑器字体设置
+           other.outlineFontFamily == outlineFontFamily &&
+           other.outlineFontSize == outlineFontSize &&
+           other.outlineTitleFontFamily == outlineTitleFontFamily &&
+           other.outlineTitleFontSize == outlineTitleFontSize &&
+           other.outlineTitleAlignment == outlineTitleAlignment &&
+           other.outlineTitleColorLight == outlineTitleColorLight &&
+           other.outlineTitleColorDark == outlineTitleColorDark &&
+           other.outlineContentColorLight == outlineContentColorLight &&
+           other.outlineContentColorDark == outlineContentColorDark &&
+           // 其他设置（右侧边栏 - 其他设置面板）
+           other.autoSaveEnabled == autoSaveEnabled &&
+           other.autoBackupEnabled == autoBackupEnabled &&
+           other.backupInterval == backupInterval &&
+           other.historyRetentionDays == historyRetentionDays &&
+           other.openChapterCursorMode == openChapterCursorMode &&
+           other.staticCursorEnabled == staticCursorEnabled &&
+           other.breathingCursorEnabled == breathingCursorEnabled &&
+           other.cursorColorLight == cursorColorLight &&
+           other.cursorColorDark == cursorColorDark &&
+           other.bottomStatusBarEnabled == bottomStatusBarEnabled &&
+           other.previewModeEnabled == previewModeEnabled &&
+           other.quickInputBarEnabled == quickInputBarEnabled &&
+           other.punctuationAutoCompleteEnabled == punctuationAutoCompleteEnabled &&
+           other.pairedSymbolEnterJumpEnabled == pairedSymbolEnterJumpEnabled &&
+           // 快捷输入栏右侧操作区图标
+           other.quickInputBarLeftAction == quickInputBarLeftAction &&
+           other.quickInputBarRightAction == quickInputBarRightAction &&
+           other.quickInputBarThirdAction == quickInputBarThirdAction &&
+           other.outlineQuickInputPanelOpen == outlineQuickInputPanelOpen &&
+           other.quickInputSymbolsText == quickInputSymbolsText &&
+           // 快捷短语列表
+           listEquals(other.quickPhrases, quickPhrases) &&
+           // 正文自动替换规则
+           listEquals(other.textReplacementRules, textReplacementRules) &&
+           other.autoReplaceEnabled == autoReplaceEnabled &&
+           // 字数浮窗设置（移动端）
+           other.wordCountFloatingEnabled == wordCountFloatingEnabled &&
+           other.wordCountFloatingPosition == wordCountFloatingPosition &&
+           other.wordCountFloatingSpeedEnabled == wordCountFloatingSpeedEnabled &&
+           other.wordCountFloatingWordCountEnabled == wordCountFloatingWordCountEnabled &&
+           other.wordCountFloatingHideWordSuffix == wordCountFloatingHideWordSuffix &&
+           other.wordCountFloatingMode == wordCountFloatingMode &&
+           // 码字统计设置
+           other.statsIncludePasteWords == statsIncludePasteWords &&
+           other.statsIncludeSettingWords == statsIncludeSettingWords &&
+           other.statsChapterWordCountEnabled == statsChapterWordCountEnabled &&
+           other.statsIdleThresholdSeconds == statsIdleThresholdSeconds;
+  }
+
+  @override
+  int get hashCode {
+    // Object.hash 最多支持 20 个参数，这里分多次计算后合并
+    return Object.hash(
+      // 基础设置（主题、多窗口）
+      Object.hash(
+        themeMode, 
+        dimCoverInDarkMode,
+        openWorkspaceInNewWindow,
+        closeWindowAction,
+        activeCustomThemeId,
+        // 应用界面字体
+        appFontFamily,
+        appFontScale,
+        // 启动与恢复设置
+        autoOpenLastWorkOnStartup,
+        restoreTabsOnOpenWork,
+        // 更新设置
+        autoCheckUpdate,
+      ),
+      // 布局设置（右侧边栏 - 布局设置面板）
+      Object.hash(
+        showChapterTitle,
+        chapterTitleTopMargin,
+        chapterTitleFontSize,
+        chapterTitleFontFamily,
+        chapterTitleAlignment,
+        chapterTitleColorLight,
+        chapterTitleColorDark,
+        topMargin,
+        horizontalMargin,
+        bottomMargin,
+        isPageViewEnabled,
+        scrollbarAlwaysVisible,
+      ),
+      // 编辑器背景设置
+      Object.hash(
+        editorBackgroundMode,
+        editorBackgroundColorLight,
+        editorBackgroundColorDark,
+        dimPaperBackground,
+      ),
+      // 大纲编辑器布局设置
+      Object.hash(
+        outlineTopMargin,
+        outlineHorizontalMargin,
+        outlineBottomMargin,
+        outlineNodeSpacing,
+        outlinePageViewMode,
+        outlineBottomHintEnabled,
+        outlineShowTitle,
+      ),
+      // 排版设置（右侧边栏 - 排版设置面板）
+      Object.hash(
+        letterSpacing,
+        lineHeight,
+        isFirstLineIndentEnabled,
+        isFullWidthSpaceIndentEnabled,
+        autoLineBreak,
+        showLineSeparator,
+        lineSeparatorStyle,
+        lineSeparatorOpacity,
+      ),
+      // 对话高亮设置
+      Object.hash(
+        dialogueHighlightEnabled,
+        dialogueHighlightColorLight,
+        dialogueHighlightColorDark,
+      ),
+      // 字体设置
+      Object.hash(
+        fontFamily,
+        fontSize,
+        isBold,
+        isItalic,
+        isUnderline,
+        fontColorLight,
+        fontColorDark,
+        // 大纲编辑器字体设置
+        outlineFontFamily,
+        outlineFontSize,
+        outlineTitleFontFamily,
+        outlineTitleFontSize,
+        outlineTitleAlignment,
+        outlineTitleColorLight,
+        outlineTitleColorDark,
+        outlineContentColorLight,
+        outlineContentColorDark,
+      ),
+      // 其他设置（右侧边栏 - 其他设置面板）与字数浮窗设置（移动端）
+      Object.hash(
+        autoSaveEnabled,
+        autoBackupEnabled,
+        backupInterval,
+        historyRetentionDays,
+        openChapterCursorMode,
+        staticCursorEnabled,
+        breathingCursorEnabled,
+        cursorColorLight,
+        cursorColorDark,
+        bottomStatusBarEnabled,
+        previewModeEnabled,
+        quickInputBarEnabled,
+        punctuationAutoCompleteEnabled,
+        pairedSymbolEnterJumpEnabled,
+        quickInputBarLeftAction,
+        quickInputBarRightAction,
+        Object.hash(
+          quickInputBarThirdAction,
+          outlineQuickInputPanelOpen,
+          quickInputSymbolsText,
+        ),
+        Object.hashAll(quickPhrases),
+        Object.hash(Object.hashAll(textReplacementRules), autoReplaceEnabled),
+        Object.hash(
+          wordCountFloatingEnabled,
+          wordCountFloatingPosition,
+          wordCountFloatingSpeedEnabled,
+          wordCountFloatingWordCountEnabled,
+          wordCountFloatingHideWordSuffix,
+          wordCountFloatingMode,
+        ),
+      ),
+      // 码字统计设置
+      Object.hash(
+        statsIncludePasteWords,
+        statsIncludeSettingWords,
+        statsChapterWordCountEnabled,
+        statsIdleThresholdSeconds,
+      ),
+    );
+  }
+}

@@ -1,0 +1,894 @@
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter/rendering.dart';
+import 'package:flutter/scheduler.dart';
+import 'package:quick_write/core/constants/material_icons.dart';
+import 'package:quick_write/core/utils/color_utils.dart';
+import 'package:quick_write/core/services/settings_service.dart';
+import 'package:quick_write/core/utils/ime_cursor_fixer.dart';
+import 'package:quick_write/core/utils/platform_capabilities.dart';
+import 'package:quick_write/core/utils/typography_extension.dart';
+import 'package:quick_write/core/models/outline_models.dart';
+import 'package:quick_write/core/utils/text_style_range.dart';
+import 'package:quick_write/pages/workspace/editor/utils/shortcut_catalog.dart';
+import 'package:quick_write/shared/widgets/toolbar_button.dart';
+import 'package:quick_write/shared/widgets/qw_text_field.dart';
+
+/// 右键菜单中格式按钮行的紧凑内边距。
+const EdgeInsets outlineFormatItemPadding = EdgeInsets.symmetric(horizontal: 14, vertical: 6);
+
+/// 大纲编辑器顶部工具栏
+///
+/// 标题后提供布局设置入口，右侧提供展开全部、折叠全部、添加节点等操作入口
+class OutlineEditorTopBar extends StatelessWidget {
+  /// 工具栏高度（垂直 padding 8*2 + 图标按钮 32）
+  ///
+  /// 供外部组件（如查找替换浮窗）计算避让偏移量使用
+  static const double height = 48.0;
+
+  /// 颜色方案
+  final ColorScheme colorScheme;
+
+  /// 工具栏背景色（与编辑器背景保持一致）
+  final Color backgroundColor;
+
+  /// 是否只读（只读时禁用添加节点按钮）
+  final bool readOnly;
+
+  /// 展开全部节点回调
+  final VoidCallback onExpandAll;
+
+  /// 折叠全部节点回调
+  final VoidCallback onCollapseAll;
+
+  /// 添加根节点回调
+  final VoidCallback onAddRoot;
+
+  /// 快捷键列表面板是否可见
+  final bool isShortcutPanelVisible;
+
+  /// 切换快捷键列表面板显示状态回调
+  final VoidCallback onToggleShortcutPanel;
+
+  /// 是否处于批量选择模式
+  final bool isBatchMode;
+
+  /// 批量选择模式下是否已选中全部节点
+  final bool isAllNodesSelected;
+
+  /// 批量选择模式下是否仅选中了部分节点（有选中项但未全选）
+  final bool isPartialNodesSelected;
+
+  /// 进入批量选择模式回调
+  final VoidCallback onEnterBatchMode;
+
+  /// 退出批量选择模式回调
+  final VoidCallback onExitBatchMode;
+
+  /// 切换全选/取消全选回调
+  final VoidCallback onToggleSelectAll;
+
+  /// 布局设置入口按钮的键
+  ///
+  /// 供外部定位设置卡片的弹出位置使用
+  final Key settingsButtonKey;
+
+  /// 布局设置卡片是否已展开
+  final bool isSettingsCardVisible;
+
+  /// 打开布局设置卡片回调
+  final VoidCallback onOpenSettings;
+
+  /// 当前主题路径名称列表（不含固定在最前面的“全部”）
+  ///
+  /// 为空时标题显示“大纲编辑器”，非空时按“全部 / 层级… / 当前主题”展示面包屑。
+  final List<String> topicPath;
+
+  /// 点击面包屑项回调
+  ///
+  /// 索引 0 表示“全部”，其余索引对应 [topicPath] 中同位置的层级。
+  final ValueChanged<int> onTopicPathTap;
+
+  const OutlineEditorTopBar({
+    super.key,
+    required this.colorScheme,
+    required this.backgroundColor,
+    required this.readOnly,
+    required this.onExpandAll,
+    required this.onCollapseAll,
+    required this.onAddRoot,
+    required this.isShortcutPanelVisible,
+    required this.onToggleShortcutPanel,
+    required this.isBatchMode,
+    required this.isAllNodesSelected,
+    required this.isPartialNodesSelected,
+    required this.onEnterBatchMode,
+    required this.onExitBatchMode,
+    required this.onToggleSelectAll,
+    required this.settingsButtonKey,
+    required this.isSettingsCardVisible,
+    required this.onOpenSettings,
+    required this.topicPath,
+    required this.onTopicPathTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      // 移动端取消右侧留白，让操作图标贴近屏幕右边缘
+      padding: PlatformCapabilities.isMobile
+          ? const EdgeInsets.fromLTRB(12, 8, 2, 8)
+          : const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: backgroundColor,
+        // border: Border(bottom: BorderSide(color: colorScheme.outlineVariant.withValues(alpha: 0.5))),
+      ),
+      child: Row(
+        children: [
+          // 标题图标
+          Icon(Icons.account_tree_outlined, size: 18, color: colorScheme.primary),
+          const SizedBox(width: 8),
+          // 标题区域：未进入主题时显示编辑器名称，进入主题后显示层级面包屑
+          Expanded(
+            child: Row(
+              children: [
+                Flexible(
+                  child: topicPath.isEmpty
+                      ? Text(
+                          '大纲编辑器',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: context.titleSmall?.copyWith(fontWeight: FontWeight.w600),
+                        )
+                      : _buildBreadcrumb(context),
+                ),
+                const SizedBox(width: 2),
+                // 设置入口：在标题后提供齿轮图标，弹出大纲编辑器设置卡片
+                _buildIconButton(
+                  key: settingsButtonKey,
+                  icon: Icons.settings_outlined,
+                  tooltip: '设置',
+                  onTap: onOpenSettings,
+                  isSelected: isSettingsCardVisible,
+                  showSelectedBackground: false,
+                ),
+              ],
+            ),
+          ),
+          if (isBatchMode) ...[
+            // 批量选择模式：全选/取消全选
+            // 图标随选中情况变化：全选为实心勾选框，部分选中为中间态，未选中为空心框
+            _buildIconButton(
+              icon: isAllNodesSelected
+                  ? Icons.check_box_rounded
+                  : isPartialNodesSelected
+                  ? Icons.indeterminate_check_box_rounded
+                  : Icons.check_box_outline_blank_rounded,
+              tooltip: isAllNodesSelected ? '取消全选' : '全选',
+              onTap: onToggleSelectAll,
+              isSelected: isAllNodesSelected || isPartialNodesSelected,
+              showSelectedBackground: false,
+            ),
+            const SizedBox(width: 4),
+            // 批量选择模式：退出
+            _buildIconButton(icon: Icons.close_rounded, tooltip: '退出批量选择', onTap: onExitBatchMode),
+          ] else ...[
+            // 入口开关：与节点操作按钮以分隔线区分开
+            // 桌面端提供快捷键查阅入口，移动端没有物理键盘，改为提供批量选择入口
+            if (!PlatformCapabilities.isMobile)
+              _buildIconButton(
+                icon: Icons.keyboard_outlined,
+                tooltip: '快捷键',
+                onTap: onToggleShortcutPanel,
+                isSelected: isShortcutPanelVisible,
+              )
+            else
+              _buildIconButton(icon: Icons.checklist_rounded, tooltip: '批量选择', onTap: onEnterBatchMode),
+            const SizedBox(width: 6),
+            _buildVerticalDivider(),
+            const SizedBox(width: 6),
+            // 展开全部
+            _buildIconButton(icon: Icons.unfold_more_rounded, tooltip: '展开全部', onTap: onExpandAll),
+            // 折叠全部
+            _buildIconButton(icon: Icons.unfold_less_rounded, tooltip: '折叠全部', onTap: onCollapseAll),
+            const SizedBox(width: 4),
+            // 添加根节点
+            _buildIconButton(icon: Icons.add_rounded, tooltip: '添加节点', onTap: onAddRoot, enabled: !readOnly),
+          ],
+        ],
+      ),
+    );
+  }
+
+  /// 面包屑项的水平内边距总量（左右各 2）
+  static const double _breadcrumbItemPadding = 4.0;
+
+  /// 面包屑分隔符的水平内边距总量（左右各 3）
+  static const double _breadcrumbSeparatorPadding = 6.0;
+
+  /// 构建主题层级面包屑
+  ///
+  /// 始终显示“全部”和当前主题；中间层级依据可用宽度保留离当前主题最近的若干级，
+  /// 省略的层级用“…”表示。名称过长时以省略号截断，窄屏下也能准确显示关键层级。
+  Widget _buildBreadcrumb(BuildContext context) {
+    final List<String> labels = ['全部', ...topicPath];
+    final TextStyle? itemStyle = context.titleSmall?.copyWith(
+      fontWeight: FontWeight.w400,
+      color: colorScheme.onSurfaceVariant,
+    );
+    final TextStyle? currentStyle = context.titleSmall?.copyWith(
+      fontWeight: FontWeight.w600,
+      color: colorScheme.onSurface,
+    );
+    final TextStyle? separatorStyle = context.titleSmall?.copyWith(
+      fontWeight: FontWeight.w400,
+      color: colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
+    );
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // 按可用宽度决定实际展示的层级，必要时插入省略项
+        final List<int> visibleIndexes = _resolveVisibleBreadcrumbIndexes(
+          context,
+          labels,
+          itemStyle,
+          currentStyle,
+          separatorStyle,
+          constraints.maxWidth,
+        );
+
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (int i = 0; i < visibleIndexes.length; i++) ...[
+              if (i > 0) _buildBreadcrumbSeparator(separatorStyle),
+              _buildBreadcrumbEntry(
+                context,
+                index: visibleIndexes[i],
+                labels: labels,
+                itemStyle: itemStyle,
+                currentStyle: currentStyle,
+                allowFlexible: constraints.hasBoundedWidth,
+              ),
+            ],
+          ],
+        );
+      },
+    );
+  }
+
+  /// 计算面包屑实际展示的层级索引
+  ///
+  /// 索引 -1 表示被省略的中间层级；在保证“全部”和当前主题可见的前提下，
+  /// 从离当前主题最近的层级开始尝试加入中间层级，直到可用宽度放不下为止。
+  List<int> _resolveVisibleBreadcrumbIndexes(
+    BuildContext context,
+    List<String> labels,
+    TextStyle? itemStyle,
+    TextStyle? currentStyle,
+    TextStyle? separatorStyle,
+    double maxWidth,
+  ) {
+    final int last = labels.length - 1;
+    // 宽度不受限时直接展示全部层级
+    if (!maxWidth.isFinite || maxWidth <= 0) {
+      return [for (int i = 0; i <= last; i++) i];
+    }
+
+    final TextScaler textScaler = MediaQuery.textScalerOf(context);
+    final TextDirection textDirection = Directionality.of(context);
+
+    // 测量单行文本的显示宽度，用于判断面包屑能否放入可用空间
+    double measure(String text, TextStyle? style) {
+      final TextPainter painter = TextPainter(
+        text: TextSpan(text: text, style: style),
+        textDirection: textDirection,
+        textScaler: textScaler,
+        maxLines: 1,
+      )..layout();
+      final double width = painter.width;
+      painter.dispose();
+      return width;
+    }
+
+    final double ellipsisWidth = measure('…', itemStyle) + _breadcrumbItemPadding;
+    final double separatorWidth = measure('/', separatorStyle) + _breadcrumbSeparatorPadding;
+    // 空文字节点展示为占位名称，测量时需按实际展示文本计算
+    String displayText(int index) => labels[index].trim().isEmpty ? '未命名主题' : labels[index].trim();
+    double itemWidth(int index) =>
+        measure(displayText(index), index == last ? currentStyle : itemStyle) + _breadcrumbItemPadding;
+
+    // 预留少量安全空间，抵消测量与实际布局的差异
+    final double availableWidth = maxWidth - 8;
+
+    bool fits(List<int> indexes) {
+      double width = 0;
+      for (final index in indexes) {
+        width += index < 0 ? ellipsisWidth : itemWidth(index);
+      }
+      width += separatorWidth * (indexes.length - 1);
+      return width <= availableWidth;
+    }
+
+    // 最小集合为“全部”和当前主题；两者都放不下时交由文本截断当前主题
+    final List<int> minimal = last == 0 ? [0] : [0, last];
+    if (!fits(minimal)) return minimal;
+
+    List<int> result = minimal;
+    // 从最近的一级开始向上保留中间层级，放不下时用省略项替代更早的层级
+    for (int keep = 1; keep <= last - 1; keep++) {
+      final int start = last - keep;
+      final List<int> candidate = [
+        0,
+        if (start > 1) -1,
+        for (int index = start; index < last; index++) index,
+        last,
+      ];
+      if (fits(candidate)) result = candidate;
+    }
+    return result;
+  }
+
+  /// 构建面包屑分隔符
+  Widget _buildBreadcrumbSeparator(TextStyle? style) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: _breadcrumbSeparatorPadding / 2),
+      child: Text('/', maxLines: 1, style: style),
+    );
+  }
+
+  /// 构建单个面包屑项
+  ///
+  /// 当前主题以加粗的主色文字展示且不可点击，其余层级可点击切换；
+  /// 节点文字为空时显示为“未命名主题”。
+  Widget _buildBreadcrumbEntry(
+    BuildContext context, {
+    required int index,
+    required List<String> labels,
+    required TextStyle? itemStyle,
+    required TextStyle? currentStyle,
+    required bool allowFlexible,
+  }) {
+    // 省略项用于提示中间还有未展示的层级，不响应点击
+    if (index < 0) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: _breadcrumbItemPadding / 2),
+        child: Text('…', maxLines: 1, style: itemStyle),
+      );
+    }
+
+    final bool isCurrent = index == labels.length - 1;
+    // 空文字节点没有可辨识的名称，用占位名称提示其存在
+    final String text = labels[index].trim().isEmpty ? '未命名主题' : labels[index].trim();
+    final TextStyle? style = isCurrent ? currentStyle : itemStyle;
+
+    final Widget padded = Padding(
+      padding: const EdgeInsets.symmetric(horizontal: _breadcrumbItemPadding / 2, vertical: 2),
+      child: Text(text, maxLines: 1, overflow: TextOverflow.ellipsis, style: style),
+    );
+
+    if (isCurrent) {
+      // 当前主题始终显示且不可点击；空间不足时截断名称，避免挤压其他层级
+      return allowFlexible ? Flexible(fit: FlexFit.loose, child: padded) : padded;
+    }
+
+    final Widget item = MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        // 空白处同样响应点击，扩大面包屑项的可点击范围
+        behavior: HitTestBehavior.opaque,
+        onTap: () => onTopicPathTap(index),
+        child: padded,
+      ),
+    );
+
+    // 中间层级已按测量结果确认可以完整显示，保持固定宽度即可
+    return item;
+  }
+
+  /// 构建工具栏中的垂直分隔线
+  Widget _buildVerticalDivider() {
+    return Container(width: 1, height: 20, color: colorScheme.outlineVariant.withValues(alpha: 0.5));
+  }
+
+  /// 构建工具栏图标按钮
+  ///
+  /// [isSelected] 为 true 时以选中态样式呈现（图标着色为主题色），
+  /// 适用于开关式按钮；
+  /// [showSelectedBackground] 控制选中态是否额外绘制主题色底衬，
+  /// 关闭时仅保留图标着色高亮。
+  Widget _buildIconButton({
+    Key? key,
+    required IconData icon,
+    required String tooltip,
+    required VoidCallback onTap,
+    bool enabled = true,
+    bool isSelected = false,
+    bool showSelectedBackground = true,
+  }) {
+    final Color iconColor = !enabled
+        ? colorScheme.onSurfaceVariant.withValues(alpha: 0.3)
+        : isSelected
+        ? colorScheme.primary
+        : colorScheme.onSurfaceVariant;
+
+    return SizedBox(
+      key: key,
+      width: 32,
+      height: 32,
+      child: Material(
+        color: isSelected && showSelectedBackground ? colorScheme.primary.withValues(alpha: 0.12) : Colors.transparent,
+        borderRadius: BorderRadius.circular(6),
+        child: InkWell(
+          onTap: enabled ? onTap : null,
+          borderRadius: BorderRadius.circular(6),
+          hoverColor: colorScheme.onSurfaceVariant.withValues(alpha: 0.08),
+          child: Tooltip(
+            message: tooltip,
+            child: Icon(icon, size: 18, color: iconColor),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 大纲标题
+///
+/// 显示在第一个节点上方，不属于大纲节点，不参与节点的格式与样式设置；
+/// 仅提供纯文本编辑，字号略大于一级标题并加粗显示。
+class OutlineTitleField extends StatelessWidget {
+  /// 标题文本控制器
+  final TextEditingController controller;
+
+  /// 标题输入框的焦点节点
+  final FocusNode focusNode;
+
+  /// 颜色方案
+  final ColorScheme colorScheme;
+
+  /// 是否只读
+  final bool readOnly;
+
+  /// 标题左侧内缩量，用于与一级节点的圆点左边缘对齐
+  final double leftPadding;
+
+  /// 标题内容变化回调
+  final ValueChanged<String>? onChanged;
+
+  const OutlineTitleField({
+    super.key,
+    required this.controller,
+    required this.focusNode,
+    required this.colorScheme,
+    required this.readOnly,
+    required this.leftPadding,
+    this.onChanged,
+  });
+
+  /// 标题字号相对大纲基础字号的增量
+  ///
+  /// 大纲一级标题为基础字号 +6，标题在此基础上再大 4，形成比一级标题略高的层级
+  static const double _fontSizeOffset = 10.0;
+
+  /// 标题行高倍数
+  static const double _lineHeightFactor = 1.4;
+
+  @override
+  Widget build(BuildContext context) {
+    // 监听设置变化，字体或字号调整时同步更新标题样式
+    return ListenableBuilder(
+      listenable: SettingsService.instance,
+      builder: (context, _) {
+        final settings = SettingsService.instance;
+        // 标题样式：字体 / 字号 / 对齐 / 颜色均可独立自定义，未设置时回退到默认表现
+        final String titleFontFamily = settings.outlineTitleFontFamily ?? settings.outlineFontFamily;
+        final double titleFontSize = settings.outlineTitleFontSize > 0
+            ? settings.outlineTitleFontSize
+            : settings.outlineFontSize + _fontSizeOffset;
+        final bool titleLeftAligned = settings.isOutlineTitleLeftAligned;
+        final TextAlign titleAlign = titleLeftAligned ? TextAlign.left : TextAlign.center;
+        final Color titleColor = ColorUtils.getOutlineTitleColorForTheme(context, colorScheme.onSurface);
+        final double titleBottomInset = PlatformCapabilities.isMobile ? 12 : 20;
+        final EdgeInsets titlePadding = EdgeInsets.only(
+          left: titleLeftAligned ? leftPadding : 12,
+          right: titleLeftAligned ? 8 : 12,
+          bottom: titleBottomInset,
+        );
+        final TextStyle style = TextStyle(
+          fontFamily: titleFontFamily,
+          fontSize: titleFontSize,
+          fontWeight: FontWeight.bold,
+          height: _lineHeightFactor,
+          color: titleColor,
+        );
+
+        return Padding(
+          // 右侧留白与节点内容保持一致，底部留白分隔标题与第一个节点
+          padding: titlePadding,
+          child: readOnly
+              // 只读时以静态文本展示，不提供编辑光标与选区交互
+              ? Text(controller.text, style: style, textAlign: titleAlign, maxLines: null)
+              : ImeCursorFixerWrapper(
+                  controller: controller,
+                  focusNode: focusNode,
+                  child: QwTextField(
+                    controller: controller,
+                    focusNode: focusNode,
+                    // 标题不限单行：超出宽度自动折行，不再截断
+                    maxLines: null,
+                    minLines: 1,
+                    // 允许自动折行但不接受手动换行
+                    inputFormatters: [FilteringTextInputFormatter.deny(RegExp(r'[\n\r]'))],
+                    style: style,
+                    textAlign: titleAlign,
+                    decoration: const InputDecoration(
+                      border: InputBorder.none,
+                      focusedBorder: InputBorder.none,
+                      enabledBorder: InputBorder.none,
+                      filled: false,
+                      isCollapsed: true,
+                      isDense: true,
+                      // 清除主题输入框默认的水平内边距，使标题文字左边缘与一级节点圆点对齐
+                      contentPadding: EdgeInsets.zero,
+                    ),
+                    onChanged: onChanged,
+                  ),
+                ),
+        );
+      },
+    );
+  }
+}
+
+/// 主题标题
+///
+/// 进入主题后以纯文本标签展示当前主题节点的文本，不可编辑、不可选中；
+/// 需要修改主题内容时先返回上一级，在对应节点中输入。
+class OutlineTopicTitleLabel extends StatelessWidget {
+  /// 当前主题节点
+  final OutlineNode node;
+
+  /// 颜色方案
+  final ColorScheme colorScheme;
+
+  /// 标题左侧内缩量，用于与一级节点的圆点左边缘对齐
+  final double leftPadding;
+
+  const OutlineTopicTitleLabel({super.key, required this.node, required this.colorScheme, required this.leftPadding});
+
+  /// 标题字号相对大纲基础字号的增量
+  ///
+  /// 与文件标题保持相同量级，使主题标题在视觉上明显高于节点内容
+  static const double _fontSizeOffset = 10.0;
+
+  /// 标题行高倍数
+  static const double _lineHeightFactor = 1.4;
+
+  @override
+  Widget build(BuildContext context) {
+    // 监听设置变化，字体或字号调整时同步更新标题样式
+    return ListenableBuilder(
+      listenable: SettingsService.instance,
+      builder: (context, _) {
+        final settings = SettingsService.instance;
+        final TextStyle style = TextStyle(
+          fontFamily: settings.outlineFontFamily,
+          fontSize: settings.outlineFontSize + _fontSizeOffset,
+          fontWeight: FontWeight.bold,
+          height: _lineHeightFactor,
+          color: colorScheme.onSurface,
+        );
+
+        return Padding(
+          // 右侧留白与节点内容保持一致，底部留白分隔标题与第一个节点
+          padding: EdgeInsets.only(left: leftPadding, right: 8, bottom: PlatformCapabilities.isMobile ? 12 : 20),
+          // 纯标签不可编辑、不可选中，长文本按单行省略
+          child: Text(node.text, style: style, maxLines: 1, overflow: TextOverflow.ellipsis),
+        );
+      },
+    );
+  }
+}
+
+/// 大纲编辑器底部快捷键提示
+///
+/// 展示常用快捷键及其功能说明；鼠标悬停在提示面板上时，面板右上角显示关闭按钮
+class OutlineEditorBottomHint extends StatefulWidget {
+  /// 颜色方案
+  final ColorScheme colorScheme;
+
+  /// 关闭提示回调
+  final VoidCallback onClose;
+
+  const OutlineEditorBottomHint({super.key, required this.colorScheme, required this.onClose});
+
+  @override
+  State<OutlineEditorBottomHint> createState() => _OutlineEditorBottomHintState();
+}
+
+class _OutlineEditorBottomHintState extends State<OutlineEditorBottomHint> {
+  /// 鼠标是否位于提示面板内
+  bool _isHovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = widget.colorScheme;
+
+    return MouseRegion(
+      // 面板拦截鼠标事件，避免点击提示面板时误触下方的编辑器
+      onEnter: (_) => setState(() => _isHovered = true),
+      onExit: (_) => setState(() => _isHovered = false),
+      // 关闭按钮叠放在提示面板之上，使其贴合面板右上角
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: colorScheme.surfaceContainerLow,
+              border: Border(top: BorderSide(color: colorScheme.outlineVariant.withValues(alpha: 0.3))),
+            ),
+            child: Wrap(
+              spacing: 16,
+              runSpacing: 4,
+              children: [
+                _buildShortcutHint('Enter', '新建同级', colorScheme),
+                _buildShortcutHint('Tab', '缩进', colorScheme),
+                _buildShortcutHint(formatShortcutKeys('Shift+Tab'), '反缩进', colorScheme),
+                _buildShortcutHint(formatShortcutKeys('Ctrl+Enter'), '完成', colorScheme),
+                _buildShortcutHint('↑↓', '切换节点', colorScheme),
+                _buildShortcutHint(formatShortcutKeys('Ctrl+A'), '全选', colorScheme),
+              ],
+            ),
+          ),
+          // 关闭按钮：仅悬停时显示并响应点击，叠放在面板右上角
+          Positioned(
+            top: 3,
+            right: 4,
+            child: IgnorePointer(
+              ignoring: !_isHovered,
+              child: AnimatedOpacity(
+                opacity: _isHovered ? 0.8 : 0.0,
+                duration: const Duration(milliseconds: 120),
+                child: _buildCloseButton(),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 构建面板右上角的关闭按钮：半透明圆形底衬 + 关闭图标
+  Widget _buildCloseButton() {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: widget.onClose,
+      child: Container(
+        width: 20,
+        height: 20,
+        decoration: BoxDecoration(
+          color: widget.colorScheme.onSurfaceVariant.withValues(alpha: 0.12),
+          shape: BoxShape.circle,
+        ),
+        child: Icon(Icons.close_rounded, size: 14, color: widget.colorScheme.onSurfaceVariant),
+      ),
+    );
+  }
+
+  /// 构建单个快捷键提示
+  Widget _buildShortcutHint(String key, String desc, ColorScheme colorScheme) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+          decoration: BoxDecoration(
+            color: colorScheme.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(3),
+            border: Border.all(color: colorScheme.outlineVariant.withValues(alpha: 0.5)),
+          ),
+          child: Text(
+            key,
+            style: TextStyle(fontSize: 11, color: colorScheme.onSurfaceVariant, fontFamily: 'monospace'),
+          ),
+        ),
+        const SizedBox(width: 4),
+        Text(desc, style: TextStyle(fontSize: 11, color: colorScheme.onSurfaceVariant.withValues(alpha: 0.7))),
+      ],
+    );
+  }
+}
+
+/// 测量子节点尺寸并通过回调上报的组件
+///
+/// 在子节点完成布局后，将其实际尺寸通过 [onSizeChanged] 回调上报，
+/// 适用于需要根据子节点动态尺寸调整其他布局（如内边距）的场景。
+class MeasureSize extends SingleChildRenderObjectWidget {
+  /// 尺寸变化回调
+  final void Function(Size size) onSizeChanged;
+
+  const MeasureSize({super.key, super.child, required this.onSizeChanged});
+
+  @override
+  RenderObject createRenderObject(BuildContext context) {
+    return _RenderMeasureSize(onSizeChanged: onSizeChanged);
+  }
+
+  @override
+  void updateRenderObject(BuildContext context, covariant RenderObject renderObject) {
+    (renderObject as _RenderMeasureSize).onSizeChanged = onSizeChanged;
+  }
+}
+
+class _RenderMeasureSize extends RenderProxyBox {
+  _RenderMeasureSize({required this.onSizeChanged});
+
+  /// 当前绑定的尺寸变化回调
+  void Function(Size size) onSizeChanged;
+
+  /// 上一次记录的尺寸，用于判断是否发生变化
+  Size _lastSize = Size.zero;
+
+  @override
+  void performLayout() {
+    super.performLayout();
+    if (size != _lastSize) {
+      _lastSize = size;
+      // 延迟到下一帧回调，避免在布局阶段触发重建
+      SchedulerBinding.instance.addPostFrameCallback((_) {
+        onSizeChanged(size);
+      });
+    }
+  }
+}
+
+/// 标题级别单选组件
+///
+/// 在右键菜单中以单选方式切换标题级别（H1/H2/H3/正文），
+/// 选中后立即通过回调写入目标内容并触发重建。
+class HeadingLevelSelector extends StatefulWidget {
+  /// 初始选中的标题级别（0=正文, 1=H1, 2=H2, 3=H3）
+  ///
+  /// 为 -1 表示多个目标的级别不一致，此时不点亮任何按钮。
+  final int initialLevel;
+
+  /// 级别变化回调
+  final ValueChanged<int> onLevelChanged;
+
+  const HeadingLevelSelector({
+    super.key,
+    required this.initialLevel,
+    required this.onLevelChanged,
+  });
+
+  @override
+  State<HeadingLevelSelector> createState() => _HeadingLevelSelectorState();
+}
+
+class _HeadingLevelSelectorState extends State<HeadingLevelSelector> {
+  /// 当前选中的标题级别
+  late int _selectedLevel;
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedLevel = widget.initialLevel;
+  }
+
+  @override
+  void didUpdateWidget(covariant HeadingLevelSelector oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 外部目标变化时同步选中级别
+    if (oldWidget.initialLevel != widget.initialLevel) {
+      _selectedLevel = widget.initialLevel;
+    }
+  }
+
+  /// 选择指定级别
+  void _select(int level) {
+    if (level == _selectedLevel) return;
+    setState(() {
+      _selectedLevel = level;
+    });
+    widget.onLevelChanged(level);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+      children: [
+        ToggleToolButton(
+          icon: MaterialIcons.format_h1,
+          tooltip: '一级标题',
+          iconSize: 22,
+          isSelected: _selectedLevel == 1,
+          onChanged: (selected) {
+            if (selected) _select(1);
+          },
+        ),
+        ToggleToolButton(
+          icon: MaterialIcons.format_h2,
+          tooltip: '二级标题',
+          iconSize: 22,
+          isSelected: _selectedLevel == 2,
+          onChanged: (selected) {
+            if (selected) _select(2);
+          },
+        ),
+        ToggleToolButton(
+          icon: MaterialIcons.format_h3,
+          tooltip: '三级标题',
+          iconSize: 22,
+          isSelected: _selectedLevel == 3,
+          onChanged: (selected) {
+            if (selected) _select(3);
+          },
+        ),
+        ToggleToolButton(
+          icon: MaterialIcons.format_title,
+          tooltip: '正文',
+          isSelected: _selectedLevel == 0,
+          onChanged: (selected) {
+            if (selected) _select(0);
+          },
+        ),
+      ],
+    );
+  }
+}
+
+/// 文字样式开关行
+///
+/// 以开关按钮切换加粗、斜体、下划线与删除线，供节点右键菜单与表格单元格
+/// 右键菜单共同使用。[initialFlags] 决定按钮初始点亮状态；
+/// [onToggle] 接收一个针对当前样式状态的切换函数，由调用方在点击时
+/// 基于最新样式执行，避免连续点击多个按钮时互相覆盖。
+class TextStyleToggleRow extends StatelessWidget {
+  /// 初始文字样式
+  final TextStyleFlags initialFlags;
+
+  /// 样式切换回调
+  final ValueChanged<TextStyleFlags Function(TextStyleFlags)> onToggle;
+
+  const TextStyleToggleRow({
+    super.key,
+    required this.initialFlags,
+    required this.onToggle,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+      children: [
+        ToggleToolButton(
+          icon: MaterialIcons.format_bold,
+          tooltip: '加粗',
+          initialValue: initialFlags.bold,
+          onChanged: (_) => onToggle(TextStyleFlags.toggleBold),
+        ),
+        ToggleToolButton(
+          icon: MaterialIcons.format_italic,
+          tooltip: '斜体',
+          initialValue: initialFlags.italic,
+          onChanged: (_) => onToggle(TextStyleFlags.toggleItalic),
+        ),
+        ToggleToolButton(
+          icon: MaterialIcons.format_underlined,
+          tooltip: '下划线',
+          initialValue: initialFlags.underline,
+          onChanged: (_) => onToggle(TextStyleFlags.toggleUnderline),
+        ),
+        ToggleToolButton(
+          icon: MaterialIcons.strikethrough_s,
+          tooltip: '删除线',
+          initialValue: initialFlags.strikethrough,
+          onChanged: (_) => onToggle(TextStyleFlags.toggleStrikethrough),
+        ),
+      ],
+    );
+  }
+}

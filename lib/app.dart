@@ -1,0 +1,325 @@
+import 'package:desktop_multi_window/desktop_multi_window.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:provider/provider.dart';
+import 'package:quick_write/core/constants/constants.dart';
+import 'package:quick_write/core/providers/bookshelf_provider.dart';
+import 'package:quick_write/core/providers/theme_provider.dart';
+import 'package:quick_write/core/providers/update_provider.dart';
+import 'package:quick_write/core/providers/window_provider.dart';
+import 'package:quick_write/core/providers/writing_stats_provider.dart';
+import 'package:quick_write/core/router/router.dart';
+import 'package:quick_write/core/services/cloud_sync/cloud_sync_service.dart';
+import 'package:quick_write/core/services/multi_window_service.dart';
+import 'package:quick_write/core/services/settings_service.dart';
+import 'package:quick_write/core/utils/color_utils.dart';
+import 'package:quick_write/core/services/tray_service.dart';
+import 'package:quick_write/core/utils/platform_capabilities.dart';
+import 'package:quick_write/pages/workspace/workspace_page.dart';
+import 'package:window_manager/window_manager.dart';
+
+/// 主窗口关闭后的收尾：先把窗口藏起来，在后台完成退出同步
+///
+/// 隐藏窗口后同步在后台静默进行，界面不再占用桌面；同步结束后
+/// 窗口流程才真正关闭应用，因此用户感受不到等待过程
+Future<void> _handleMainWindowExit() async {
+  if (!CloudSyncService.instance.willSyncOnExit) return;
+
+  await windowManager.hide();
+  await CloudSyncService.instance.handleAppExit();
+}
+
+/// 将应用内容包裹在按界面字号缩放的 MediaQuery 中
+///
+/// [scale] 界面字号缩放倍数，1.0 表示默认大小；
+/// 编辑器内容会在其所在位置排除该缩放，从而保持独立的字体大小设置
+Widget _wrapWithAppFontScale(BuildContext context, Widget? child, double scale) {
+  return MediaQuery(
+    data: MediaQuery.of(context).copyWith(textScaler: TextScaler.linear(scale)),
+    child: child ?? const SizedBox.shrink(),
+  );
+}
+
+/// 让文本选择手柄（光标下方的水滴）跟随自定义光标颜色
+///
+/// 光标颜色由用户单独配置，系统默认的水滴取主题主色，两者不同色会显得割裂；
+/// 这里在应用根部覆盖 textSelectionTheme 的 selectionHandleColor，
+/// 并监听设置变化即时生效；未自定义光标颜色时仍回落到主题主色。
+Widget _wrapWithCursorHandleColor(BuildContext context, Widget? child) {
+  return ListenableBuilder(
+    listenable: SettingsService.instance,
+    builder: (context, _) {
+      final ThemeData theme = Theme.of(context);
+      final Color handleColor = ColorUtils.getCursorColorForTheme(
+        context,
+        theme.colorScheme.primary,
+      );
+      return Theme(
+        data: theme.copyWith(
+          textSelectionTheme: theme.textSelectionTheme.copyWith(
+            selectionHandleColor: handleColor,
+          ),
+        ),
+        child: child ?? const SizedBox.shrink(),
+      );
+    },
+  );
+}
+
+/// Linux 端补齐无边框窗口的圆角与边缘拖拽缩放
+///
+/// Windows 11 由 DWM 自动给顶层窗口加圆角，Win32 非客户区也天然支持边缘缩放；
+/// Linux 的 gtk_window_set_decorated(false) 两者都不会提供，需要自行补齐：
+/// - ClipRRect 裁出圆角，最大化时取消，避免四角露出桌面背景；
+/// - DragToResizeArea 在四边四角给出 resize 光标并发起系统级缩放拖拽，
+///   最大化时同样禁用（与 window_manager 的 VirtualWindowFrame 一致）。
+Widget _wrapWithLinuxWindowFrame(BuildContext context, Widget? child) {
+  if (!PlatformCapabilities.isLinux) {
+    return child ?? const SizedBox.shrink();
+  }
+  final bool maximized =
+      context.select<WindowProvider, bool>((provider) => provider.isMaximized);
+  // Stack 给非定位子项的是 loose 约束，显式撑满可保证命中区始终覆盖整窗，
+  // 不受下层页面当帧尺寸影响。
+  final Widget rounded = SizedBox.expand(
+    child: ClipRRect(
+      borderRadius: maximized ? BorderRadius.zero : BorderRadius.circular(10),
+      child: child,
+    ),
+  );
+  // 命中区放在圆角裁切之外，四角的斜向缩放才不会被裁掉。
+  return DragToResizeArea(
+    enableResizeEdges: maximized ? [] : null,
+    resizeEdgeSize: 6,
+    child: rounded,
+  );
+}
+
+/// 为应用界面绑定 macOS 惯用的窗口快捷键
+///
+/// Command+W 关闭当前窗口时转交窗口关闭流程，
+/// 与点击窗口关闭按钮一致，保留未保存内容的确认步骤
+Widget _wrapWithWindowShortcuts(BuildContext context, Widget child) {
+  if (!PlatformCapabilities.isMacOS) return child;
+  return CallbackShortcuts(
+    bindings: {
+      const SingleActivator(LogicalKeyboardKey.keyW, meta: true): () {
+        context.read<WindowProvider>().close();
+      },
+    },
+    child: child,
+  );
+}
+
+/// 主应用（书架页面）
+class MyWriterApp extends StatelessWidget {
+  const MyWriterApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    // 使用 MultiProvider 包装应用，注册所有全局状态管理 Provider
+    return MultiProvider(
+      providers: [
+        // 注册窗口状态 Provider，管理窗口的最大化/最小化状态
+        // 主窗口界面不直接读取该 Provider，需立即创建才能注册窗口监听并拦截关闭
+        ChangeNotifierProvider(
+          lazy: false,
+          create: (_) {
+            final provider = WindowProvider();
+            // 关闭拦截与退出收尾依赖原生窗口，仅在支持原生窗口控制的平台启用
+            if (PlatformCapabilities.supportsNativeWindowControl) {
+              // 关闭拦截：按设置决定退出程序还是最小化至托盘
+              provider.onCloseIntercept = TrayService.instance.handleCloseIntercept;
+              // 关闭确认后先隐藏窗口，在后台完成退出同步
+              provider.onCloseConfirmed = _handleMainWindowExit;
+            }
+            return provider;
+          },
+        ),
+        // 注册主题状态 Provider，管理应用的主题模式
+        ChangeNotifierProvider(create: (_) => ThemeProvider()),
+        // 注册书架 Provider，管理书籍列表
+        ChangeNotifierProvider(create: (_) => BookshelfProvider()),
+        // 注册码字统计 Provider，管理统计数据与筛选状态
+        ChangeNotifierProvider(create: (_) => WritingStatsProvider()),
+        // 注册更新状态 Provider，应用启动后按设置检查一次更新，
+        // 供侧边栏、底部导航与关于页展示「有更新」提示
+        ChangeNotifierProvider(
+          lazy: false,
+          create: (_) => UpdateProvider()..checkOnStartup(),
+        ),
+      ],
+      child: Consumer<ThemeProvider>(
+        builder: (context, themeProvider, child) {
+          return MaterialApp.router(
+            // 本地化代理
+            localizationsDelegates: const [
+              GlobalMaterialLocalizations.delegate,
+              GlobalWidgetsLocalizations.delegate,
+              GlobalCupertinoLocalizations.delegate,
+            ],
+            // 支持的语言
+            supportedLocales: [
+              const Locale('zh', 'CN'), // 简体中文
+            ],
+            // 强制中文
+            locale: const Locale('zh', 'CN'),
+            title: GlobalConstants.appTitle,
+            theme: themeProvider.lightTheme,
+            darkTheme: themeProvider.darkTheme,
+            themeMode: themeProvider.themeMode,
+            debugShowCheckedModeBanner: false,
+            routerConfig: appRouter,
+            // 应用界面字号缩放：包裹整个界面，使界面文字按设定倍数显示
+            builder: (context, child) => _wrapWithWindowShortcuts(
+              context,
+              _wrapWithLinuxWindowFrame(
+                context,
+                _wrapWithAppFontScale(
+                  context,
+                  _wrapWithCursorHandleColor(context, child),
+                  themeProvider.appFontScale,
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+/// 工作台应用（独立窗口）
+class WorkspaceApp extends StatefulWidget {
+  final String bookId;
+  final String? mainWindowId;
+
+  const WorkspaceApp({super.key, required this.bookId, this.mainWindowId});
+
+  @override
+  State<WorkspaceApp> createState() => _WorkspaceAppState();
+}
+
+class _WorkspaceAppState extends State<WorkspaceApp> {
+  // 主题 Provider
+  ThemeProvider? _themeProvider;
+
+  @override
+  void initState() {
+    super.initState();
+    _initWindowChannel();
+  }
+
+  /// 初始化窗口通信通道
+  Future<void> _initWindowChannel() async {
+    // 多窗口通信仅存在于桌面端，移动端没有需要监听的窗口消息
+    if (PlatformCapabilities.supportsMultiWindow) {
+      final windowController = await WindowController.fromCurrentEngine();
+      await MultiWindowService.instance.initWorkspaceMethodChannel(
+        windowController,
+      );
+    }
+
+    // 设置主题变化回调
+    MultiWindowService.instance.onThemeChanged = (themeModeName) {
+      if (_themeProvider != null) {
+        _themeProvider!.updateThemeFromMain(themeModeName);
+      }
+    };
+
+    // 设置自定义主题配置变化回调
+    MultiWindowService.instance.onThemeConfigChanged = (configJson) {
+      if (_themeProvider != null) {
+        _themeProvider!.updateThemeConfigFromMain(configJson);
+      }
+    };
+
+    // 设置界面字体变化回调
+    MultiWindowService.instance.onAppFontChanged = (fontFamily) {
+      if (_themeProvider != null) {
+        _themeProvider!.updateAppFontFromMain(fontFamily);
+      }
+    };
+
+    // 设置界面字号变化回调
+    MultiWindowService.instance.onAppFontScaleChanged = (scale) {
+      if (_themeProvider != null) {
+        _themeProvider!.updateAppFontScaleFromMain(scale);
+      }
+    };
+
+    // 接收主窗口推送的云同步状态，使底栏同步图标与主窗口保持一致
+    MultiWindowService.instance.onSyncStatusChanged =
+        CloudSyncService.instance.applyMirroredStatus;
+
+    // 主动拉取一次当前状态，避免刚打开窗口时停留在默认图标
+    final mainWindowId = widget.mainWindowId;
+    if (mainWindowId != null) {
+      final status = await MultiWindowService.instance.requestSyncStatus(
+        mainWindowId,
+      );
+      if (status != null) {
+        CloudSyncService.instance.applyMirroredStatus(status);
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    // 清理回调
+    MultiWindowService.instance.onThemeChanged = null;
+    MultiWindowService.instance.onThemeConfigChanged = null;
+    MultiWindowService.instance.onAppFontChanged = null;
+    MultiWindowService.instance.onAppFontScaleChanged = null;
+    MultiWindowService.instance.onSyncStatusChanged = null;
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return MultiProvider(
+      providers: [
+        // 注册窗口状态 Provider，指定为工作台窗口类型，并传入书籍ID和主窗口ID
+        ChangeNotifierProvider(
+          create: (_) => WindowProvider(
+            windowType: WindowType.workspace,
+            bookId: widget.bookId,
+            mainWindowId: widget.mainWindowId,
+          ),
+        ),
+        // 注册主题状态 Provider，管理应用的主题模式
+        ChangeNotifierProvider(
+          create: (context) {
+            _themeProvider = ThemeProvider();
+            return _themeProvider!;
+          },
+        ),
+      ],
+      child: Consumer<ThemeProvider>(
+        builder: (context, themeProvider, child) {
+          return MaterialApp(
+            title: '${GlobalConstants.appTitle} - 工作台',
+            theme: themeProvider.lightTheme,
+            darkTheme: themeProvider.darkTheme,
+            themeMode: themeProvider.themeMode,
+            debugShowCheckedModeBanner: false,
+            home: WorkspacePage(bookId: widget.bookId, mainWindowId: widget.mainWindowId),
+            // 应用界面字号缩放：包裹整个界面，使界面文字按设定倍数显示
+            builder: (context, child) => _wrapWithWindowShortcuts(
+              context,
+              _wrapWithLinuxWindowFrame(
+                context,
+                _wrapWithAppFontScale(
+                  context,
+                  _wrapWithCursorHandleColor(context, child),
+                  themeProvider.appFontScale,
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}

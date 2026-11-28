@@ -1,0 +1,244 @@
+/// 杂项缓存数据模型
+///
+/// 用于存储各类零散的缓存数据，避免创建过多小文件
+///
+/// 缓存内容包括：
+/// - 书架上当前选中的分组 ID（应用重启后恢复）
+/// - 每本书的已展开设定分类 ID 列表
+/// - 各类开关/选项的最近一次选择（随云同步恢复）
+class MiscCacheData {
+  /// 书架选中的分组 ID
+  ///
+  /// - 空字符串 '' 表示"书架（未分组）"
+  /// - '__all__' 表示"全部作品"
+  /// - 其他为分组 UUID
+  final String selectedGroupId;
+
+  /// 章节列表是否倒序排列
+  final bool isChapterReversed;
+
+  /// 设定列表是否倒序排列
+  final bool isSettingReversed;
+
+  /// 工具面板功能区显示顺序
+  ///
+  /// 列表按显示顺序存储"可见"的功能工具 ID（仅包含开启显示的工具）：
+  /// - 'nameGen'：随机取名
+  /// - 'sensitiveWord'：敏感词检测
+  /// 隐藏某工具即从列表移除，显示则加入；调整顺序即重排列表。
+  /// 该区域与书籍信息、码字统计区域相互独立，顺序互不影响
+  final List<String> toolsFunctionOrder;
+
+  /// 工具面板区块显示顺序
+  ///
+  /// 列表按显示顺序存储"可见"的区块 ID（仅包含开启显示的区块）：
+  /// - 'bookInfo'：书籍信息
+  /// - 'stats'：码字统计
+  /// 隐藏某区块即从列表移除，显示则加入；调整顺序即重排列表
+  final List<String> toolsSectionOrder;
+
+  /// 移动端正文关键词预览开关是否开启
+  ///
+  /// 开启后正文常驻关键词高亮，点按关键词可弹出预览卡片
+  final bool keywordHighlightEnabled;
+
+  /// 正文敏感词标红开关是否开启
+  ///
+  /// 开启后正文中的敏感词会立即标红，关闭后仅保留敏感词检测弹窗的扫描结果
+  final bool sensitiveWordHighlightEnabled;
+
+  /// 正文敏感词标红颜色（#RRGGBB）
+  ///
+  /// 空字符串表示跟随主题错误色，用户自定义后按该颜色标红
+  final String sensitiveWordColorHex;
+
+  /// 自定义高亮上次使用的颜色（#RRGGBB）
+  ///
+  /// 记忆新增高亮项时选择的颜色，下次打开对话框沿用，换设备后同样恢复
+  final String customHighlightLastColorHex;
+
+  /// 通用开关记忆映射
+  ///
+  /// Key: 开关稳定标识（如 'custom_highlight.new_is_regex'）
+  /// Value: 该开关最近一次的用户选择
+  /// 用于记忆界面上各类一次性开关/选项的选择，避免每次打开都回到默认值，
+  /// 该字段随杂项缓存一起参与云同步与云恢复
+  final Map<String, bool> switchStates;
+
+  /// 书籍展开状态映射
+  ///
+  /// Key: 书籍 UUID
+  /// Value: 该书籍下分组的展开状态
+  final Map<String, BookGroupExpandCache> books;
+
+  const MiscCacheData({
+    this.selectedGroupId = '',
+    this.isChapterReversed = false,
+    this.isSettingReversed = false,
+    this.toolsFunctionOrder = const ['nameGen', 'sensitiveWord'],
+    this.toolsSectionOrder = const ['bookInfo', 'stats'],
+    this.keywordHighlightEnabled = true,
+    this.sensitiveWordHighlightEnabled = false,
+    this.sensitiveWordColorHex = '',
+    this.customHighlightLastColorHex = '#FFB300',
+    this.switchStates = const {},
+    this.books = const {},
+  });
+
+  /// 从 JSON Map 创建实例
+  factory MiscCacheData.fromJson(Map<String, dynamic> json) {
+    // 解析书籍展开状态映射
+    final booksMap = json['books'] as Map<String, dynamic>? ?? {};
+    final books = <String, BookGroupExpandCache>{};
+
+    booksMap.forEach((bookUuid, bookData) {
+      books[bookUuid] = BookGroupExpandCache.fromJson(bookData as Map<String, dynamic>);
+    });
+
+    return MiscCacheData(
+      selectedGroupId: json['selectedGroupId'] as String? ?? '',
+      isChapterReversed: json['isChapterReversed'] as bool? ?? false,
+      isSettingReversed: json['isSettingReversed'] as bool? ?? false,
+      toolsFunctionOrder: (json['toolsFunctionOrder'] as List<dynamic>?)
+              ?.map((e) => e as String)
+              .toList() ??
+          const ['nameGen', 'sensitiveWord'],
+      toolsSectionOrder: (json['toolsSectionOrder'] as List<dynamic>?)
+              ?.map((e) => e as String)
+              .toList() ??
+          const ['bookInfo', 'stats'],
+      keywordHighlightEnabled: json['keywordHighlightEnabled'] as bool? ?? true,
+      sensitiveWordHighlightEnabled:
+          json['sensitiveWordHighlightEnabled'] as bool? ?? false,
+      sensitiveWordColorHex: json['sensitiveWordColorHex'] as String? ?? '',
+      customHighlightLastColorHex:
+          json['customHighlightLastColorHex'] as String? ?? '#FFB300',
+      switchStates: (json['switchStates'] as Map<String, dynamic>?)
+              ?.map((key, value) => MapEntry(key, value == true)) ??
+          const {},
+      books: books,
+    );
+  }
+
+  /// 转换为 JSON Map
+  Map<String, dynamic> toJson() {
+    return {
+      'selectedGroupId': selectedGroupId,
+      'isChapterReversed': isChapterReversed,
+      'isSettingReversed': isSettingReversed,
+      'toolsFunctionOrder': toolsFunctionOrder,
+      'toolsSectionOrder': toolsSectionOrder,
+      'keywordHighlightEnabled': keywordHighlightEnabled,
+      'sensitiveWordHighlightEnabled': sensitiveWordHighlightEnabled,
+      'sensitiveWordColorHex': sensitiveWordColorHex,
+      'customHighlightLastColorHex': customHighlightLastColorHex,
+      'switchStates': switchStates,
+      'books': books.map((key, value) => MapEntry(key, value.toJson())),
+    };
+  }
+
+  /// 创建副本
+  MiscCacheData copyWith({
+    String? selectedGroupId,
+    bool? isChapterReversed,
+    bool? isSettingReversed,
+    List<String>? toolsFunctionOrder,
+    List<String>? toolsSectionOrder,
+    bool? keywordHighlightEnabled,
+    bool? sensitiveWordHighlightEnabled,
+    String? sensitiveWordColorHex,
+    String? customHighlightLastColorHex,
+    Map<String, bool>? switchStates,
+    Map<String, BookGroupExpandCache>? books,
+  }) {
+    return MiscCacheData(
+      selectedGroupId: selectedGroupId ?? this.selectedGroupId,
+      isChapterReversed: isChapterReversed ?? this.isChapterReversed,
+      isSettingReversed: isSettingReversed ?? this.isSettingReversed,
+      toolsFunctionOrder: toolsFunctionOrder ?? this.toolsFunctionOrder,
+      toolsSectionOrder: toolsSectionOrder ?? this.toolsSectionOrder,
+      keywordHighlightEnabled: keywordHighlightEnabled ?? this.keywordHighlightEnabled,
+      sensitiveWordHighlightEnabled:
+          sensitiveWordHighlightEnabled ?? this.sensitiveWordHighlightEnabled,
+      sensitiveWordColorHex: sensitiveWordColorHex ?? this.sensitiveWordColorHex,
+      customHighlightLastColorHex:
+          customHighlightLastColorHex ?? this.customHighlightLastColorHex,
+      switchStates: switchStates ?? this.switchStates,
+      books: books ?? this.books,
+    );
+  }
+}
+
+/// 单本书籍的分组展开状态缓存
+class BookGroupExpandCache {
+  /// 未分卷组是否折叠
+  final bool isUnassignedCollapsed;
+
+  /// 未分组设定组是否折叠
+  final bool isSettingUnassignedCollapsed;
+
+  /// 已展开的设定分类 ID 列表
+  final List<String> expandedCategories;
+
+  /// 新建章节时上次选择的分卷 UUID
+  ///
+  /// 空字符串表示"未分卷"，用于记忆顶部操作栏新建弹窗中的分卷选择
+  final String lastSelectedVolume;
+
+  /// 新建设定时上次选择的分组 UUID
+  ///
+  /// 空字符串表示"未分组"，用于记忆新建设定弹窗中的分组选择
+  final String lastSelectedSettingGroup;
+
+  const BookGroupExpandCache({
+    this.isUnassignedCollapsed = false,
+    this.isSettingUnassignedCollapsed = false,
+    this.expandedCategories = const [],
+    this.lastSelectedVolume = '',
+    this.lastSelectedSettingGroup = '',
+  });
+
+  /// 从 JSON Map 创建实例
+  factory BookGroupExpandCache.fromJson(Map<String, dynamic> json) {
+    return BookGroupExpandCache(
+      isUnassignedCollapsed: json['isUnassignedCollapsed'] as bool? ?? false,
+      isSettingUnassignedCollapsed:
+          json['isSettingUnassignedCollapsed'] as bool? ?? false,
+      expandedCategories: (json['expandedCategories'] as List<dynamic>?)
+              ?.map((e) => e as String)
+              .toList() ??
+          [],
+      lastSelectedVolume: json['lastSelectedVolume'] as String? ?? '',
+      lastSelectedSettingGroup: json['lastSelectedSettingGroup'] as String? ?? '',
+    );
+  }
+
+  /// 转换为 JSON Map
+  Map<String, dynamic> toJson() {
+    return {
+      'isUnassignedCollapsed': isUnassignedCollapsed,
+      'isSettingUnassignedCollapsed': isSettingUnassignedCollapsed,
+      'expandedCategories': expandedCategories,
+      'lastSelectedVolume': lastSelectedVolume,
+      'lastSelectedSettingGroup': lastSelectedSettingGroup,
+    };
+  }
+
+  /// 创建副本
+  BookGroupExpandCache copyWith({
+    bool? isUnassignedCollapsed,
+    bool? isSettingUnassignedCollapsed,
+    List<String>? expandedCategories,
+    String? lastSelectedVolume,
+    String? lastSelectedSettingGroup,
+  }) {
+    return BookGroupExpandCache(
+      isUnassignedCollapsed: isUnassignedCollapsed ?? this.isUnassignedCollapsed,
+      isSettingUnassignedCollapsed:
+          isSettingUnassignedCollapsed ?? this.isSettingUnassignedCollapsed,
+      expandedCategories: expandedCategories ?? this.expandedCategories,
+      lastSelectedVolume: lastSelectedVolume ?? this.lastSelectedVolume,
+      lastSelectedSettingGroup: lastSelectedSettingGroup ?? this.lastSelectedSettingGroup,
+    );
+  }
+}

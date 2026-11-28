@@ -1,0 +1,205 @@
+name: Build Android debug
+
+# 零 Secrets 出包：仓库里不配置任何签名材料，build.gradle.kts 会自动回退到
+# key.properties 指向的调试签名。本工作流自己生成一把固定的测试用密钥，
+# 保证每次构建签名一致（可以直接覆盖安装），产物仅用于自测，不能上架、
+# 也不能覆盖已安装的正式签名版本。
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'lib/**'
+      # 编辑器内核在 third_party/re_editor，漏掉这一条会让内核修复推上去不出包
+      - 'third_party/**'
+      - 'android/**'
+      - 'assets/**'
+      - 'pubspec.yaml'
+      - 'pubspec.lock'
+      - '.github/workflows/build-android-debug.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-debug-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # 单轮构建正常 4~5 分钟，超过 30 分钟必为网络/依赖卡死，直接判失败
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.41.2'
+          channel: stable
+          cache: true
+
+      - name: Prepare fixed test signing key
+        # 仓库内 android/ci/quickwrite-ci-test.p12.b64 保存了一把固定不变的测试密钥
+        # （公开、口令固定，只用于 CI 出的自测包，与正式发布签名无关）。
+        # 每次构建都复用同一把密钥，签名指纹一致，因此新包可以直接覆盖安装旧包。
+        # 仅在密钥文件缺失时才退回临时生成的密钥（此时签名不固定）。
+        run: |
+          set -euo pipefail
+          B64_FILE=android/ci/quickwrite-ci-test.p12.b64
+          if [ -f "$B64_FILE" ]; then
+            base64 -d "$B64_FILE" > android/app/quickwrite-ci-test.p12
+            STORE_FILE=quickwrite-ci-test.p12
+            STORE_TYPE=PKCS12
+            KEY_ALIAS=quickwrite-ci
+          else
+            echo "::warning::未找到固定测试密钥，退回临时生成（本次签名不固定）"
+            keytool -genkeypair -v \
+              -keystore android/app/quickwrite-test.jks \
+              -storetype JKS \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -alias quickwrite-test \
+              -storepass quickwrite2014 \
+              -keypass quickwrite2014 \
+              -dname "CN=QuickWrite CI Test,O=QuickWrite,C=CN"
+            STORE_FILE=quickwrite-test.jks
+            STORE_TYPE=JKS
+            KEY_ALIAS=quickwrite-test
+          fi
+
+          cat > android/key.properties <<EOF
+          storeFile=$STORE_FILE
+          storePassword=quickwrite2014
+          keyAlias=$KEY_ALIAS
+          keyPassword=quickwrite2014
+          storeType=$STORE_TYPE
+          EOF
+          cat android/key.properties
+
+      - name: Cache Gradle and pub
+        # 缓存命中时依赖不再走网络，既提速也避开 Maven Central 的 429 限流
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.pub-cache
+          key: gradle-${{ runner.os }}-${{ hashFiles('pubspec.lock', 'android/**/*.gradle*', 'android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      - name: Install Gradle mirror init script
+        # Maven Central 会针对共享出口 IP 返回 429，把镜像前置后再走依赖解析
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.gradle/init.d
+          cp android/ci/gradle-mirror-init.gradle ~/.gradle/init.d/ci-mirror.gradle
+          cat ~/.gradle/init.d/ci-mirror.gradle | head -5
+
+      - name: Fetch packages
+        run: flutter pub get
+
+      - name: Build release APK (debug signed)
+        # 只打 arm64，与正式包保持一致；versionCode 用 pubspec 基数 + 运行号，
+        # 保证每次递增，能直接覆盖安装上一次的测试包。
+        env:
+          # 依赖下载失败时由 Gradle 自身重试，缓解仓库限流导致的偶发失败
+          # max.tentatives 控制单次请求的尝试次数，initial.backoff 为首次退避毫秒数（指数增长）
+          GRADLE_OPTS: "-Dorg.gradle.internal.repository.max.tentatives=10 -Dorg.gradle.internal.repository.initial.backoff=3000 -Dorg.gradle.internal.http.connectionTimeout=60000 -Dorg.gradle.internal.http.socketTimeout=120000"
+        run: |
+          set -euo pipefail
+          FULL_VERSION="$(awk '/^version:/ {print $2; exit}' pubspec.yaml | tr -d '"')"
+          APP_VERSION="${FULL_VERSION%%+*}"
+          BASE_CODE="${FULL_VERSION##*+}"
+          CODE=$((BASE_CODE + GITHUB_RUN_NUMBER))
+          echo "构建 ${APP_VERSION}+${CODE}"
+
+          # gradlePluginPortal 对共享出口 IP 偶发 429 限流，失败后等待重试，
+          # 最多 3 次，避免一次网络抖动就让整轮构建作废。
+          for attempt in 1 2 3; do
+            echo "::group::构建尝试 ${attempt}"
+            # 单次构建限时 15 分钟，避免依赖下载卡死把整轮 CI 拖到小时级
+            if timeout 900 flutter build apk --release \
+                 --target-platform android-arm64 \
+                 --build-name "${APP_VERSION}" \
+                 --build-number "${CODE}" 2>&1 | tee -a /tmp/build.log; then
+              echo "::endgroup::"
+              exit 0
+            fi
+            echo "::endgroup::"
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::连续 3 次构建失败"
+              exit 1
+            fi
+            if [ "$attempt" -eq 1 ]; then
+              echo "第 1 次失败，120s 后重试"
+              sleep 120
+            else
+              echo "第 2 次失败，240s 后重试"
+              sleep 240
+            fi
+          done
+
+      - name: Dump build log on failure
+        # 构建失败时把输出推到 ci-log 分支，便于不进 GitHub 页面直接定位编译错误
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cp /tmp/build.log ci-build.log 2>/dev/null || echo "no log captured" > ci-build.log
+          git config user.name "ci-bot"
+          git config user.email "ci-bot@users.noreply.github.com"
+          git checkout --orphan ci-log-tmp 2>/dev/null || git checkout ci-log-tmp
+          git add -f ci-build.log
+          git commit -m "ci build log for ${GITHUB_SHA:0:7}" || true
+          git push -f origin HEAD:ci-log
+
+      - name: Rename artifact
+        run: |
+          set -euo pipefail
+          APK="build/app/outputs/flutter-apk/app-release.apk"
+          test -f "$APK"
+          FULL_VERSION="$(awk '/^version:/ {print $2; exit}' pubspec.yaml | tr -d '"')"
+          APP_VERSION="${FULL_VERSION%%+*}"
+          cp "$APK" "quick-write-${APP_VERSION}-android-debug.apk"
+          ls -lh quick-write-*-android-debug.apk
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: quick-write-android-debug
+          path: quick-write-*-android-debug.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish to debug release
+        # 固定 tag，手机端打开 releases 页就能直接下载 apk，不必登录下 artifact。
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="android-debug"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --title "安卓自测包（自动构建）" \
+              --notes "由 GitHub Actions 自动构建，测试签名，可直接安装；装过正式版需先卸载。"
+          fi
+          gh release upload "$TAG" quick-write-*-android-debug.apk --clobber
+          gh release edit "$TAG" --notes "最近一次构建：$(date -u +%Y-%m-%dT%H:%M:%SZ)，commit ${GITHUB_SHA:0:7}"

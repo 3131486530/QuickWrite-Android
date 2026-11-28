@@ -1,0 +1,576 @@
+import 'dart:math' as math;
+
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:provider/provider.dart';
+import 'package:quick_write/core/models/chapter.dart';
+import 'package:quick_write/core/providers/workspace_provider.dart';
+import 'package:quick_write/core/utils/clipboard_state_cache.dart';
+import 'package:quick_write/core/utils/code_line_selection_utils.dart';
+import 'package:quick_write/core/utils/paragraph_formatter.dart';
+import 'package:quick_write/pages/workspace/editor/novel_editor.dart';
+import 'package:quick_write/pages/workspace/name_gen/name_generator_dialog_mobile.dart';
+import 'package:quick_write/pages/workspace/reader/reading_mode_page.dart';
+import 'package:quick_write/pages/workspace/sensitive_word/sensitive_word_check_dialog.dart';
+import 'package:quick_write/shared/dialogs/export_dialog.dart';
+import 'package:quick_write/shared/widgets/widgets.dart';
+
+/// 移动端工具卡片可执行的动作
+enum MobileToolAction {
+  /// 查找替换
+  findReplace,
+  /// 全文搜索
+  fullTextSearch,
+  /// 段落整理
+  formatParagraph,
+  /// 历史版本
+  history,
+  /// 导出本章
+  exportChapter,
+  /// 码字统计
+  writingStats,
+  /// 阅读模式
+  readMode,
+  /// 复制本章
+  copyChapter,
+  /// 随机取名
+  randomName,
+  /// 敏感词检测
+  sensitiveWordCheck,
+  /// 布局设置
+  layout,
+  /// 排版设置
+  typeset,
+  /// 备份设置
+  backup,
+  /// 其他设置
+  other,
+}
+
+/// 移动端工具卡片
+///
+/// 由顶部操作栏的「工具」入口在操作栏下方弹出，按分区承载各类快捷功能与设置入口，
+/// 每个分区内以每行三个的图标网格排列。点击某一项后卡片关闭，
+/// 并通过 [onSelected] 回传所选动作
+class MobileToolsCard extends StatelessWidget {
+  /// 卡片最大宽度
+  static const double maxWidth = 240;
+
+  /// 卡片与屏幕左右边缘的最小留白
+  static const double screenMargin = 16;
+
+  /// 每行的图标数量（不足时补空位，保证各行图标纵向对齐）
+  static const int _columns = 3;
+
+  /// 卡片内容的内边距
+  static const double _padding = 16;
+
+  /// 卡片分区
+  static const List<_ToolSection> _sections = [
+    // 针对当前文档的编辑与检索操作
+    _ToolSection('编辑', [
+      _ToolEntry(MobileToolAction.findReplace, Icons.find_replace_rounded, '查找替换'),
+      _ToolEntry(MobileToolAction.fullTextSearch, Icons.search_rounded, '全文搜索'),
+      _ToolEntry(MobileToolAction.formatParagraph, Icons.format_align_left_rounded, '段落整理'),
+    ]),
+    // 内容辅助工具
+    _ToolSection('工具', [
+      _ToolEntry(MobileToolAction.history, Icons.history_rounded, '历史版本'),
+      _ToolEntry(MobileToolAction.exportChapter, Icons.file_download_outlined, '导出本章'),
+      _ToolEntry(MobileToolAction.writingStats, Icons.insights_rounded, '码字统计'),
+      _ToolEntry(MobileToolAction.readMode, Icons.auto_stories_outlined, '阅读模式', chapterOnly: true),
+      _ToolEntry(MobileToolAction.copyChapter, Icons.copy_all_rounded, '复制本章', chapterOnly: true),
+      _ToolEntry(MobileToolAction.randomName, Icons.casino_rounded, '随机取名'),
+      _ToolEntry(MobileToolAction.sensitiveWordCheck, Icons.gpp_bad_outlined, '敏感词检测'),
+    ]),
+    // 各类设置面板入口
+    _ToolSection('设置', [
+      _ToolEntry(MobileToolAction.layout, Icons.space_dashboard_outlined, '布局'),
+      _ToolEntry(MobileToolAction.typeset, Icons.format_line_spacing, '排版'),
+      _ToolEntry(MobileToolAction.backup, Icons.backup_outlined, '备份'),
+      _ToolEntry(MobileToolAction.other, Icons.tune_rounded, '其它'),
+    ]),
+  ];
+
+  /// 选中某项后的回调
+  final ValueChanged<MobileToolAction> onSelected;
+
+  /// 当前标签页是否为章节
+  ///
+  /// 由弹出方提供：卡片以弹窗承载，其 context 不在工作台 Provider 之下，
+  /// 无法自行读取标签页状态。章节专属动作在非章节标签页下置灰禁用。
+  final bool isChapterTab;
+
+  /// 卡片的最大高度
+  ///
+  /// 由弹出方按操作栏下方的屏幕剩余空间给出，内容超出该高度时转为内部纵向滚动，
+  /// 避免横屏等纵向空间紧张的场景下工具项被截断
+  final double maxHeight;
+
+  const MobileToolsCard({
+    super.key,
+    required this.onSelected,
+    required this.isChapterTab,
+    required this.maxHeight,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    // 卡片宽度取最大宽度与「屏幕宽度减去两侧留白」中的较小值，避免贴近屏幕边缘
+    final cardWidth = math.min(
+      MobileToolsCard.maxWidth,
+      MediaQuery.sizeOf(context).width - MobileToolsCard.screenMargin * 2,
+    );
+
+    return Material(
+      color: colorScheme.surface,
+      elevation: 8,
+      borderRadius: BorderRadius.circular(18),
+      clipBehavior: Clip.antiAlias,
+      child: SizedBox(
+        width: cardWidth,
+        // 卡片高度限制在可用空间内，空间不足时内容转为内部纵向滚动，保证工具项都能触达
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxHeight: maxHeight),
+          child: SingleChildScrollView(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(_padding, 16, _padding, 18),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // 依次渲染各分区，分区之间用分隔线隔开
+                  for (int i = 0; i < _sections.length; i++) ...[
+                    if (i > 0) _buildDivider(colorScheme),
+                    _buildGroupLabel(context, _sections[i].label, colorScheme),
+                    const SizedBox(height: 12),
+                    ..._buildSectionRows(_sections[i].entries, isChapterTab),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 构建分区标签（主色竖条 + 分区名称）
+  Widget _buildGroupLabel(BuildContext context, String text, ColorScheme colorScheme) {
+    return Row(
+      children: [
+        Container(
+          width: 3,
+          height: 14,
+          decoration: BoxDecoration(
+            color: colorScheme.primary,
+            borderRadius: BorderRadius.circular(2),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Text(
+          text,
+          style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                color: colorScheme.onSurface,
+                fontWeight: FontWeight.w600,
+              ),
+        ),
+      ],
+    );
+  }
+
+  /// 构建分区之间的分隔线
+  Widget _buildDivider(ColorScheme colorScheme) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 14),
+      child: Divider(height: 1, color: colorScheme.outlineVariant.withValues(alpha: 0.4)),
+    );
+  }
+
+  /// 将分区内的工具项按 [_columns] 个一行拆分为若干行
+  ///
+  /// [isChapterTab] 决定章节专属工具项是否可用（非章节标签页下置灰禁用）
+  List<Widget> _buildSectionRows(List<_ToolEntry> entries, bool isChapterTab) {
+    final rows = <Widget>[];
+    for (int i = 0; i < entries.length; i += _columns) {
+      if (i > 0) rows.add(const SizedBox(height: 6));
+      rows.add(_buildRow(entries.sublist(i, math.min(i + _columns, entries.length)), isChapterTab));
+    }
+    return rows;
+  }
+
+  /// 构建一行工具项，并为不足一行的部分补空位，保证各行图标纵向对齐
+  Widget _buildRow(List<_ToolEntry> entries, bool isChapterTab) {
+    return Row(
+      children: [
+        for (final entry in entries)
+          Expanded(
+            child: _ToolItem(
+              entry: entry,
+              enabled: !entry.chapterOnly || isChapterTab,
+              onTap: () => onSelected(entry.action),
+            ),
+          ),
+        for (int i = entries.length; i < _columns; i++) const Expanded(child: SizedBox()),
+      ],
+    );
+  }
+}
+
+/// 工具项配置（动作、图标、名称）
+class _ToolEntry {
+  /// 对应的动作
+  final MobileToolAction action;
+
+  /// 图标
+  final IconData icon;
+
+  /// 名称
+  final String label;
+
+  /// 是否仅在当前标签页为章节时可用
+  ///
+  /// 为 true 时，设定项等非章节标签页下该项置灰且不可点击
+  final bool chapterOnly;
+
+  const _ToolEntry(
+    this.action,
+    this.icon,
+    this.label, {
+    this.chapterOnly = false,
+  });
+}
+
+/// 工具卡片分区（分区名称与分区内的工具项）
+class _ToolSection {
+  /// 分区名称
+  final String label;
+
+  /// 分区内的工具项
+  final List<_ToolEntry> entries;
+
+  const _ToolSection(this.label, this.entries);
+}
+
+/// 单个工具项（圆角底色图标 + 名称）
+///
+/// [enabled] 为 false 时整体置灰并屏蔽点击，用于当前标签页不支持的动作
+class _ToolItem extends StatelessWidget {
+  /// 置灰态的不透明度，与移动端顶栏图标按钮的禁用态保持一致
+  static const double _disabledOpacity = 0.38;
+
+  /// 工具项配置
+  final _ToolEntry entry;
+
+  /// 点击回调
+  final VoidCallback onTap;
+
+  /// 是否可用
+  final bool enabled;
+
+  const _ToolItem({
+    required this.entry,
+    required this.onTap,
+    this.enabled = true,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final Color disabledColor = colorScheme.onSurfaceVariant.withValues(alpha: _disabledOpacity);
+    final Color iconColor = enabled ? colorScheme.primary : disabledColor;
+    final Color labelColor = enabled ? colorScheme.onSurfaceVariant : disabledColor;
+    final Color background = enabled
+        ? colorScheme.primary.withValues(alpha: 0.08)
+        : colorScheme.onSurfaceVariant.withValues(alpha: 0.08);
+
+    return InkWell(
+      // 禁用时不挂载点击回调，水波纹与按压反馈随之一并关闭
+      onTap: enabled ? onTap : null,
+      borderRadius: BorderRadius.circular(12),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // 图标底衬
+            Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                color: background,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Icon(entry.icon, size: 20, color: iconColor),
+            ),
+            const SizedBox(height: 6),
+            // 名称
+            Text(
+              entry.label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(color: labelColor),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 执行移动端工具卡片所选的动作
+///
+/// [context] 为顶部操作栏所在上下文（位于工作台 Provider 之下）
+Future<void> handleMobileToolAction(BuildContext context, MobileToolAction action) async {
+  final provider = context.read<WorkspaceProvider>();
+
+  switch (action) {
+    case MobileToolAction.findReplace:
+      // 切换当前编辑器的查找替换栏
+      provider.toggleFindReplace();
+      break;
+    case MobileToolAction.fullTextSearch:
+      // 打开全文搜索面板
+      provider.openRightSidebar(RightSidebarType.search);
+      break;
+    case MobileToolAction.formatParagraph:
+      // 依据排版设置一键整理当前段落
+      _formatCurrentParagraph(provider);
+      break;
+    case MobileToolAction.history:
+      // 打开历史版本面板
+      provider.openRightSidebar(RightSidebarType.history);
+      break;
+    case MobileToolAction.exportChapter:
+      // 导出当前章节
+      _exportCurrentChapter(context, provider);
+      break;
+    case MobileToolAction.writingStats:
+      // 在右侧边栏中展示码字统计
+      provider.openRightSidebar(RightSidebarType.stats);
+      break;
+    case MobileToolAction.copyChapter:
+      // 复制当前章节正文到剪贴板
+      await _copyCurrentChapter(context, provider);
+      // 复制不改变编辑位置，把工具卡片弹层夺走的光标焦点还给编辑器
+      await _restoreEditorFocusAfterOverlay(provider);
+      break;
+    case MobileToolAction.readMode:
+      // 以翻页方式阅读，排版沿用编辑器的正文与标题样式
+      await openReadingModeFromEditor(context, provider);
+      break;
+    case MobileToolAction.randomName:
+      // 打开随机取名弹窗，原本在正文输入时回插取到的名字
+      {
+        // 工具卡片本身会先抢走焦点，故不能只看「此刻是否聚焦」，
+        // 还要看最近一次聚焦的是编辑器正文还是标题（章节标题、大纲标题）
+        final bool editorHadFocus = provider.hasRecentEditorInput;
+        final String? name = await showMobileNameGeneratorDialog(context: context);
+        if (name != null && editorHadFocus) {
+          // 最近聚焦的是标题时写进标题，否则写进正文
+          provider.insertTextToRecentInput(name);
+        }
+        // 移动端插入后不会主动唤起输入法，需显式归还焦点，光标才不会丢
+        if (editorHadFocus) await _restoreEditorFocusAfterOverlay(provider);
+      }
+      break;
+    case MobileToolAction.sensitiveWordCheck:
+      // 打开敏感词检测弹窗
+      showMobileSensitiveWordCheckDialog(context: context, provider: provider);
+      break;
+    case MobileToolAction.layout:
+      // 打开布局设置面板
+      provider.openRightSidebar(RightSidebarType.layout);
+      break;
+    case MobileToolAction.typeset:
+      // 打开排版设置面板
+      provider.openRightSidebar(RightSidebarType.typeset);
+      break;
+    case MobileToolAction.backup:
+      // 打开备份设置面板（仅展示备份相关区块）
+      provider.openRightSidebar(RightSidebarType.backup);
+      break;
+    case MobileToolAction.other:
+      // 打开其他设置面板（仅展示编辑器相关区块）
+      provider.openRightSidebar(RightSidebarType.other);
+      break;
+  }
+}
+
+/// 把焦点还给编辑器（弹层关闭后再归还）
+///
+/// 弹层关闭动画尚未结束时请求焦点会被路由的焦点作用域吞掉，
+/// 章节编辑器因此表现为「点了工具就丢光标」，故短延时后补一次。
+Future<void> _restoreEditorFocusAfterOverlay(WorkspaceProvider provider) async {
+  provider.restoreEditorFocus();
+  await Future<void>.delayed(const Duration(milliseconds: 300));
+  if (!provider.currentEditorHasFocus) provider.restoreEditorFocus();
+}
+
+/// 以阅读模式打开当前章节
+///
+/// 章节正文按需加载；当前正在编辑的章节直接取编辑器里的文本，
+/// 保证刚写下还没落盘的内容也能立刻读到。
+Future<void> openReadingModeFromEditor(BuildContext context, WorkspaceProvider provider) async {
+  final List<ChapterModel> chapters = provider.chapters;
+  if (chapters.isEmpty) {
+    SnackBarService.show(context, '本书还没有章节');
+    return;
+  }
+
+  // 从当前章节开始读，非章节标签页时从第一章开始
+  int initialIndex = 0;
+  final tab = provider.currentTab;
+  if (tab != null && tab.type == EditorTabType.chapter) {
+    final int found = chapters.indexWhere((ChapterModel item) => item.uuid == tab.id);
+    if (found >= 0) initialIndex = found;
+  }
+
+  final List<ReaderChapter> readerChapters = chapters
+      .map((ChapterModel chapter) => ReaderChapter(
+            title: chapter.title.isEmpty ? '未命名章节' : chapter.title,
+            loadContent: () => _readChapterContentForReader(provider, chapter),
+            saveContent: (String content) =>
+                _writeChapterContentFromReader(provider, chapter, content),
+          ))
+      .toList();
+
+  // 阅读模式占满全屏，先收起输入法避免键盘遮住正文
+  FocusManager.instance.primaryFocus?.unfocus();
+  await showReadingMode(
+    context,
+    bookTitle: provider.bookTitle,
+    chapters: readerChapters,
+    initialChapterIndex: initialIndex,
+    customHighlightService: provider.customHighlightService,
+    outlineKeywordService: provider.outlineKeywordService,
+  );
+}
+
+/// 读取供阅读模式渲染的章节正文
+///
+/// 当前编辑中的章节优先取文本控制器内容（含未保存改动），其余章节读文件。
+Future<String> _readChapterContentForReader(
+  WorkspaceProvider provider,
+  ChapterModel chapter,
+) async {
+  final tab = provider.currentTab;
+  if (tab != null && tab.type == EditorTabType.chapter && tab.id == chapter.uuid) {
+    final String? text = tab.textController?.text;
+    if (text != null) return text;
+  }
+  return provider.readChapterContent(chapter);
+}
+
+/// 阅读模式长按编辑段落后的整章写回
+///
+/// 该章正在编辑器里打开时先同步文本控制器（含光标位置），再落盘，
+/// 避免编辑器里留着旧文本、之后保存又把阅读模式的修改覆盖掉。
+Future<bool> _writeChapterContentFromReader(
+  WorkspaceProvider provider,
+  ChapterModel chapter,
+  String content,
+) async {
+  final tab = provider.currentTab;
+  if (tab != null && tab.type == EditorTabType.chapter && tab.id == chapter.uuid) {
+    final controller = tab.textController;
+    if (controller != null && controller.text != content) {
+      final TextSelection oldSelection =
+          CodeLineSelectionUtils.flatSelectionOf(controller.text, controller.selection);
+      final int offset = oldSelection.baseOffset < 0
+          ? content.length
+          : oldSelection.baseOffset.clamp(0, content.length);
+      controller.text = content;
+      controller.selection =
+          CodeLineSelectionUtils.collapsedSelection(content, offset);
+    }
+  }
+  try {
+    return await provider.saveChapterContent(chapter, content);
+  } catch (_) {
+    return false;
+  }
+}
+
+/// 复制当前章节正文到剪贴板
+///
+/// 文本取自当前编辑器的文本控制器（与段落整理一致，包含尚未落盘的改动），
+/// 写入沿用系统剪贴板与应用内复制状态标记，不额外读取章节文件。
+Future<void> _copyCurrentChapter(BuildContext context, WorkspaceProvider provider) async {
+  final tab = provider.currentTab;
+  // 设定项等非章节标签页不复制；正常情况下该入口已置灰禁用，此处仅作兜底
+  if (tab == null || tab.type != EditorTabType.chapter) return;
+
+  final String text = tab.textController?.text ?? '';
+  if (text.isEmpty) {
+    SnackBarService.show(context, '当前章节没有可复制的正文');
+    return;
+  }
+
+  await Clipboard.setData(ClipboardData(text: text));
+  // 应用内复制后同步标记剪贴板状态，避免右键菜单的「粘贴」项被误禁用
+  ClipboardStateCache.markHasContent();
+  if (!context.mounted) return;
+  SnackBarService.show(context, '已复制本章');
+}
+
+/// 依据排版设置一键整理当前标签页的段落
+///
+/// 仅对正文编辑器（拥有文本控制器的标签页）生效
+void _formatCurrentParagraph(WorkspaceProvider provider) {
+  final tab = provider.currentTab;
+  if (tab == null || tab.textController == null) return;
+
+  final controller = tab.textController!;
+  final String currentText = controller.text;
+  if (currentText.isEmpty) return;
+
+  final String formattedText = ParagraphFormatter.formatText(currentText);
+  if (formattedText == currentText) return;
+
+  // 程序化改写全文，不产生编辑事件
+  NovelEditorState.runSilently(() {
+    controller.text = formattedText;
+    controller.selection = CodeLineSelectionUtils.collapsedSelection(formattedText, 0);
+  });
+
+  // 标记为已修改并更新字数统计
+  if (!tab.isModified) {
+    tab.isModified = true;
+    provider.notifyTabModified(tab.id);
+  }
+  tab.updateWordCount();
+  provider.notifyWordCountUpdated();
+
+  // 触发自动保存
+  provider.triggerAutoSave();
+}
+
+/// 导出当前标签页对应的章节
+///
+/// 当前标签页不是章节（如设定项）时提示并中止
+void _exportCurrentChapter(BuildContext context, WorkspaceProvider provider) {
+  final tab = provider.currentTab;
+  if (tab == null) return;
+
+  ChapterModel? chapter;
+  for (final item in provider.chapters) {
+    if (item.uuid == tab.id) {
+      chapter = item;
+      break;
+    }
+  }
+
+  if (chapter == null) {
+    SnackBarService.show(context, '当前标签页不是章节，无法导出');
+    return;
+  }
+
+  showExportDialog(
+    context: context,
+    mode: ExportMode.chapter,
+    chapters: [chapter],
+    bookTitle: provider.bookTitle,
+  );
+}
