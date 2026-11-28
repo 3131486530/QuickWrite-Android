@@ -253,6 +253,10 @@ class _ReadingModePageState extends State<ReadingModePage> with WidgetsBindingOb
     final Color background = ColorUtils.getEditorBackgroundColorForTheme(context);
     return Scaffold(
       backgroundColor: background,
+      // 阅读页本身没有内联输入框，弹窗/输入法的安全区由弹窗自己处理；
+      // 若跟随键盘缩放，正文高度会变，段落编辑保存后分页会按键盘高度重排一次，
+      // 键盘收起再重排时页码已落错位置（表现就是跳到不相关的一页）。
+      resizeToAvoidBottomInset: false,
       // 阅读排版不随系统字体缩放变化，与编辑器正文保持一致
       body: MediaQuery(
         data: MediaQuery.of(context).copyWith(textScaler: TextScaler.noScaling),
@@ -552,6 +556,26 @@ class _ReadingModePageState extends State<ReadingModePage> with WidgetsBindingOb
     return -1;
   }
 
+  /// 段落所属页序号，找不到时返回序号最近段落所在的页；全书无正文返回 -1
+  ///
+  /// 段落被编辑成空行后不会再有 block，精确查找会落空，这时按就近原则落位，
+  /// 保证重新分页后不会停在原来的页码上看到另一段内容。
+  int _pageIndexForParagraphOrNearest(int paragraphIndex) {
+    int nearestPage = -1;
+    int nearestDistance = 1 << 30;
+    for (int i = 0; i < _pages.length; i++) {
+      for (final ReaderBlock block in _pages[i].blocks) {
+        if (block.paragraphIndex == paragraphIndex) return i;
+        final int distance = (block.paragraphIndex - paragraphIndex).abs();
+        if (distance < nearestDistance) {
+          nearestDistance = distance;
+          nearestPage = i;
+        }
+      }
+    }
+    return nearestPage;
+  }
+
   /// 某页首段序号，无正文时返回 0
   int _firstParagraphOfPage(int pageIndex) {
     if (pageIndex < 0 || pageIndex >= _pages.length) return 0;
@@ -626,17 +650,20 @@ class _ReadingModePageState extends State<ReadingModePage> with WidgetsBindingOb
     }
     _pageIndex = _pageIndex.clamp(0, _pages.length - 1);
 
-    // 听书时刚切章、分页此刻才完成：把等待朗读的段落所在页翻出来
+    // 听书切章、段落编辑保存后重排：把等待落位的段落所在页翻出来。
+    // 段落可能因编辑被清空而查不到，这时退到序号最近的段落，避免停在旧页码上。
     final int? reveal = _pendingRevealParagraph;
     if (reveal != null) {
-      _pendingRevealParagraph = null;
-      final int revealPage = _pageIndexForParagraph(reveal);
+      final int revealPage = _pageIndexForParagraphOrNearest(reveal);
       if (revealPage >= 0) _pageIndex = revealPage;
     }
 
     final int target = _pageIndex;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || !_pageController.hasClients) return;
+      if (!mounted) return;
+      // 落位这一帧之后再清锚点：中途若因尺寸/关键词变化再次分页，还能重新对位
+      if (_pendingRevealParagraph == reveal) _pendingRevealParagraph = null;
+      if (!_pageController.hasClients) return;
       if (_pageController.page?.round() != target) {
         _pageController.jumpToPage(target);
       }
