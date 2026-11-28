@@ -1033,52 +1033,199 @@ class _ReadingModePageState extends State<ReadingModePage> with WidgetsBindingOb
     if (index == null || index >= _paragraphs.length) return;
     final SettingsService settings = SettingsService.instance;
     final TextEditingController controller = TextEditingController(text: _paragraphs[index]);
-    final String? edited = await showDialog<String>(
+    final String? edited = await showGeneralDialog<String>(
       context: context,
-      builder: (BuildContext dialogContext) {
-        return AlertDialog(
-          scrollable: true,
-          title: Text(
-            '编辑段落',
-            style: TextStyle(
-              fontFamily: settings.fontFamily,
-              fontSize: 16,
-              fontWeight: FontWeight.w600,
-            ),
+      barrierDismissible: true,
+      barrierLabel: '关闭段落编辑',
+      barrierColor: Colors.black.withValues(alpha: 0.25),
+      transitionDuration: const Duration(milliseconds: 160),
+      pageBuilder: (
+        BuildContext dialogContext,
+        Animation<double> animation,
+        Animation<double> secondaryAnimation,
+      ) {
+        // 输入法弹起时整块胶囊面板跟着上移，始终停在键盘上方
+        final double keyboard = MediaQuery.viewInsetsOf(dialogContext).bottom;
+        return Align(
+          alignment: Alignment.bottomCenter,
+          child: AnimatedPadding(
+            duration: const Duration(milliseconds: 160),
+            curve: Curves.easeOut,
+            padding: EdgeInsets.only(left: 16, right: 16, bottom: keyboard + 24),
+            child: _buildParagraphEditorPanel(dialogContext, controller, index),
           ),
-          content: TextField(
-            controller: controller,
-            autofocus: true,
-            minLines: 3,
-            maxLines: 8,
-            keyboardType: TextInputType.multiline,
-            style: TextStyle(
-              fontFamily: settings.fontFamily,
-              fontSize: settings.fontSize,
-              height: settings.lineHeight,
-              color: ColorUtils.getFontColorForTheme(dialogContext),
-            ),
-            decoration: const InputDecoration(
-              border: OutlineInputBorder(),
-              isDense: true,
-            ),
+        );
+      },
+      transitionBuilder: (
+        BuildContext context,
+        Animation<double> animation,
+        Animation<double> secondaryAnimation,
+        Widget child,
+      ) {
+        final Animation<double> curved =
+            CurvedAnimation(parent: animation, curve: Curves.easeOutCubic);
+        return FadeTransition(
+          opacity: curved,
+          child: ScaleTransition(
+            scale: Tween<double>(begin: 0.94, end: 1).animate(curved),
+            child: child,
           ),
-          actions: <Widget>[
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(),
-              child: const Text('取消'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(controller.text),
-              child: const Text('保存'),
-            ),
-          ],
         );
       },
     );
     controller.dispose();
     if (!mounted || edited == null) return;
     await _replaceParagraph(index, edited);
+  }
+
+  /// 段落编辑面板：与长按「编辑 / 从此处读」浮动胶囊栏同风格的浮出卡片
+  ///
+  /// 关闭弹窗即取消，点「保存」回传新文本交给 [_replaceParagraph] 写回。
+  Widget _buildParagraphEditorPanel(
+    BuildContext dialogContext,
+    TextEditingController controller,
+    int index,
+  ) {
+    final SettingsService settings = SettingsService.instance;
+    final Color background =
+        ColorUtils.getEditorBackgroundColorForTheme(dialogContext);
+    final Color contentColor = ColorUtils.getFontColorForTheme(dialogContext);
+    final Color accent = Theme.of(dialogContext).colorScheme.primary;
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 560),
+      child: Material(
+        color: background,
+        elevation: 10,
+        shadowColor: Colors.black.withValues(alpha: 0.28),
+        borderRadius: BorderRadius.circular(22),
+        clipBehavior: Clip.antiAlias,
+        child: Container(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(22),
+            border: Border.all(color: accent.withValues(alpha: 0.35)),
+          ),
+          padding: const EdgeInsets.fromLTRB(16, 10, 12, 10),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              Row(
+                children: <Widget>[
+                  Container(
+                    width: 6,
+                    height: 6,
+                    decoration: BoxDecoration(
+                      color: accent,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      '编辑第 ${index + 1} 段',
+                      style: TextStyle(
+                        fontFamily: settings.fontFamily,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: contentColor.withValues(alpha: 0.6),
+                      ),
+                    ),
+                  ),
+                  GestureDetector(
+                    onTap: () => Navigator.of(dialogContext).pop(),
+                    behavior: HitTestBehavior.opaque,
+                    child: Padding(
+                      padding: const EdgeInsets.all(4),
+                      child: Icon(
+                        Icons.close_rounded,
+                        size: 16,
+                        color: contentColor.withValues(alpha: 0.5),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              TextField(
+                controller: controller,
+                autofocus: true,
+                minLines: 2,
+                maxLines: 6,
+                keyboardType: TextInputType.multiline,
+                textInputAction: TextInputAction.newline,
+                cursorColor: accent,
+                style: TextStyle(
+                  fontFamily: settings.fontFamily,
+                  fontSize: settings.fontSize,
+                  height: settings.lineHeight,
+                  color: contentColor,
+                ),
+                decoration: InputDecoration(
+                  isDense: true,
+                  border: InputBorder.none,
+                  hintText: '输入段落内容',
+                  hintStyle: TextStyle(
+                    fontFamily: settings.fontFamily,
+                    fontSize: settings.fontSize,
+                    color: contentColor.withValues(alpha: 0.35),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 6),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: <Widget>[
+                  TextButton(
+                    onPressed: () => Navigator.of(dialogContext).pop(),
+                    style: TextButton.styleFrom(
+                      foregroundColor: contentColor.withValues(alpha: 0.7),
+                      shape: const StadiumBorder(),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 6,
+                      ),
+                      minimumSize: Size.zero,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    child: Text(
+                      '取消',
+                      style: TextStyle(
+                        fontFamily: settings.fontFamily,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  TextButton(
+                    onPressed: () =>
+                        Navigator.of(dialogContext).pop(controller.text),
+                    style: TextButton.styleFrom(
+                      backgroundColor: accent.withValues(alpha: 0.14),
+                      foregroundColor: accent,
+                      shape: const StadiumBorder(),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 6,
+                      ),
+                      minimumSize: Size.zero,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    child: Text(
+                      '保存',
+                      style: TextStyle(
+                        fontFamily: settings.fontFamily,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   /// 用 [text] 替换当前章第 [index] 段，并写回章节文件
