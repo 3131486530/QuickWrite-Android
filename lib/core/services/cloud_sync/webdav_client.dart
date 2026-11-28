@@ -95,6 +95,12 @@ class WebDavClient implements RemoteStorage {
   /// 正常书稿结构的层级很浅，设置上限可以防止服务端返回异常目录时陷入无限展开
   static const int _maxListDepth = 32;
 
+  /// 一次性列举（PROPFIND Depth: infinity）的请求体
+  static const String _propfindBody =
+      '<?xml version="1.0" encoding="utf-8"?>'
+      '<d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/>'
+      '<d:getcontentlength/><d:getlastmodified/><d:getetag/></d:prop></d:propfind>';
+
   // ================= 构造与属性 =================
 
   WebDavClient({
@@ -154,6 +160,24 @@ class WebDavClient implements RemoteStorage {
 
   /// 列举结果的生成时间，用于判断缓存是否过期
   DateTime? _listCacheAt;
+
+  /// 服务端是否拒绝了一次性列举
+  ///
+  /// 记为 true 后不再重复试探：试探本身也要一个请求，
+  /// 对按请求计费的网盘没必要每次同步都白花一次
+  bool _infinityListUnsupported = false;
+
+  /// 多状态响应中单个 response 块
+  static final RegExp _responseBlockPattern = RegExp(
+    r'<(?:[A-Za-z0-9_.\-]+:)?response[\s>][\s\S]*?</(?:[A-Za-z0-9_.\-]+:)?response>',
+    caseSensitive: false,
+  );
+
+  /// 标识目录条目的 collection 标签
+  static final RegExp _collectionTagPattern = RegExp(
+    r'<(?:[A-Za-z0-9_.\-]+:)?collection\b',
+    caseSensitive: false,
+  );
 
   /// 请求节流器
   ///
@@ -244,6 +268,14 @@ class WebDavClient implements RemoteStorage {
       return List<RemoteSyncFile>.of(cached);
     }
 
+    // 先尝试一次请求拉取整棵树，服务端不支持该深度时再逐层展开
+    final atOnce = await _listTreeOnce();
+    if (atOnce != null) {
+      _listCache = List<RemoteSyncFile>.of(atOnce);
+      _listCacheAt = DateTime.now();
+      return List<RemoteSyncFile>.of(atOnce);
+    }
+
     final files = <RemoteSyncFile>[];
     // 待展开的目录队列，元素为相对于同步根目录的目录路径与当前深度，
     // 空字符串表示根目录
@@ -276,7 +308,9 @@ class WebDavClient implements RemoteStorage {
         files.add(
           RemoteSyncFile(
             key: relativePath,
-            etag: entry.eTag ?? '',
+            // 与一次性列举走同一套规范化，避免两条路径产出的 ETag 形态不同，
+            // 导致跨轮同步把未变更的文件误判为已变更
+            etag: _normalizeEtag(entry.eTag ?? ''),
             size: entry.size ?? 0,
             modifiedAt: entry.mTime,
           ),
@@ -287,6 +321,156 @@ class WebDavClient implements RemoteStorage {
     _listCache = List<RemoteSyncFile>.of(files);
     _listCacheAt = DateTime.now();
     return files;
+  }
+
+  /// 一次性列举整棵目录树
+  ///
+  /// 逐层列举每进一个目录都要一次 PROPFIND，书稿目录一多，单次同步的请求数
+  /// 就成倍上涨；支持该深度的服务端一次请求即可返回全树。服务端禁用
+  /// Depth: infinity 或返回无法解析的内容时返回 null，由调用方回落逐层列举
+  Future<List<RemoteSyncFile>?> _listTreeOnce() async {
+    if (_infinityListUnsupported) return null;
+
+    final Response<dynamic> response;
+    try {
+      response = await _request(
+        'PROPFIND',
+        remoteDir,
+        data: _propfindBody,
+        optionsHandler: (options) {
+          options.responseType = ResponseType.plain;
+          options.headers = {
+            ...?options.headers,
+            'depth': 'infinity',
+            'content-type': 'application/xml; charset=utf-8',
+          };
+        },
+      );
+    } on DioException catch (e) {
+      // 目录尚未创建，等同于空目录
+      if (e.response?.statusCode == 404) return const <RemoteSyncFile>[];
+      _infinityListUnsupported = true;
+      debugPrint('服务端不接受一次性列举（${e.response?.statusCode}），回落逐层列举');
+      return null;
+    }
+
+    final body = response.data;
+    if (body is! String || body.trim().isEmpty) {
+      _infinityListUnsupported = true;
+      return null;
+    }
+
+    final parsed = _parseTreeOf(body);
+    if (parsed == null) {
+      _infinityListUnsupported = true;
+      debugPrint('一次性列举结果无法解析，回落逐层列举');
+      return null;
+    }
+    return parsed;
+  }
+
+  /// 解析多状态响应，得到整棵树的文件列表
+  ///
+  /// 只依赖正则读取标签值，不引入额外的 XML 依赖；结构异常时返回 null
+  List<RemoteSyncFile>? _parseTreeOf(String xml) {
+    final blocks = _responseBlockPattern.allMatches(xml).toList();
+    if (blocks.isEmpty) return null;
+
+    final files = <RemoteSyncFile>[];
+    var fileEntries = 0;
+    for (final block in blocks) {
+      final raw = block.group(0);
+      if (raw == null) continue;
+
+      // 先按 resourcetype 判断是不是目录，目录本身不计入文件数
+      final isCollection = _collectionTagPattern.hasMatch(raw);
+      if (!isCollection) fileEntries++;
+      if (isCollection) continue;
+
+      final href = _propValue(raw, 'href');
+      if (href == null) continue;
+
+      final key = _relativeKeyOf(href);
+      if (key == null || key.isEmpty) continue;
+
+      final segments = key.split('/');
+      // 内部目录与传输残留的临时文件都不属于同步范围
+      if (segments.any((seg) => _internalDirNames.contains(seg))) continue;
+      if (segments.last.endsWith(kSyncTempSuffix)) continue;
+      if (segments.length > _maxListDepth) continue;
+
+      files.add(
+        RemoteSyncFile(
+          key: key,
+          etag: _normalizeEtag(_propValue(raw, 'getetag') ?? ''),
+          size: int.tryParse(_propValue(raw, 'getcontentlength') ?? '') ?? 0,
+          modifiedAt: _parseHttpDate(_propValue(raw, 'getlastmodified')),
+        ),
+      );
+    }
+
+    // 响应里明明有文件条目却一条都没换算出来，说明路径结构与本端假设不符；
+    // 宁可回落逐层列举，也不能把非空远端当成空目录
+    if (files.isEmpty && fileEntries > 0) return null;
+    return files;
+  }
+
+  /// 把响应中的 href 换算成相对于同步根目录的逻辑键
+  String? _relativeKeyOf(String href) {
+    final String decoded;
+    try {
+      decoded = Uri.decodeComponent(href.trim());
+    } on FormatException {
+      // href 里出现非法的百分号转义时无法还原路径，按未知条目处理
+      return null;
+    }
+    if (decoded.isEmpty) return null;
+
+    final root = remoteDir.replaceAll(RegExp(r'^/+|/+$'), '');
+    if (root.isEmpty) {
+      final trimmed = decoded.replaceAll(RegExp(r'^/+|/+$'), '');
+      return trimmed.isEmpty ? null : trimmed;
+    }
+
+    final marker = '/$root/';
+    final index = decoded.indexOf(marker);
+    if (index < 0) return null;
+    final key = decoded.substring(index + marker.length);
+    return key.endsWith('/') ? key.substring(0, key.length - 1) : key;
+  }
+
+  /// 读取多状态响应中某个属性标签的文本值
+  static String? _propValue(String block, String tag) {
+    final match = RegExp(
+      '<(?:[A-Za-z0-9_.\\-]+:)?'
+      '$tag'
+      r'\b[^>]*>([\s\S]*?)</',
+      caseSensitive: false,
+    ).firstMatch(block);
+    final value = match?.group(1)?.trim();
+    return (value == null || value.isEmpty) ? null : value;
+  }
+
+  /// 统一 ETag 表示，去掉弱校验前缀与包裹引号
+  static String _normalizeEtag(String raw) {
+    var value = raw.trim();
+    if (value.startsWith('W/')) value = value.substring(2);
+    if (value.length >= 2 &&
+        value.startsWith('"') &&
+        value.endsWith('"')) {
+      value = value.substring(1, value.length - 1);
+    }
+    return value;
+  }
+
+  /// 解析 HTTP 日期，失败时返回 null
+  static DateTime? _parseHttpDate(String? raw) {
+    if (raw == null) return null;
+    try {
+      return HttpDate.parse(raw);
+    } on Object {
+      return null;
+    }
   }
 
   /// 使递归列举缓存失效
@@ -306,6 +490,7 @@ class WebDavClient implements RemoteStorage {
     _rawClient?.c.close(force: true);
     _rawClient = null;
     _ensuredDirs.clear();
+    _infinityListUnsupported = false;
     _invalidateListCache();
   }
 
@@ -315,6 +500,7 @@ class WebDavClient implements RemoteStorage {
     _rawClient?.c.close(force: true);
     _rawClient = null;
     _ensuredDirs.clear();
+    _infinityListUnsupported = false;
     _invalidateListCache();
   }
 
@@ -333,13 +519,21 @@ class WebDavClient implements RemoteStorage {
     final file = File(localPath);
     final length = await file.length();
     try {
-      await _uploadFileOnce(file, length, remotePath);
+      // 直传模式先直接写入：增量同步时远端目录通常已经存在，
+      // 预先建目录等于每次同步都白付一个请求
+      await _uploadFileOnce(
+        file,
+        length,
+        remotePath,
+        ensureParent: !prefersDirectUpload,
+      );
     } on DioException catch (e) {
-      // 远端目录被其他客户端删除后，本端缓存的“已创建目录”已失效，
-      // 服务端会返回 409；清空目录缓存、重新创建父目录后重试一次
-      if (e.response?.statusCode != 409) rethrow;
+      // 父目录缺失（被其他客户端删除）时服务端返回 404 或 409；
+      // 清空目录缓存、重新创建父目录后重试一次
+      final status = e.response?.statusCode;
+      if (status != 409 && status != 404) rethrow;
       resetDirectoryCache();
-      await _uploadFileOnce(file, length, remotePath);
+      await _uploadFileOnce(file, length, remotePath, ensureParent: true);
     }
     _invalidateListCache();
   }
@@ -348,9 +542,10 @@ class WebDavClient implements RemoteStorage {
   Future<void> _uploadFileOnce(
     File file,
     int length,
-    String remotePath,
-  ) async {
-    await _ensureParentDirectory(remotePath);
+    String remotePath, {
+    bool ensureParent = true,
+  }) async {
+    if (ensureParent) await _ensureParentDirectory(remotePath);
 
     await _request(
       'PUT',
