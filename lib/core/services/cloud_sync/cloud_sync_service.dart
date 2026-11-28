@@ -53,7 +53,11 @@ class CloudSyncService extends ChangeNotifier {
   final SyncStateStore _stateStore = SyncStateStore.instance;
 
   /// 自动同步调度器
-  late final SyncScheduler _scheduler = SyncScheduler(onTrigger: _autoSync);
+  late final SyncScheduler _scheduler = SyncScheduler(
+    onTrigger: _autoSync,
+    // 冷却状态变化时刷新界面提示
+    onCooldownChanged: notifyListeners,
+  );
 
   /// 当前使用的远端存储客户端（未连接时为 null）
   RemoteStorage? _storage;
@@ -172,6 +176,12 @@ class CloudSyncService extends ChangeNotifier {
   /// 与 [hasUnsyncedChanges] 不同，它表示同步过程本身出错，
   /// 用于界面提示用户检查网络或云盘设置
   bool get syncFailed => _mirroredSyncFailed ?? _lastSyncFailed;
+
+  /// 自动同步因云端限流暂停的剩余时长
+  ///
+  /// 返回 null 表示未处于暂停状态。界面据此说明改动为何暂时停留在本地，
+  /// 避免用户把「限流退避」误认为同步故障
+  Duration? get syncCooldownRemaining => _scheduler.cooldownRemaining;
 
   /// 实时同步当前是否生效
   ///
@@ -583,7 +593,10 @@ class CloudSyncService extends ChangeNotifier {
       // 失败的部分因未写入基线，会在下次同步自动重试
       _config.lastSyncTime = DateTime.now();
       await _config.saveConfig();
-      return CloudSyncResult.success(_describeSummary(summary));
+      return CloudSyncResult.success(
+        _describeSummary(summary),
+        rateLimited: _isThrottledSummary(summary),
+      );
     } catch (e) {
       // 异常发生前可能已经写入部分元数据，交由界面重新加载以保证显示一致
       dataChanged = true;
@@ -591,7 +604,13 @@ class CloudSyncService extends ChangeNotifier {
       _setHasUnsyncedChanges(true);
       // 记录本次同步失败，界面据此提示用户检查网络或云盘设置
       _setSyncFailed(true);
-      return CloudSyncResult.failure('同步失败：${describeRemoteError(e)}');
+      // 限流或配额耗尽时调度器需要拉长间隔，其它异常按原节奏重试
+      final throttled =
+          isRemoteRateLimitError(e) || isRemoteQuotaExceeded(e);
+      return CloudSyncResult.failure(
+        '同步失败：${describeRemoteError(e)}',
+        rateLimited: throttled,
+      );
     } finally {
       _syncProgress = null;
       if (dataChanged) _syncRevision++;
@@ -667,6 +686,13 @@ class CloudSyncService extends ChangeNotifier {
     }
 
     final result = await syncNow();
+    // 被限流时拉长下一次自动同步的间隔，成功后立即恢复正常节奏
+    if (result.rateLimited) {
+      _scheduler.recordThrottled();
+      notifyListeners();
+    } else {
+      _scheduler.recordSuccess();
+    }
     if (result.success) {
       _lastNoticeMessage = null;
       return;
@@ -908,7 +934,16 @@ class CloudSyncService extends ChangeNotifier {
     return '同步预演：${parts.join('，')}（尚未实际传输）';
   }
 
-  /// 将同步结果转换为便于用户理解的提示文本
+  /// 汇总结果是否体现出服务端限流
+  ///
+  /// 中途被限流中止时已完成的项目照常计入，剩余项目留待下次同步，
+  /// 这种情况上层仍按成功处理，但调度器必须拉长下一次尝试的间隔
+  bool _isThrottledSummary(SyncSummary summary) {
+    if (summary.abortedCount > 0) return true;
+    return summary.outcomes.any((outcome) => outcome.rateLimited);
+  }
+
+  /// 描述一次同步的执行结果
   String _describeSummary(SyncSummary summary) {
     // 风险预检未通过时说明暂停原因，并指出重新发起的位置
     if (summary.cancelled) {

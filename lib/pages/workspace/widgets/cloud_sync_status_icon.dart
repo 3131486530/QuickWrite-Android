@@ -103,6 +103,14 @@ class _CloudSyncStatusIconState extends State<CloudSyncStatusIcon>
       return _buildStatusIcon(Icons.sync_outlined, rotating: true);
     }
 
+    // 云端限流暂停：用等待图标说明改动会延后推送
+    if (_service.syncCooldownRemaining != null) {
+      return _buildStatusIcon(
+        Icons.schedule,
+        color: Theme.of(context).colorScheme.onSurfaceVariant,
+      );
+    }
+
     // 同步失败：以错误色提示用户检查网络或云盘设置
     if (_service.syncFailed) {
       return _buildStatusIcon(
@@ -160,6 +168,9 @@ String _describeSyncStatus(
   // 未开启实时同步时，图标不代表云同步状态
   if (!service.isRealtimeSyncActive) return '实时同步未开启';
   if (service.isSyncing) return '正在同步…';
+  if (service.syncCooldownRemaining != null) {
+    return '云端限流，自动同步暂停中，稍后会自动重试';
+  }
   if (service.syncFailed) return '同步失败，请检查网络或云盘设置';
   if (hasPendingLocalEdits || service.hasUnsyncedChanges) return '尚未同步到云端';
   return '已同步到云端';
