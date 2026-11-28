@@ -11,6 +11,7 @@ import 'package:quick_write/core/utils/color_utils.dart';
 import 'package:quick_write/core/utils/custom_highlight_regex.dart';
 import 'package:quick_write/core/utils/highlight_range_resolver.dart';
 import 'package:quick_write/pages/workspace/reader/reader_paginator.dart';
+import 'package:quick_write/shared/widgets/qw_text_field.dart';
 import 'package:quick_write/shared/widgets/widgets.dart';
 
 /// 阅读模式中的一章
@@ -1126,14 +1127,15 @@ class _ReadingModePageState extends State<ReadingModePage> with WidgetsBindingOb
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: <Widget>[
-              TextField(
+              // 用 QwTextField 而非原生 TextField：光标颜色走「自定义光标色 → 主题主色」，
+              // 光标样式（常驻 / 呼吸）也随设置生效，与编辑器内的光标表现一致
+              QwTextField(
                 controller: controller,
                 autofocus: true,
                 minLines: 2,
                 maxLines: 6,
                 keyboardType: TextInputType.multiline,
                 textInputAction: TextInputAction.newline,
-                cursorColor: accent,
                 style: TextStyle(
                   fontFamily: settings.fontFamily,
                   fontSize: settings.fontSize,
