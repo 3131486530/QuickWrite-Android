@@ -269,6 +269,7 @@ class BackupService {
       final fileName = file.path.split(Platform.pathSeparator).last;
       final timestamp = fileName.substring(0, fileName.length - extension.length);
       final dateTime = _parseTimestamp(timestamp);
+      if (dateTime == null) continue; // 文件名不含合法时间戳，不纳入备份列表
       final stat = await file.stat();
       records.add(BackupRecord(
         filePath: file.path,
@@ -666,6 +667,8 @@ class BackupService {
         if (_isBackupFile(entity)) {
           final fileName = _stripBackupExtension(entity.path.split(Platform.pathSeparator).last);
           final dateTime = _parseTimestamp(fileName);
+          // 无法判定时间的备份不做清理，避免误删用户手动改名的备份
+          if (dateTime == null) continue;
 
           if (dateTime.isBefore(cutoffDate)) {
             try {
@@ -788,17 +791,33 @@ class BackupService {
   /// 将时间戳文件名解析为 DateTime
   ///
   /// 文件名格式：20260517_143025
-  DateTime _parseTimestamp(String timestamp) {
-    try {
-      final year = int.parse(timestamp.substring(0, 4));
-      final month = int.parse(timestamp.substring(4, 6));
-      final day = int.parse(timestamp.substring(6, 8));
-      final hour = int.parse(timestamp.substring(9, 11));
-      final minute = int.parse(timestamp.substring(11, 13));
-      final second = int.parse(timestamp.substring(13, 15));
-      return DateTime(year, month, day, hour, minute, second);
-    } catch (e) {
-      return DateTime.now();
+  ///
+  /// 解析失败返回 null：备份文件可能来自手动改名或同步冲突副本，
+  /// 这类文件名不带合法时间戳，若兜底成「当前时间」会让备份列表排序与
+  /// 过期清理判断全部失真（旧备份永远显示为最新、永远不被清理）。
+  DateTime? _parseTimestamp(String timestamp) {
+    if (timestamp.length < 15) return null;
+    final int? year = int.tryParse(timestamp.substring(0, 4));
+    final int? month = int.tryParse(timestamp.substring(4, 6));
+    final int? day = int.tryParse(timestamp.substring(6, 8));
+    final int? hour = int.tryParse(timestamp.substring(9, 11));
+    final int? minute = int.tryParse(timestamp.substring(11, 13));
+    final int? second = int.tryParse(timestamp.substring(13, 15));
+    if (year == null ||
+        month == null ||
+        day == null ||
+        hour == null ||
+        minute == null ||
+        second == null) {
+      return null;
     }
+    // DateTime 构造器会静默进位（如 month=13 变成次年 1 月），这里先校验取值范围
+    if (month < 1 || month > 12) return null;
+    if (day < 1 || day > 31) return null;
+    if (hour > 23 || minute > 59 || second > 59) return null;
+    final DateTime parsed = DateTime(year, month, day, hour, minute, second);
+    // 2 月 30 日这类日期会被进位，说明原始时间戳不合法
+    if (parsed.month != month || parsed.day != day) return null;
+    return parsed;
   }
 }

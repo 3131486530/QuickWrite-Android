@@ -226,9 +226,11 @@ class RichClipboard {
     ).firstMatch(header);
 
     if (startMatch != null && endMatch != null) {
-      final int start = int.parse(startMatch.group(1)!);
-      final int end = int.parse(endMatch.group(1)!);
-      if (start < end && end <= bytes.length) {
+      // 外部剪贴板数据里的偏移量不可信：位数过多会让 int.parse 抛异常，
+      // 进而导致整次粘贴失败，这里改用 tryParse 并在非法时回退到整段解码
+      final int? start = int.tryParse(startMatch.group(1)!);
+      final int? end = int.tryParse(endMatch.group(1)!);
+      if (start != null && end != null && start < end && end <= bytes.length) {
         return utf8.decode(bytes.sublist(start, end), allowMalformed: true);
       }
     }

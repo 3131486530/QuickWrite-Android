@@ -64,9 +64,17 @@ mixin EditorMixin on WorkspaceStateBase, BookDataMixin {
 
   /// 全文搜索结果列表
   List<GlobalSearchResult> _globalSearchResults = [];
+  // 全文搜索结果可能上千条，getter 若每次 List.unmodifiable 都会整表复制，
+  // 而列表项构建时会反复取值（每次 notifyListeners 重建 × 每个 item），开销是 O(n) 甚至 O(n²)；
+  // 这里改为对同一个内部实例做零拷贝只读视图，赋值处改为 clear + addAll
+  late final List<GlobalSearchResult> _globalSearchResultsView =
+      UnmodifiableListView<GlobalSearchResult>(_globalSearchResults);
 
   /// 全文搜索是否正在进行
   bool _isGlobalSearching = false;
+  // 全文搜索代际号：连续输入会并发触发多次搜索，
+  // 旧搜索完成较晚时会把新结果覆盖成过期内容，这里用代际号丢弃过期结果
+  int _globalSearchGeneration = 0;
 
   /// 等待内容加载完成的标签页（标签页ID -> 完成信号）
   ///
@@ -132,8 +140,7 @@ mixin EditorMixin on WorkspaceStateBase, BookDataMixin {
   String get globalSearchQuery => _globalSearchQuery;
   bool get globalSearchCaseSensitive => _globalSearchCaseSensitive;
   bool get globalSearchIncludeOutlines => _globalSearchIncludeOutlines;
-  List<GlobalSearchResult> get globalSearchResults =>
-      List.unmodifiable(_globalSearchResults);
+  List<GlobalSearchResult> get globalSearchResults => _globalSearchResultsView;
   bool get isGlobalSearching => _isGlobalSearching;
 
   /// 查找替换栏显示时，编辑器需要预留的顶边距高度
@@ -847,7 +854,9 @@ mixin EditorMixin on WorkspaceStateBase, BookDataMixin {
   Future<void> updateGlobalSearchQuery(String query) async {
     _globalSearchQuery = query;
     if (query.isEmpty) {
-      _globalSearchResults = [];
+      // 关键词被清空时同步作废在途搜索，避免旧结果回灌到空列表上
+      _globalSearchGeneration++;
+      _globalSearchResults.clear();
       notifyListeners();
       return;
     }
@@ -886,16 +895,32 @@ mixin EditorMixin on WorkspaceStateBase, BookDataMixin {
     // 解析多关键词，若解析后为空（如仅输入了分隔符）则清空结果
     final keywords = SearchQueryParser.parse(_globalSearchQuery);
     if (keywords.isEmpty) {
-      _globalSearchResults = [];
+      _globalSearchGeneration++;
+      _globalSearchResults.clear();
       _isGlobalSearching = false;
       notifyListeners();
       return;
     }
 
+    final int generation = ++_globalSearchGeneration;
     _isGlobalSearching = true;
     notifyListeners();
 
     final results = <GlobalSearchResult>[];
+    // 已处理文件计数：按批把中间结果推给界面，避免长书搜索长时间无反馈
+    int scanned = 0;
+    const int batchSize = 8;
+
+    // 同步已收集结果到界面；返回 false 表示本次搜索已被更新的搜索取代
+    bool flush({required bool finished}) {
+      if (generation != _globalSearchGeneration) return false;
+      _globalSearchResults
+        ..clear()
+        ..addAll(results);
+      _isGlobalSearching = !finished;
+      notifyListeners();
+      return true;
+    }
 
     // 搜索大纲文件（设定项），结果显示在正文之前
     if (_globalSearchIncludeOutlines) {
@@ -916,6 +941,7 @@ mixin EditorMixin on WorkspaceStateBase, BookDataMixin {
         } catch (e) {
           debugPrint('全文搜索读取大纲文件失败: ${item.title}, $e');
         }
+        if (++scanned % batchSize == 0 && !flush(finished: false)) return;
       }
     }
 
@@ -935,11 +961,10 @@ mixin EditorMixin on WorkspaceStateBase, BookDataMixin {
       } catch (e) {
         debugPrint('全文搜索读取章节失败: ${chapter.title}, $e');
       }
+      if (++scanned % batchSize == 0 && !flush(finished: false)) return;
     }
 
-    _globalSearchResults = results;
-    _isGlobalSearching = false;
-    notifyListeners();
+    flush(finished: true);
   }
 
   /// 在单个文件内容中匹配关键词

@@ -10,13 +10,9 @@ class ColorUtils {
   /// 支持格式：#RRGGBB 或 #RRGGBBAA
   /// 解析失败时返回黑色
   static Color parseHex(String hexColor) {
-    final String colorStr = hexColor.replaceAll('#', '');
-    if (colorStr.length == 6) {
-      return Color(int.parse('FF$colorStr', radix: 16));
-    } else if (colorStr.length == 8) {
-      return Color(int.parse(colorStr, radix: 16));
-    }
-    return Colors.black;
+    // 长度合法但含非十六进制字符（如云端下发的脏数据 "#GGGGGG"）时，
+    // int.parse 会抛异常并导致整个界面构建失败，这里统一走安全解析
+    return tryParseHex(hexColor) ?? Colors.black;
   }
 
   /// 将 Color 对象转换为十六进制颜色字符串（#RRGGBB 格式）
@@ -151,11 +147,15 @@ class ColorUtils {
   /// 支持格式：#RRGGBB 或 #RRGGBBAA
   /// 解析失败或字符串不完整时返回 null
   static Color? tryParseHex(String hexColor) {
-    final String colorStr = hexColor.replaceAll('#', '');
+    final String colorStr = hexColor.trim().replaceAll('#', '');
+    // 名称为「安全解析」就必须真的不抛异常：长度合法但字符非法时
+    // 原实现 int.parse 仍会抛 FormatException，这里改为 tryParse
     if (colorStr.length == 6) {
-      return Color(int.parse('FF$colorStr', radix: 16));
+      final int? value = int.tryParse('FF$colorStr', radix: 16);
+      return value == null ? null : Color(value);
     } else if (colorStr.length == 8) {
-      return Color(int.parse(colorStr, radix: 16));
+      final int? value = int.tryParse(colorStr, radix: 16);
+      return value == null ? null : Color(value);
     }
     return null;
   }
