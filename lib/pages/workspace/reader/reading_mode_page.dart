@@ -1027,49 +1027,38 @@ class _ReadingModePageState extends State<ReadingModePage> with WidgetsBindingOb
   }
 
   /// 编辑选中的段落：弹窗改完写回正文与章节文件
+  ///
+  /// 位置逻辑与长按浮动栏完全同源：取长按点在栈内的局部坐标换算成全局坐标，
+  /// 胶囊面板贴在该点上方（空间不足贴下方），并夹在可视区与键盘之间。
   Future<void> _editSelectedParagraph() async {
     final int? index = _selectedParagraph;
+    final RenderBox? box = _rootKey.currentContext?.findRenderObject() as RenderBox?;
+    final Offset anchor = box == null
+        ? Offset(MediaQuery.sizeOf(context).width / 2,
+            MediaQuery.sizeOf(context).height / 2)
+        : box.localToGlobal(_selectionAnchor);
     _hideSelectionBar();
     if (index == null || index >= _paragraphs.length) return;
-    final SettingsService settings = SettingsService.instance;
-    final TextEditingController controller = TextEditingController(text: _paragraphs[index]);
+    final TextEditingController controller =
+        TextEditingController(text: _paragraphs[index]);
     final String? edited = await showGeneralDialog<String>(
       context: context,
       barrierDismissible: true,
       barrierLabel: '关闭段落编辑',
-      barrierColor: Colors.black.withValues(alpha: 0.25),
-      transitionDuration: const Duration(milliseconds: 160),
+      barrierColor: Colors.black.withValues(alpha: 0.12),
+      transitionDuration: const Duration(milliseconds: 120),
       pageBuilder: (
         BuildContext dialogContext,
         Animation<double> animation,
         Animation<double> secondaryAnimation,
       ) {
-        // 输入法弹起时整块胶囊面板跟着上移，始终停在键盘上方
-        final double keyboard = MediaQuery.viewInsetsOf(dialogContext).bottom;
-        return Align(
-          alignment: Alignment.bottomCenter,
-          child: AnimatedPadding(
-            duration: const Duration(milliseconds: 160),
-            curve: Curves.easeOut,
-            padding: EdgeInsets.only(left: 16, right: 16, bottom: keyboard + 24),
-            child: _buildParagraphEditorPanel(dialogContext, controller, index),
+        return CustomSingleChildLayout(
+          delegate: _CapsulePanelLayout(
+            anchor: anchor,
+            gap: 10,
+            keyboard: MediaQuery.viewInsetsOf(dialogContext).bottom,
           ),
-        );
-      },
-      transitionBuilder: (
-        BuildContext context,
-        Animation<double> animation,
-        Animation<double> secondaryAnimation,
-        Widget child,
-      ) {
-        final Animation<double> curved =
-            CurvedAnimation(parent: animation, curve: Curves.easeOutCubic);
-        return FadeTransition(
-          opacity: curved,
-          child: ScaleTransition(
-            scale: Tween<double>(begin: 0.94, end: 1).animate(curved),
-            child: child,
-          ),
+          child: _buildParagraphEditorPanel(dialogContext, controller, index),
         );
       },
     );
@@ -1078,9 +1067,11 @@ class _ReadingModePageState extends State<ReadingModePage> with WidgetsBindingOb
     await _replaceParagraph(index, edited);
   }
 
-  /// 段落编辑面板：与长按「编辑 / 从此处读」浮动胶囊栏同风格的浮出卡片
+  /// 段落编辑面板：照搬长按浮动胶囊栏的材质与控件样式
   ///
-  /// 关闭弹窗即取消，点「保存」回传新文本交给 [_replaceParagraph] 写回。
+  /// 同背景色、同 elevation 4、同「高度一半」的胶囊圆角（[StadiumBorder] 即任意高度
+  /// 都等于 height / 2，与 barHeight / 2 同一条规则）、同字号 accent 图标动作，
+  /// 动作之间同样用 0.5×18 的细竖线分隔，只是把动作换成取消 / 保存。
   Widget _buildParagraphEditorPanel(
     BuildContext dialogContext,
     TextEditingController controller,
@@ -1091,61 +1082,49 @@ class _ReadingModePageState extends State<ReadingModePage> with WidgetsBindingOb
         ColorUtils.getEditorBackgroundColorForTheme(dialogContext);
     final Color contentColor = ColorUtils.getFontColorForTheme(dialogContext);
     final Color accent = Theme.of(dialogContext).colorScheme.primary;
+
+    Widget action({
+      required IconData icon,
+      required String label,
+      required VoidCallback onTap,
+    }) {
+      return InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(21),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              Icon(icon, size: 16, color: accent),
+              const SizedBox(width: 4),
+              Text(
+                label,
+                style: TextStyle(
+                  fontFamily: settings.fontFamily,
+                  fontSize: 13,
+                  color: contentColor,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
     return ConstrainedBox(
-      constraints: const BoxConstraints(maxWidth: 560),
+      constraints: const BoxConstraints(minWidth: 220, maxWidth: 560),
       child: Material(
         color: background,
-        elevation: 10,
-        shadowColor: Colors.black.withValues(alpha: 0.28),
-        borderRadius: BorderRadius.circular(22),
+        elevation: 4,
+        shape: const StadiumBorder(),
         clipBehavior: Clip.antiAlias,
-        child: Container(
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(22),
-            border: Border.all(color: accent.withValues(alpha: 0.35)),
-          ),
-          padding: const EdgeInsets.fromLTRB(16, 10, 12, 10),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(18, 10, 18, 6),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: <Widget>[
-              Row(
-                children: <Widget>[
-                  Container(
-                    width: 6,
-                    height: 6,
-                    decoration: BoxDecoration(
-                      color: accent,
-                      shape: BoxShape.circle,
-                    ),
-                  ),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      '编辑第 ${index + 1} 段',
-                      style: TextStyle(
-                        fontFamily: settings.fontFamily,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        color: contentColor.withValues(alpha: 0.6),
-                      ),
-                    ),
-                  ),
-                  GestureDetector(
-                    onTap: () => Navigator.of(dialogContext).pop(),
-                    behavior: HitTestBehavior.opaque,
-                    child: Padding(
-                      padding: const EdgeInsets.all(4),
-                      child: Icon(
-                        Icons.close_rounded,
-                        size: 16,
-                        color: contentColor.withValues(alpha: 0.5),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 4),
               TextField(
                 controller: controller,
                 autofocus: true,
@@ -1163,7 +1142,7 @@ class _ReadingModePageState extends State<ReadingModePage> with WidgetsBindingOb
                 decoration: InputDecoration(
                   isDense: true,
                   border: InputBorder.none,
-                  hintText: '输入段落内容',
+                  hintText: '编辑第 ${index + 1} 段',
                   hintStyle: TextStyle(
                     fontFamily: settings.fontFamily,
                     fontSize: settings.fontSize,
@@ -1171,53 +1150,24 @@ class _ReadingModePageState extends State<ReadingModePage> with WidgetsBindingOb
                   ),
                 ),
               ),
-              const SizedBox(height: 6),
               Row(
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: <Widget>[
-                  TextButton(
-                    onPressed: () => Navigator.of(dialogContext).pop(),
-                    style: TextButton.styleFrom(
-                      foregroundColor: contentColor.withValues(alpha: 0.7),
-                      shape: const StadiumBorder(),
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 14,
-                        vertical: 6,
-                      ),
-                      minimumSize: Size.zero,
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    ),
-                    child: Text(
-                      '取消',
-                      style: TextStyle(
-                        fontFamily: settings.fontFamily,
-                        fontSize: 13,
-                      ),
-                    ),
+                  action(
+                    icon: Icons.close_rounded,
+                    label: '取消',
+                    onTap: () => Navigator.of(dialogContext).pop(),
                   ),
-                  const SizedBox(width: 4),
-                  TextButton(
-                    onPressed: () =>
+                  SizedBox(
+                    width: 0.5,
+                    height: 18,
+                    child: ColoredBox(color: contentColor.withValues(alpha: 0.2)),
+                  ),
+                  action(
+                    icon: Icons.check_rounded,
+                    label: '保存',
+                    onTap: () =>
                         Navigator.of(dialogContext).pop(controller.text),
-                    style: TextButton.styleFrom(
-                      backgroundColor: accent.withValues(alpha: 0.14),
-                      foregroundColor: accent,
-                      shape: const StadiumBorder(),
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 6,
-                      ),
-                      minimumSize: Size.zero,
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    ),
-                    child: Text(
-                      '保存',
-                      style: TextStyle(
-                        fontFamily: settings.fontFamily,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
                   ),
                 ],
               ),
@@ -1617,4 +1567,44 @@ class _DashedLinePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _DashedLinePainter oldDelegate) => oldDelegate.color != color;
+}
+
+/// 胶囊浮层定位委托：与长按浮动栏同一套算法
+/// （贴锚点上方，上方不够贴下方，左右夹在可视区内，且不压键盘）。
+class _CapsulePanelLayout extends SingleChildLayoutDelegate {
+  _CapsulePanelLayout({
+    required this.anchor,
+    required this.gap,
+    required this.keyboard,
+  });
+
+  final Offset anchor;
+  final double gap;
+  final double keyboard;
+
+  @override
+  BoxConstraints getConstraintsForChild(BoxConstraints constraints) {
+    return BoxConstraints(
+      minWidth: 220,
+      maxWidth: math.min(560, constraints.maxWidth - 32),
+    );
+  }
+
+  @override
+  Offset getPositionForChild(Size size, Size childSize) {
+    final double left = (anchor.dx - childSize.width / 2)
+        .clamp(16.0, math.max(16.0, size.width - childSize.width - 16));
+    final double maxBottom = size.height - keyboard - 8;
+    double top = anchor.dy - childSize.height - gap;
+    if (top < 8) top = anchor.dy + 22;
+    if (top + childSize.height > maxBottom) {
+      top = math.max(8.0, maxBottom - childSize.height);
+    }
+    return Offset(left, top);
+  }
+
+  @override
+  bool shouldRelayout(_CapsulePanelLayout oldDelegate) {
+    return oldDelegate.anchor != anchor || oldDelegate.keyboard != keyboard;
+  }
 }
