@@ -127,6 +127,7 @@ mixin EditorMixin on WorkspaceStateBase, BookDataMixin {
 
   late final List<TextSelection> _findMatchesView =
       UnmodifiableListView<TextSelection>(_findMatches);
+
   int get currentMatchIndex => _currentMatchIndex;
   String get globalSearchQuery => _globalSearchQuery;
   bool get globalSearchCaseSensitive => _globalSearchCaseSensitive;
@@ -149,7 +150,11 @@ mixin EditorMixin on WorkspaceStateBase, BookDataMixin {
   /// 总匹配数
   int get totalMatchCount => _findMatches.length;
 
-  List<EditorTab> get openedTabs => List.unmodifiable(_openedTabs);
+  List<EditorTab> get openedTabs => _openedTabsView;
+
+  late final List<EditorTab> _openedTabsView =
+      UnmodifiableListView<EditorTab>(_openedTabs);
+
   int get currentTabIndex => _currentTabIndex;
 
   /// 获取当前选中的标签页
