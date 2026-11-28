@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:quick_write/core/constants/material_icons.dart';
 import 'package:quick_write/core/models/custom_highlight.dart';
 import 'package:quick_write/core/services/cache_services/misc_cache_service.dart';
 import 'package:quick_write/core/services/workspace/custom_highlight_service.dart';
@@ -52,7 +53,7 @@ Future<CustomHighlightGroupEditResult?> showCustomHighlightGroupDialog({
     context: context,
     title: isNewGroup ? '新建高亮分组' : '编辑高亮分组',
     subtitle: '本组词条共用同一颜色，词条用「、」分隔',
-    titleIcon: Icons.format_ink_highlighter,
+    titleIcon: MaterialIcons.format_ink_highlighter,
     width: 520,
     height: 560,
     adaptiveHeight: true,
