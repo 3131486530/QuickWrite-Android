@@ -121,7 +121,12 @@ mixin EditorMixin on WorkspaceStateBase, BookDataMixin {
   String get replaceText => _replaceText;
   bool get findCaseSensitive => _findCaseSensitive;
   bool get showReplace => _showReplace;
-  List<TextSelection> get findMatches => List.unmodifiable(_findMatches);
+  /// 对外只读视图：该 getter 在 build 与重绘判定中会被多次读取，
+  /// 原先每次 List.unmodifiable 都会完整复制列表，这里改为零拷贝视图
+  List<TextSelection> get findMatches => _findMatchesView;
+
+  late final List<TextSelection> _findMatchesView =
+      UnmodifiableListView<TextSelection>(_findMatches);
   int get currentMatchIndex => _currentMatchIndex;
   String get globalSearchQuery => _globalSearchQuery;
   bool get globalSearchCaseSensitive => _globalSearchCaseSensitive;

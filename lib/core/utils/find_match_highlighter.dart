@@ -26,24 +26,37 @@ class FindMatchHighlighter {
   }) {
     if (matches.isEmpty || spans.isEmpty) return spans;
 
+    // 匹配项按起点升序排好并把下标一并带上：span 是顺序遍历的，
+    // 只需单向推进游标即可，避免每个 span 都把全部匹配扫一遍（O(n×m)）。
+    final List<int> order = <int>[];
+    for (int i = 0; i < matches.length; i++) {
+      // 跳过空范围匹配
+      if (matches[i].start < matches[i].end) order.add(i);
+    }
+    if (order.isEmpty) return spans;
+    order.sort((int a, int b) => matches[a].start.compareTo(matches[b].start));
+
     final result = <TextSpan>[];
     int currentOffset = 0;
+    // 已完全落在当前 span 之前的匹配不再参与后续判断
+    int cursor = 0;
 
     for (final span in spans) {
       final spanText = span.text ?? '';
       final spanLength = spanText.length;
       final spanEnd = currentOffset + spanLength;
 
-      // 收集与当前 span 重叠的匹配项索引
+      while (cursor < order.length && matches[order[cursor]].end <= currentOffset) {
+        cursor++;
+      }
+
+      // 收集与当前 span 重叠的匹配项索引（起点已超过 span 末尾即可停止）
       final overlapping = <int>[];
-      for (int i = 0; i < matches.length; i++) {
-        final m = matches[i];
-        // 跳过空范围匹配
-        if (m.start >= m.end) continue;
-        // 判断是否与当前 span 重叠（左闭右开区间）
-        if (m.start < spanEnd && m.end > currentOffset) {
-          overlapping.add(i);
-        }
+      for (int probe = cursor; probe < order.length; probe++) {
+        final int idx = order[probe];
+        final m = matches[idx];
+        if (m.start >= spanEnd) break;
+        if (m.end > currentOffset) overlapping.add(idx);
       }
 
       if (overlapping.isEmpty) {

@@ -1016,8 +1016,11 @@ class NovelEditorState extends State<NovelEditor> with WidgetsBindingObserver {
     if (!mounted) return;
     final CodeLineEditingValue value = widget.controller.value;
 
+    // 全文拼接成本随章节长度增长，本次回调内只取一次复用
+    final String text = widget.controller.text;
+
     // 选区变化：换算为扁平偏移量后向外通知
-    final TextSelection flatSelection = CodeLineSelectionUtils.flatSelectionOf(widget.controller.text, value.selection);
+    final TextSelection flatSelection = CodeLineSelectionUtils.flatSelectionOf(text, value.selection);
     if (flatSelection != _lastSelection) {
       _lastSelection = flatSelection;
       widget.onSelectionChanged?.call(flatSelection);
@@ -1034,13 +1037,13 @@ class NovelEditorState extends State<NovelEditor> with WidgetsBindingObserver {
     // 高亮范围以全文偏移量表示，必须在渲染前按最新文本重算；
     // 否则旧偏移量被套用到新文本上会出现整段错位（插入点之后全部着色、
     // 或被后推的引号失去高亮），直至下一次重建才恢复。
-    widget.spanBuilder?.update(context: context, text: widget.controller.text);
+    widget.spanBuilder?.update(context: context, text: text);
 
     // 程序化改写全文（备份恢复、段落整理）不计入编辑事件
     if (_silentWriteDepth > 0) return;
 
     // 内容增长时维持底边距这一安全距离
-    final int currentLength = widget.controller.text.length;
+    final int currentLength = text.length;
     final bool isTextGrown = currentLength > _previousTextLength;
     _previousTextLength = currentLength;
     if (isTextGrown) {
