@@ -188,6 +188,43 @@ class S3Client implements RemoteStorage {
     return files;
   }
 
+  /// 列出远端指定目录下的文件及 ETag
+  ///
+  /// 对象存储只能按前缀列举，这里复用整树列举后在本目录层裁剪，
+  /// 返回的 key 为该目录下的直接文件名，与 WebDAV 实现保持一致
+  @override
+  Future<List<RemoteSyncFile>> listFilesWithMeta(String remotePath) async {
+    final String rootPrefix = remoteDir.isEmpty ? '' : '$remoteDir/';
+    String relative =
+        remotePath.startsWith(rootPrefix) ? remotePath.substring(rootPrefix.length) : remotePath;
+    while (relative.endsWith('/')) {
+      relative = relative.substring(0, relative.length - 1);
+    }
+    final String dirPrefix = relative.isEmpty ? '' : '$relative/';
+
+    final files = await listFilesRecursive();
+    final result = <RemoteSyncFile>[];
+    for (final file in files) {
+      if (!file.key.startsWith(dirPrefix)) continue;
+      final String name = file.key.substring(dirPrefix.length);
+      // 只要本层文件，子目录内容不归本方法管
+      if (name.isEmpty || name.contains('/')) continue;
+      result.add(
+        RemoteSyncFile(
+          key: name,
+          etag: file.etag,
+          size: file.size,
+          modifiedAt: file.modifiedAt,
+        ),
+      );
+    }
+    return result;
+  }
+
+  /// 对象存储没有目录列举缓存，内容标识无从查询
+  @override
+  String? contentIdOf(String key) => null;
+
   @override
   Future<void> uploadFile(String localPath, String remotePath) async {
     final bytes = await File(localPath).readAsBytes();
