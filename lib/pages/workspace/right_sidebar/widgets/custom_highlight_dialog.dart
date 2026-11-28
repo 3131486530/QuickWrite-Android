@@ -1,26 +1,22 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:quick_write/core/models/custom_highlight.dart';
 import 'package:quick_write/core/services/cache_services/misc_cache_service.dart';
 import 'package:quick_write/core/services/workspace/custom_highlight_service.dart';
 import 'package:quick_write/core/utils/color_utils.dart';
-import 'package:quick_write/core/utils/custom_highlight_regex.dart';
-import 'package:quick_write/core/utils/ime_cursor_fixer.dart';
 import 'package:quick_write/core/utils/typography_extension.dart';
-import 'package:quick_write/shared/dialogs/color_picker_dialog.dart';
 import 'package:quick_write/shared/widgets/qw_dialogs.dart';
 import 'package:quick_write/shared/widgets/qw_snackbar.dart';
 import 'package:quick_write/shared/widgets/qw_switch.dart';
 import 'package:quick_write/shared/widgets/qw_tooltip.dart';
-import 'package:quick_write/shared/widgets/toolbar_button.dart';
+import 'custom_highlight_group_dialog.dart';
 import 'right_sidebar_widgets.dart';
-import 'package:quick_write/shared/widgets/qw_text_field.dart';
-import 'package:quick_write/pages/workspace/right_sidebar/widgets/custom_highlight_library_dialog.dart';
 
 /// 显示自定义高亮设置对话框
 ///
 /// 使用项目统一的 [showDialogBase] 弹窗外壳，固定尺寸避免内容变化导致弹窗大小跳动；
 /// 移动端外壳会自动收窄宽度，桌面端与移动端共用同一份内容与交互。
+///
+/// 配置以「分组」组织：每组一种颜色、一本独立词库，词条在组内用顿号分隔。
 Future<void> showCustomHighlightDialog({
   required BuildContext context,
   required CustomHighlightService service,
@@ -28,10 +24,10 @@ Future<void> showCustomHighlightDialog({
   return showDialogBase(
     context: context,
     title: '自定义高亮',
-    subtitle: '支持常规匹配与正则表达式',
+    subtitle: '按分组管理词库，每组可自定义颜色',
     titleAction: _buildRegexHelpButton(context),
     width: 520,
-    height: 400,
+    height: 460,
     content: _CustomHighlightDialogContent(service: service),
   );
 }
@@ -41,13 +37,13 @@ Widget _buildRegexHelpButton(BuildContext context) {
   return CursorTooltipTarget(
     tooltipContent: const Text('正则表达式用法'),
     child: IconButton(
-        onPressed: () => _showRegexHelp(context),
-        icon: const Icon(Icons.help_outline_rounded, size: 16),
-        padding: EdgeInsets.zero,
-        constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
-        visualDensity: VisualDensity.compact,
-        color: Theme.of(context).colorScheme.onSurfaceVariant,
-      ),
+      onPressed: () => _showRegexHelp(context),
+      icon: const Icon(Icons.help_outline_rounded, size: 16),
+      padding: EdgeInsets.zero,
+      constraints: const BoxConstraints(minWidth: 26, minHeight: 26),
+      visualDensity: VisualDensity.compact,
+      color: Theme.of(context).colorScheme.onSurfaceVariant,
+    ),
   );
 }
 
@@ -56,10 +52,10 @@ Future<void> _showRegexHelp(BuildContext context) {
   return showDialogBase<void>(
     context: context,
     title: '正则表达式用法',
-    subtitle: '每条高亮项可单独切换「常规 / 正则」模式',
+    subtitle: '词库中以「re:」开头的词条按正则匹配',
     titleIcon: Icons.code_rounded,
     width: 500,
-    height: 440,
+    height: 460,
     adaptiveHeight: true,
     content: const _RegexHelpContent(),
   );
@@ -78,20 +74,21 @@ class _RegexHelpContent extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           SelectableText(
-            '把某一项切成「正则」后，输入框里的内容按表达式匹配；'
+            '在分组词库里让某条词以「re:」开头，该条按表达式匹配；'
             '语法与 Dart / JavaScript 正则一致，^、\$ 按行生效，区分大小写，. 不跨行。',
             style: context.bodySmall?.copyWith(color: colorScheme.onSurfaceVariant),
           ),
           const SizedBox(height: 14),
-          _helpExample(context, r'【[^】]*】', '高亮整段【…】（连同成对符号）'),
-          _helpExample(context, r'(?<=【)[^】]*(?=】)', '只高亮【】内部的文字'),
-          _helpExample(context, r'【([^】]*)】', '含捕获组时只高亮第 1 组，同样只着色内部'),
-          _helpExample(context, r'《[^》]+》|（[^）]+）', '一次匹配书名号或圆括号里的内容'),
-          _helpExample(context, r'^.*(忽然|骤然).*$', '高亮包含指定字句的整行'),
+          _helpExample(context, r're:【[^】]*】', '高亮整段【…】（连同成对符号）'),
+          _helpExample(context, r're:(?<=【)[^】]*(?=】)', '只高亮【】内部的文字'),
+          _helpExample(context, r're:【([^】]*)】', '含捕获组时只高亮第 1 组，同样只着色内部'),
+          _helpExample(context, r're:《[^》]+》|（[^）]+）', '一次匹配书名号或圆括号里的内容'),
+          _helpExample(context, r're:^.*(忽然|骤然).*$', '高亮包含指定字句的整行'),
           const SizedBox(height: 6),
           SelectableText(
-            '提示：非法表达式不会写入配置，云端同步来的坏配置也会被跳过而不崩溃；'
-            '请尽量使用简单表达式、避免嵌套量词，单条最多着色 1000 处命中。',
+            '提示：正则词条请单独占一行（正则内的顿号不会被拆开）；'
+            '非法表达式不会写入配置，云端同步来的坏配置也会被跳过而不崩溃；'
+            '单条最多着色 1000 处命中。',
             style: context.bodySmall?.copyWith(
               color: colorScheme.error.withValues(alpha: 0.9),
             ),
@@ -131,8 +128,8 @@ Widget _helpExample(BuildContext context, String pattern, String description) {
 
 /// 自定义高亮设置对话框内容
 ///
-/// 提供关键词与高亮颜色的增删改查界面，配置实时写入书籍根目录的 JSON 文件。
-/// 通过 [CustomHighlightService] 与编辑器联动：修改后所有打开的编辑器会自动刷新高亮渲染。
+/// 顶部为总开关，中部为分组列表，每组对应「一种颜色 + 一本词库」；
+/// 点击分组进入编辑，配置实时写入书籍根目录的 JSON 文件。
 class _CustomHighlightDialogContent extends StatefulWidget {
   /// 当前书籍的自定义高亮服务
   final CustomHighlightService service;
@@ -146,216 +143,93 @@ class _CustomHighlightDialogContent extends StatefulWidget {
 
 class _CustomHighlightDialogContentState
     extends State<_CustomHighlightDialogContent> {
-  /// 新增关键词输入框控制器
-  /// 新增项"正则模式"开关的记忆键
-  static const String _newKeywordRegexSwitchKey =
-      'custom_highlight.new_is_regex';
-
-  final TextEditingController _keywordInputController = TextEditingController();
-
-  /// 新增关键词输入框焦点节点（与 ImeCursorFixerWrapper 共用）
-  final FocusNode _keywordInputFocusNode = FocusNode();
-
-  /// 新增关键词的当前颜色（HEX 字符串）
-  String _newKeywordColorHex = '#FFB300';
-
-  /// 新增项是否使用正则模式（默认常规，保持原有行为）
-  ///
-  /// 该选择会被记忆，下次打开对话框沿用，并随云同步恢复
-  bool _newKeywordIsRegex = false;
-
-  /// 当前进入编辑模式的关键词索引（null 表示无编辑中项）
-  int? _editingIndex;
-
-  /// 编辑模式下的关键词输入框控制器
-  final TextEditingController _editController = TextEditingController();
-
-  /// 编辑模式下的关键词输入框焦点节点（与 ImeCursorFixerWrapper 共用）
-  final FocusNode _editFocusNode = FocusNode();
-
-  /// 关键词列表滚动控制器（用于添加关键词后滚动到新项）
-  final ScrollController _listScrollController = ScrollController();
+  /// 上次使用的分组颜色（新建分组默认沿用）
+  String _lastColorHex = CustomHighlightGroup.defaultColorHex;
 
   @override
   void initState() {
     super.initState();
-    // 新增项颜色沿用上次选择的颜色（随云同步恢复），减少重复选色
-    _newKeywordColorHex =
-        MiscCacheService.instance.getCustomHighlightLastColorHex();
-    // 新增项的匹配模式同样记忆，避免每次都要重新切到正则
-    _newKeywordIsRegex = MiscCacheService.instance.getSwitchState(
-      _newKeywordRegexSwitchKey,
-      fallback: false,
-    );
-    // 监听 service 变化以刷新列表（外部修改时也能同步）
+    _lastColorHex = MiscCacheService.instance.getCustomHighlightLastColorHex();
     widget.service.addListener(_onServiceChanged);
   }
 
   @override
   void dispose() {
     widget.service.removeListener(_onServiceChanged);
-    _keywordInputController.dispose();
-    _keywordInputFocusNode.dispose();
-    _editController.dispose();
-    _editFocusNode.dispose();
-    _listScrollController.dispose();
     super.dispose();
   }
 
-  /// service 配置变化时刷新对话框
+  /// service 配置变化时刷新列表
   void _onServiceChanged() {
     if (mounted) setState(() {});
   }
 
-  /// 打开词库编辑弹窗
-  ///
-  /// 关闭后刷新当前列表；弹窗内部已直接写回 service，无需再落盘。
-  Future<void> _openLibraryDialog() async {
-    await showCustomHighlightLibraryDialog(
+  /// 打开某个分组的编辑弹窗
+  Future<void> _openGroup(String groupId, {required bool isNewGroup}) async {
+    final result = await showCustomHighlightGroupDialog(
       context: context,
       service: widget.service,
+      groupId: groupId,
+      isNewGroup: isNewGroup,
     );
+    if (!mounted) return;
+
+    // 新建后既没起名也没词条的分组视为放弃，直接清理
+    if (isNewGroup) {
+      final group = widget.service.groupById(groupId);
+      if (group != null &&
+          group.items.isEmpty &&
+          group.name.trim().isEmpty) {
+        await widget.service.removeGroup(groupId);
+      }
+    }
+
+    if (!mounted) return;
+    // 选色可能已更新「上次颜色」，刷新以便新建分组沿用
+    _lastColorHex = MiscCacheService.instance.getCustomHighlightLastColorHex();
+
+    if (result != null && result.skippedCount > 0) {
+      final List<String> parts = <String>[];
+      if (result.conflictCount > 0) {
+        parts.add('${result.conflictCount} 条已在其他分组');
+      }
+      if (result.invalidRegexCount > 0) {
+        parts.add('${result.invalidRegexCount} 条正则无效');
+      }
+      SnackBarService.show(context, '已保存，${parts.join('、')}，未加入本组');
+    }
     if (mounted) setState(() {});
   }
 
-  /// 选择颜色（用于新增关键词）
-  Future<void> _pickNewKeywordColor() async {
-    await ColorPickerDialog.show(
-      context: context,
-      title: '选择高亮颜色',
-      initialColorHex: _newKeywordColorHex,
-      onColorSelected: (colorHex) {
-        // 记忆本次选择，下次打开对话框及换设备后沿用
-        MiscCacheService.instance.saveCustomHighlightLastColorHex(colorHex);
-        setState(() => _newKeywordColorHex = colorHex);
-      },
-    );
-  }
-
-  /// 选择指定关键词的颜色
-  Future<void> _pickItemColor(int index, String currentHex) async {
-    await ColorPickerDialog.show(
-      context: context,
-      title: '选择高亮颜色',
-      initialColorHex: currentHex,
-      onColorSelected: (colorHex) {
-        // 已有项改色同样记入"上次选择"，新增项可一键复用
-        MiscCacheService.instance.saveCustomHighlightLastColorHex(colorHex);
-        widget.service.updateItemColor(index, colorHex);
-      },
-    );
-  }
-
-  /// 添加新关键词（或正则表达式）
-  Future<void> _addKeyword() async {
-    final keyword = _keywordInputController.text;
-    if (keyword.trim().isEmpty) return;
-    final result = await widget.service.addItem(
-      keyword,
-      _newKeywordColorHex,
-      isRegex: _newKeywordIsRegex,
-    );
+  /// 新建分组：先落库拿到 id，再进入编辑
+  Future<void> _createGroup() async {
+    final String colorHex = _lastColorHex.isEmpty
+        ? CustomHighlightGroup.defaultColorHex
+        : _lastColorHex;
+    final String groupId = await widget.service.addGroup(colorHex: colorHex);
     if (!mounted) return;
-    if (result == CustomHighlightMutationResult.invalidRegex) {
-      // 保留输入内容，方便用户就地修正表达式
-      SnackBarService.show(context, '正则表达式无效，请检查语法');
+    await _openGroup(groupId, isNewGroup: true);
+  }
+
+  /// 删除分组（含二次确认）
+  Future<void> _deleteGroup(CustomHighlightGroup group) async {
+    if (group.items.isEmpty) {
+      await widget.service.removeGroup(group.id);
+      if (mounted) setState(() {});
       return;
     }
-    _keywordInputController.clear();
-    // 添加完成后将焦点归还输入框，便于连续添加
-    _keywordInputFocusNode.requestFocus();
-    // 滚动列表到底部，让新添加的关键词进入视口
-    _scrollToBottom();
-  }
-
-  /// 滚动关键词列表到底部，确保最新添加的关键词可见
-  void _scrollToBottom() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || !_listScrollController.hasClients) return;
-      final maxScroll = _listScrollController.position.maxScrollExtent;
-      if (maxScroll <= 0) return;
-      _listScrollController.animateTo(
-        maxScroll,
-        duration: const Duration(milliseconds: 200),
-        curve: Curves.easeOut,
-      );
-    });
-  }
-
-  /// 进入关键词编辑模式
-  void _startEditing(int index, String currentKeyword) {
-    setState(() {
-      _editingIndex = index;
-      _editController.text = currentKeyword;
-      _editController.selection = TextSelection(
-        baseOffset: 0,
-        extentOffset: currentKeyword.length,
-      );
-    });
-    // 下一帧请求焦点，确保 TextField 已构建
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _editFocusNode.requestFocus();
-    });
-  }
-
-  /// 提交关键词编辑
-  Future<void> _commitEditing() async {
-    final index = _editingIndex;
-    if (index == null) return;
-    final newKeyword = _editController.text;
-    final result = await widget.service.updateItemKeyword(index, newKeyword);
-    if (!mounted) return;
-    if (result == CustomHighlightMutationResult.invalidRegex) {
-      // 保持编辑态与输入内容，避免非法表达式被写入配置
-      SnackBarService.show(context, '正则表达式无效，请检查语法');
-      return;
-    }
-    setState(() => _editingIndex = null);
-  }
-
-  /// 切换某一项的匹配模式（常规 / 正则）
-  ///
-  /// [isRegex] 为切换后的目标模式，写入失败时提示正则语法有误。
-  Future<void> _toggleItemRegex(int index, bool isRegex) async {
-    final result = await widget.service.updateItemRegex(index, isRegex);
-    if (!mounted) return;
-    if (result == CustomHighlightMutationResult.invalidRegex) {
-      SnackBarService.show(context, '当前内容不是合法正则，请先修改后再切换');
-    }
-  }
-
-  /// 构建匹配模式图标开关
-  ///
-  /// 开启时图标点亮表示正则模式，关闭时表示常规匹配；云端同步来的
-  /// 非法正则用警示图标与错误色标出（该项不会参与高亮）。
-  Widget _buildModeToggle(
-    CustomHighlightItem item,
-    int index,
-    ColorScheme colorScheme,
-  ) {
-    final bool invalid = item.isRegex && !CustomHighlightRegex.isValid(item.keyword);
-    final String tooltip = invalid
-        ? '正则表达式无效，该项不会高亮；点击可切回常规'
-        : item.isRegex
-            ? '正则模式，点击切换为常规'
-            : '常规模式，点击切换为正则';
-
-    return ToggleToolButton(
-      icon: invalid ? Icons.warning_amber_rounded : Icons.code_rounded,
-      tooltip: tooltip,
-      isSelected: item.isRegex,
-      size: 24,
-      iconSize: 16,
-      selectedColor: invalid ? colorScheme.error : null,
-      unselectedColor: colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
-      circular: true,
-      onChanged: (value) => _toggleItemRegex(index, value),
+    final bool confirmed = await showConfirmDialog(
+      context: context,
+      title: '删除分组',
+      description: '分组「${group.displayName}」及其 ${group.wordCount} 条词条将被删除，此操作不可撤销。',
+      type: ConfirmType.delete,
+      confirmText: '删除',
+      cancelText: '取消',
+      icon: Icons.delete_outline,
     );
-  }
-
-  /// 取消关键词编辑
-  void _cancelEditing() {
-    if (mounted) setState(() => _editingIndex = null);
+    if (!confirmed || !mounted) return;
+    await widget.service.removeGroup(group.id);
+    if (mounted) setState(() {});
   }
 
   @override
@@ -367,20 +241,21 @@ class _CustomHighlightDialogContentState
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // 启用开关
           _buildEnableToggle(colorScheme),
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 12),
             child: Divider(height: 1),
           ),
-          // 关键词列表标题
           _buildListHeader(colorScheme),
           const SizedBox(height: 8),
-          // 关键词列表（占据剩余空间，空状态与有内容时弹窗大小一致）
-          Expanded(child: _buildKeywordList(colorScheme)),
-          const SizedBox(height: 16),
-          // 新增关键词区域
-          _buildAddKeywordRow(colorScheme),
+          Expanded(child: _buildGroupList(colorScheme)),
+          const SizedBox(height: 10),
+          Text(
+            '每组一种颜色、一本词库；词条在组内用顿号「、」分隔',
+            style: context.labelSmall?.copyWith(
+              color: colorScheme.onSurfaceVariant,
+            ),
+          ),
         ],
       ),
     );
@@ -399,7 +274,6 @@ class _CustomHighlightDialogContentState
           const SizedBox(width: 10),
           Text('启用自定义高亮', style: context.titleSmall),
           const Spacer(),
-          // 状态描述
           Text(
             widget.service.enabled ? '已开启' : '已关闭',
             style: context.bodySmall?.copyWith(
@@ -413,17 +287,18 @@ class _CustomHighlightDialogContentState
     );
   }
 
-  /// 构建关键词列表标题
+  /// 构建分组列表标题（含组数、词条数与新建入口）
   Widget _buildListHeader(ColorScheme colorScheme) {
-    final count = widget.service.items.length;
+    final int groupCount = widget.service.groups.length;
+    final int wordCount = widget.service.wordCount;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 4),
       child: Row(
         children: [
-          Icon(Icons.tag_rounded, size: 16, color: colorScheme.primary),
+          Icon(Icons.layers_rounded, size: 16, color: colorScheme.primary),
           const SizedBox(width: 6),
           Text(
-            '高亮项',
+            '高亮分组',
             style: context.titleSmall?.copyWith(fontWeight: FontWeight.w600),
           ),
           const SizedBox(width: 6),
@@ -434,16 +309,15 @@ class _CustomHighlightDialogContentState
               borderRadius: BorderRadius.circular(8),
             ),
             child: Text(
-              '$count',
+              '$groupCount 组 · $wordCount 条',
               style: context.bodySmall?.copyWith(color: colorScheme.primary),
             ),
           ),
           const Spacer(),
-          // 词库编辑：一次性增删改全部高亮项，用法与敏感词词库一致
           TextButton.icon(
-            onPressed: _openLibraryDialog,
-            icon: const Icon(Icons.edit_outlined, size: 16),
-            label: const Text('编辑词库'),
+            onPressed: _createGroup,
+            icon: const Icon(Icons.add, size: 16),
+            label: const Text('新建分组'),
             style: TextButton.styleFrom(
               padding: const EdgeInsets.symmetric(horizontal: 8),
               minimumSize: const Size(0, 32),
@@ -456,11 +330,9 @@ class _CustomHighlightDialogContentState
     );
   }
 
-  /// 构建关键词列表
-  ///
-  /// 列表区域用 Expanded 撑满弹窗中部空间，保证空状态与有内容时弹窗尺寸一致。
-  Widget _buildKeywordList(ColorScheme colorScheme) {
-    final items = widget.service.items;
+  /// 构建分组列表
+  Widget _buildGroupList(ColorScheme colorScheme) {
+    final groups = widget.service.groups;
 
     return Container(
       decoration: BoxDecoration(
@@ -470,44 +342,45 @@ class _CustomHighlightDialogContentState
           color: colorScheme.outlineVariant.withValues(alpha: 0.3),
         ),
       ),
-      child: items.isEmpty
+      child: groups.isEmpty
           ? _buildEmptyHint(colorScheme)
           : ListView.separated(
-              controller: _listScrollController,
               padding: EdgeInsets.zero,
-              itemCount: items.length,
+              itemCount: groups.length,
               separatorBuilder: (_, _) => const SettingDivider(),
               itemBuilder: (context, index) {
-                final item = items[index];
-                // 当前项处于编辑模式时显示 TextField，否则显示文本
-                final isEditing = _editingIndex == index;
-                return _buildKeywordRow(item, index, isEditing, colorScheme);
+                return _buildGroupRow(
+                  groups[index],
+                  index,
+                  groups.length,
+                  colorScheme,
+                );
               },
             ),
     );
   }
 
-  /// 构建空列表提示
+  /// 空状态提示
   Widget _buildEmptyHint(ColorScheme colorScheme) {
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           Icon(
-            Icons.search_off_rounded,
+            Icons.layers_clear_rounded,
             size: 36,
             color: colorScheme.onSurfaceVariant.withValues(alpha: 0.4),
           ),
           const SizedBox(height: 8),
           Text(
-            '暂无高亮项',
+            '暂无高亮分组',
             style: context.bodyMedium?.copyWith(
               color: colorScheme.onSurfaceVariant.withValues(alpha: 0.6),
             ),
           ),
           const SizedBox(height: 4),
           Text(
-            '在下方输入框添加关键词，或切换为正则表达式',
+            '点击「新建分组」，为它选一种颜色并录入词库',
             style: context.bodySmall?.copyWith(
               color: colorScheme.onSurfaceVariant.withValues(alpha: 0.45),
             ),
@@ -517,109 +390,85 @@ class _CustomHighlightDialogContentState
     );
   }
 
-  /// 构建单行关键词
-  Widget _buildKeywordRow(
-    CustomHighlightItem item,
+  /// 单行分组：色点 + 名称 + 词条预览 + 排序/删除
+  Widget _buildGroupRow(
+    CustomHighlightGroup group,
     int index,
-    bool isEditing,
+    int total,
     ColorScheme colorScheme,
   ) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      child: Row(
-        children: [
-          // 颜色指示器（点击切换颜色）
-          GestureDetector(
-            onTap: () => _pickItemColor(index, item.colorHex),
-            child: CursorTooltipTarget(
-              tooltipContent: const Text('点击修改颜色'),
-              child: ColorIndicator(color: ColorUtils.parseHex(item.colorHex)),
-            ),
-          ),
-          const SizedBox(width: 12),
-          // 匹配模式开关（点击在常规 / 正则之间切换）
-          _buildModeToggle(item, index, colorScheme),
-          const SizedBox(width: 8),
-          // 关键词文本（编辑模式显示输入框，否则双击进入编辑）
-          Expanded(
-            child: isEditing
-                ? _buildKeywordEditField(colorScheme, item.isRegex)
-                : GestureDetector(
-                    onDoubleTap: () => _startEditing(index, item.keyword),
-                    child: CursorTooltipTarget(
-                      tooltipContent: const Text('双击编辑关键词'),
-                      child: Text(
-                        item.keyword,
-                        style: context.titleSmall,
+    final String preview = group.items
+        .take(4)
+        .map((e) => e.isRegex ? 're:${e.keyword}' : e.keyword)
+        .join('、');
+
+    return InkWell(
+      onTap: () => _openGroup(group.id, isNewGroup: false),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 10, 6, 10),
+        child: Row(
+          children: [
+            ColorIndicator(color: ColorUtils.parseHex(group.colorHex)),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Flexible(
+                        child: Text(
+                          group.displayName,
+                          style: context.titleSmall,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
                       ),
-                    ),
+                      const SizedBox(width: 6),
+                      Text(
+                        '${group.wordCount} 条',
+                        style: context.bodySmall?.copyWith(
+                          color: colorScheme.onSurfaceVariant.withValues(alpha: 0.7),
+                        ),
+                      ),
+                    ],
                   ),
-          ),
-          // 操作按钮
-          if (!isEditing) ...[
+                  if (preview.isNotEmpty) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      preview,
+                      style: context.bodySmall?.copyWith(
+                        color: colorScheme.onSurfaceVariant.withValues(alpha: 0.75),
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ],
+              ),
+            ),
             _buildIconButton(
-              icon: Icons.edit_outlined,
-              tooltip: '编辑',
-              onTap: () => _startEditing(index, item.keyword),
+              icon: Icons.keyboard_arrow_up_rounded,
+              tooltip: '上移',
+              enabled: index > 0,
+              onTap: () => widget.service.moveGroup(group.id, -1),
               colorScheme: colorScheme,
             ),
-            const SizedBox(width: 4),
+            _buildIconButton(
+              icon: Icons.keyboard_arrow_down_rounded,
+              tooltip: '下移',
+              enabled: index < total - 1,
+              onTap: () => widget.service.moveGroup(group.id, 1),
+              colorScheme: colorScheme,
+            ),
             _buildIconButton(
               icon: Icons.delete_outline,
-              tooltip: '删除',
+              tooltip: '删除分组',
+              onTap: () => _deleteGroup(group),
               color: Colors.redAccent,
-              onTap: () => widget.service.removeItem(index),
               colorScheme: colorScheme,
             ),
           ],
-        ],
-      ),
-    );
-  }
-
-  /// 构建关键词编辑输入框
-  ///
-  /// 使用 [ImeCursorFixerWrapper] 包裹，修复中文输入法候选框位置跟随问题。
-  /// 回车提交修改，按 ESC 取消修改并退出编辑模式。
-  Widget _buildKeywordEditField(ColorScheme colorScheme, bool isRegex) {
-    return ImeCursorFixerWrapper(
-      controller: _editController,
-      focusNode: _editFocusNode,
-      child: Focus(
-        onKeyEvent: (node, event) {
-          if (event is KeyDownEvent &&
-              event.logicalKey == LogicalKeyboardKey.escape) {
-            _cancelEditing();
-            return KeyEventResult.handled;
-          }
-          return KeyEventResult.ignored;
-        },
-        child: QwTextField(
-          controller: _editController,
-          focusNode: _editFocusNode,
-          autofocus: true,
-          style: context.titleSmall,
-          decoration: InputDecoration(
-            isDense: true,
-            hintText: isRegex ? '输入正则表达式' : null,
-            contentPadding:
-                const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(6),
-              borderSide: BorderSide(
-                color: colorScheme.primary.withValues(alpha: 0.5),
-              ),
-            ),
-            focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(6),
-              borderSide: BorderSide(
-                color: colorScheme.primary,
-                width: 1.5,
-              ),
-            ),
-          ),
-          onSubmitted: (_) => _commitEditing(),
-          onTapOutside: (_) => _commitEditing(),
         ),
       ),
     );
@@ -630,116 +479,26 @@ class _CustomHighlightDialogContentState
     required IconData icon,
     required String tooltip,
     required VoidCallback onTap,
+    bool enabled = true,
     Color? color,
     required ColorScheme colorScheme,
   }) {
     return CursorTooltipTarget(
       tooltipContent: Text(tooltip),
       child: InkWell(
-        onTap: onTap,
+        onTap: enabled ? onTap : null,
         borderRadius: BorderRadius.circular(4),
         child: Padding(
           padding: const EdgeInsets.all(4),
           child: Icon(
             icon,
             size: 18,
-            color: color ?? colorScheme.onSurfaceVariant,
+            color: !enabled
+                ? colorScheme.onSurfaceVariant.withValues(alpha: 0.25)
+                : (color ?? colorScheme.onSurfaceVariant),
           ),
         ),
       ),
-    );
-  }
-
-  /// 构建新增项的正则匹配图标开关
-  ///
-  /// 与列表项开关保持一致的视觉语言：图标点亮表示正则模式。
-  Widget _buildNewItemModeToggle(ColorScheme colorScheme) {
-    final bool isRegex = _newKeywordIsRegex;
-    return Padding(
-      padding: const EdgeInsets.only(right: 6),
-      child: ToggleToolButton(
-        icon: Icons.code_rounded,
-        tooltip: isRegex ? '正则模式，点击切换为常规匹配' : '常规模式，点击切换为正则匹配',
-        isSelected: isRegex,
-        size: 24,
-        iconSize: 16,
-        unselectedColor: colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
-        circular: true,
-        onChanged: (value) {
-          setState(() => _newKeywordIsRegex = value);
-          // 记忆模式选择，换设备后自动恢复
-          MiscCacheService.instance.saveSwitchState(
-            _newKeywordRegexSwitchKey,
-            value,
-          );
-        },
-      ),
-    );
-  }
-
-  /// 构建新增关键词行
-  ///
-  /// 使用 [ImeCursorFixerWrapper] 包裹输入框，修复中文输入法候选框位置跟随问题。
-  Widget _buildAddKeywordRow(ColorScheme colorScheme) {
-    return Row(
-      children: [
-        // 新增关键词的颜色指示器
-        GestureDetector(
-          onTap: _pickNewKeywordColor,
-          child: CursorTooltipTarget(
-            tooltipContent: const Text('选择颜色'),
-            child: ColorIndicator(color: ColorUtils.parseHex(_newKeywordColorHex)),
-          ),
-        ),
-        const SizedBox(width: 12),
-        // 关键词输入框
-        Expanded(
-          child: ImeCursorFixerWrapper(
-            controller: _keywordInputController,
-            focusNode: _keywordInputFocusNode,
-            child: QwTextField(
-              controller: _keywordInputController,
-              focusNode: _keywordInputFocusNode,
-              decoration: InputDecoration(
-                isDense: true,
-                contentPadding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                hintText: _newKeywordIsRegex
-                    ? '输入正则表达式，回车添加'
-                    : '输入关键词或字，回车添加',
-                hintStyle: TextStyle(
-                  color: colorScheme.onSurfaceVariant.withValues(alpha: 0.45),
-                ),
-                // 模式切换徽标放在输入框内，窄屏下也不会挤压输入区域
-                suffixIcon: _buildNewItemModeToggle(colorScheme),
-                suffixIconConstraints:
-                    const BoxConstraints(minWidth: 0, minHeight: 0),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(6),
-                  borderSide: BorderSide(
-                    color: colorScheme.outlineVariant.withValues(alpha: 0.5),
-                  ),
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(6),
-                  borderSide: BorderSide(
-                    color: colorScheme.primary,
-                    width: 1.5,
-                  ),
-                ),
-              ),
-              onSubmitted: (_) => _addKeyword(),
-            ),
-          ),
-        ),
-        const SizedBox(width: 10),
-        // 添加按钮
-        FilledButton.tonalIcon(
-          onPressed: _addKeyword,
-          icon: const Icon(Icons.add, size: 18),
-          label: const Text('添加'),
-        ),
-      ],
     );
   }
 }

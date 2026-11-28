@@ -315,7 +315,8 @@ class _TypesetPanelState extends State<TypesetPanel> {
   Widget _buildCustomHighlightEntry(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final service = context.read<WorkspaceProvider>().customHighlightService;
-    final count = service.items.length;
+    final groupCount = service.groups.length;
+    final wordCount = service.wordCount;
 
     return InkWellSettingItem(
       icon: MaterialIcons.format_ink_highlighter,
@@ -324,12 +325,12 @@ class _TypesetPanelState extends State<TypesetPanel> {
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          // 关键词数量提示（无关键词时不显示）
-          if (count > 0)
+          // 分组与词条数量提示（无分组时不显示）
+          if (groupCount > 0)
             Padding(
               padding: const EdgeInsets.only(right: 6),
               child: Text(
-                '$count 项',
+                wordCount > 0 ? '$groupCount 组 · $wordCount 条' : '$groupCount 组',
                 style: context.bodySmall?.copyWith(
                   color: service.enabled
                       ? colorScheme.primary

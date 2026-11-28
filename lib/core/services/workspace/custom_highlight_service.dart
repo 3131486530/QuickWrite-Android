@@ -8,12 +8,12 @@ import 'package:quick_write/core/utils/custom_highlight_regex.dart';
 /// 自定义高亮配置文件名（保存在书籍根目录下）
 const String kCustomHighlightFileName = 'custom_highlights.json';
 
-/// 自定义高亮项增删改的结果
+/// 自定义高亮增删改的结果
 enum CustomHighlightMutationResult {
   /// 已写入配置文件并通知编辑器刷新
   ok,
 
-  /// 按原有规则静默忽略（空内容、重名、索引越界、模式无变化）
+  /// 按原有规则静默忽略（空内容、重名、索引越界、目标不存在）
   skipped,
 
   /// 正则表达式语法非法，配置保持原值不变
@@ -25,6 +25,9 @@ enum CustomHighlightMutationResult {
 /// 负责单本书自定义高亮配置的加载、保存与运行时增删改查。
 /// 配置以 JSON 文件形式持久化到书籍根目录（与 chapters、settings 同级），
 /// 通过 [ChangeNotifier] 通知编辑器在配置变化时重建高亮渲染。
+///
+/// 配置结构为「分组」：每组一种颜色、一本独立词库。
+/// [items] 暴露的是全部词条展开后的结果，渲染层沿用旧的扁平遍历即可。
 ///
 /// 生命周期由 [WorkspaceProvider] 管理：每本书的工作台持有一个独立实例。
 class CustomHighlightService extends ChangeNotifier {
@@ -40,12 +43,21 @@ class CustomHighlightService extends ChangeNotifier {
   /// 是否启用自定义高亮
   bool get enabled => _config.enabled;
 
-  /// 当前高亮项列表（只读）
+  /// 分组列表（只读）
+  List<CustomHighlightGroup> get groups => List.unmodifiable(_config.groups);
+
+  /// 全部词条（展开所有分组，颜色取所属分组色，只读）
+  ///
+  /// 渲染层（编辑器、阅读模式）仍按扁平列表遍历，分组改造无需改动渲染路径。
   List<CustomHighlightItem> get items => List.unmodifiable(_config.items);
+
+  /// 全部词条数量（用于面板展示）
+  int get wordCount => _config.items.length;
 
   /// 从指定书籍根目录加载配置
   ///
   /// 文件不存在时使用空配置并标记为已加载，避免阻塞编辑器渲染。
+  /// 旧版单层 items 配置会自动迁移为按颜色归并的分组。
   Future<void> load(String bookFolderPath) async {
     _configFilePath = '$bookFolderPath${Platform.pathSeparator}$kCustomHighlightFileName';
 
@@ -98,128 +110,153 @@ class CustomHighlightService extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 添加一个高亮项
+  /// 按 id 查找分组，不存在时返回 null
+  CustomHighlightGroup? groupById(String id) {
+    for (final group in _config.groups) {
+      if (group.id == id) return group;
+    }
+    return null;
+  }
+
+  /// 新增分组，返回新分组的 id
   ///
-  /// [keyword] 不能为空字符串，否则跳过。
-  /// 同名关键词不重复添加（保持配置整洁，避免重复扫描浪费性能）。
-  /// [isRegex] 为 true 时先校验表达式语法，非法则不写入配置，
-  /// 字面量模式（默认）的行为与旧版本完全一致。
-  Future<CustomHighlightMutationResult> addItem(
-    String keyword,
-    String colorHex, {
-    bool isRegex = false,
+  /// [items] 中非法的正则表达式会被丢弃，不写入配置。
+  Future<String> addGroup({
+    String name = '',
+    String colorHex = CustomHighlightGroup.defaultColorHex,
+    List<CustomHighlightItem> items = const [],
   }) async {
-    final trimmed = keyword.trim();
-    if (trimmed.isEmpty) return CustomHighlightMutationResult.skipped;
-    if (_config.items.any((e) => e.keyword == trimmed)) {
-      return CustomHighlightMutationResult.skipped;
-    }
-    if (isRegex && !CustomHighlightRegex.isValid(trimmed)) {
-      return CustomHighlightMutationResult.invalidRegex;
-    }
-
-    final newItems = List<CustomHighlightItem>.from(_config.items)
-      ..add(CustomHighlightItem(
-        keyword: trimmed,
-        colorHex: colorHex,
-        isRegex: isRegex,
-      ));
-    _config = _config.copyWith(items: newItems);
+    final group = CustomHighlightGroup.create(
+      name: name,
+      colorHex: colorHex,
+      items: _sanitizeItems(items),
+    );
+    _config = _config.copyWith(
+      groups: <CustomHighlightGroup>[..._config.groups, group],
+    );
     await _save();
     notifyListeners();
-    return CustomHighlightMutationResult.ok;
+    return group.id;
   }
 
-  /// 修改指定索引处高亮项的颜色
-  Future<void> updateItemColor(int index, String colorHex) async {
-    if (index < 0 || index >= _config.items.length) return;
-    final newItems = List<CustomHighlightItem>.from(_config.items);
-    newItems[index] = newItems[index].copyWith(colorHex: colorHex);
-    _config = _config.copyWith(items: newItems);
-    await _save();
-    notifyListeners();
-  }
-
-  /// 修改指定索引处高亮项的关键词（或正则表达式）
+  /// 修改分组名称与颜色
   ///
-  /// 正则项会按该项当前模式校验新表达式，非法时保留原值。
-  Future<CustomHighlightMutationResult> updateItemKeyword(
-    int index,
-    String keyword,
+  /// 改色时组内全部词条同步换色（词条颜色由分组统一决定）。
+  Future<void> updateGroup(
+    String id, {
+    String? name,
+    String? colorHex,
+  }) async {
+    final index = _config.groups.indexWhere((g) => g.id == id);
+    if (index < 0) return;
+    final current = _config.groups[index];
+    if (name == null && colorHex == null) return;
+    if (name != null && name == current.name && colorHex == null) return;
+    if (colorHex != null && colorHex == current.colorHex && name == null) return;
+
+    final newGroups = List<CustomHighlightGroup>.from(_config.groups);
+    newGroups[index] = current.copyWith(name: name, colorHex: colorHex);
+    _config = _config.copyWith(groups: newGroups);
+    await _save();
+    notifyListeners();
+  }
+
+  /// 删除分组（组内词条一并删除）
+  Future<void> removeGroup(String id) async {
+    final newGroups = _config.groups.where((g) => g.id != id).toList();
+    if (newGroups.length == _config.groups.length) return;
+    _config = _config.copyWith(groups: newGroups);
+    await _save();
+    notifyListeners();
+  }
+
+  /// 调整分组顺序，[delta] 为 -1 上移、1 下移
+  Future<void> moveGroup(String id, int delta) async {
+    final index = _config.groups.indexWhere((g) => g.id == id);
+    if (index < 0) return;
+    final target = index + delta;
+    if (target < 0 || target >= _config.groups.length) return;
+    final newGroups = List<CustomHighlightGroup>.from(_config.groups);
+    final group = newGroups.removeAt(index);
+    newGroups.insert(target, group);
+    _config = _config.copyWith(groups: newGroups);
+    await _save();
+    notifyListeners();
+  }
+
+  /// 覆盖某个分组的词库
+  ///
+  /// 词条颜色统一取分组颜色；空词条与非法正则在此处过滤，
+  /// 返回被丢弃的非法正则条数，供界面提示。
+  Future<int> replaceGroupItems(
+    String id,
+    List<CustomHighlightItem> newItems,
   ) async {
-    final trimmed = keyword.trim();
-    if (index < 0 || index >= _config.items.length) {
-      return CustomHighlightMutationResult.skipped;
-    }
-    if (trimmed.isEmpty) return CustomHighlightMutationResult.skipped;
-    // 与其他项重名时跳过（保留原值）
-    for (int i = 0; i < _config.items.length; i++) {
-      if (i != index && _config.items[i].keyword == trimmed) {
-        return CustomHighlightMutationResult.skipped;
-      }
-    }
-    if (_config.items[index].isRegex && !CustomHighlightRegex.isValid(trimmed)) {
-      return CustomHighlightMutationResult.invalidRegex;
-    }
-    final newItems = List<CustomHighlightItem>.from(_config.items);
-    newItems[index] = newItems[index].copyWith(keyword: trimmed);
-    _config = _config.copyWith(items: newItems);
-    await _save();
-    notifyListeners();
-    return CustomHighlightMutationResult.ok;
-  }
+    final index = _config.groups.indexWhere((g) => g.id == id);
+    if (index < 0) return 0;
+    final current = _config.groups[index];
 
-  /// 切换指定索引处高亮项的匹配模式（字面量 / 正则）
-  ///
-  /// 从字面量切到正则时，若现有关键词本身不是合法表达式则拒绝切换，
-  /// 避免把坏配置写入文件；云端同步来的坏配置仍由渲染层跳过兜底。
-  Future<CustomHighlightMutationResult> updateItemRegex(
-    int index,
-    bool isRegex,
-  ) async {
-    if (index < 0 || index >= _config.items.length) {
-      return CustomHighlightMutationResult.skipped;
-    }
-    final CustomHighlightItem current = _config.items[index];
-    if (current.isRegex == isRegex) return CustomHighlightMutationResult.skipped;
-    if (isRegex && !CustomHighlightRegex.isValid(current.keyword)) {
-      return CustomHighlightMutationResult.invalidRegex;
-    }
-    final newItems = List<CustomHighlightItem>.from(_config.items);
-    newItems[index] = current.copyWith(isRegex: isRegex);
-    _config = _config.copyWith(items: newItems);
-    await _save();
-    notifyListeners();
-    return CustomHighlightMutationResult.ok;
-  }
-
-  /// 删除指定索引处的高亮项
-  Future<void> removeItem(int index) async {
-    if (index < 0 || index >= _config.items.length) return;
-    final newItems = List<CustomHighlightItem>.from(_config.items)..removeAt(index);
-    _config = _config.copyWith(items: newItems);
-    await _save();
-    notifyListeners();
-  }
-
-  /// 批量替换全部高亮项（用于对话框一次性提交修改）
-  ///
-  /// 每项的模式随 [CustomHighlightItem] 一起保留并序列化；若外部传入了
-  /// 非法正则项，渲染层会跳过该项，不会抛出异常。
-  Future<void> replaceAll(List<CustomHighlightItem> newItems) async {
-    // 去重并过滤空关键词，保留首次出现的同名项
     final seen = <String>{};
     final filtered = <CustomHighlightItem>[];
+    int invalidCount = 0;
     for (final item in newItems) {
       final trimmed = item.keyword.trim();
       if (trimmed.isEmpty) continue;
-      if (seen.contains(trimmed)) continue;
-      seen.add(trimmed);
-      filtered.add(item.copyWith(keyword: trimmed));
+      final bool isRegex = item.isRegex;
+      if (isRegex && !CustomHighlightRegex.isValid(trimmed)) {
+        invalidCount++;
+        continue;
+      }
+      final String key = isRegex ? 're:$trimmed' : 'kw:$trimmed';
+      if (!seen.add(key)) continue;
+      filtered.add(CustomHighlightItem(
+        keyword: trimmed,
+        colorHex: current.colorHex,
+        isRegex: isRegex,
+      ));
     }
 
-    _config = _config.copyWith(items: filtered);
+    final newGroups = List<CustomHighlightGroup>.from(_config.groups);
+    newGroups[index] = current.copyWith(items: filtered);
+    _config = _config.copyWith(groups: newGroups);
     await _save();
     notifyListeners();
+    return invalidCount;
+  }
+
+  /// 批量替换全部分组（用于对话框一次性提交）
+  Future<void> replaceAllGroups(List<CustomHighlightGroup> newGroups) async {
+    final cleaned = <CustomHighlightGroup>[];
+    for (final group in newGroups) {
+      final items = _sanitizeItems(group.items);
+      // 组色统一落到词条上，避免改色后残留旧色
+      cleaned.add(CustomHighlightGroup(
+        id: group.id,
+        name: group.name,
+        colorHex: group.colorHex,
+        items: items
+            .map((e) => e.copyWith(colorHex: group.colorHex))
+            .toList(growable: false),
+      ));
+    }
+
+    _config = _config.copyWith(groups: cleaned);
+    await _save();
+    notifyListeners();
+  }
+
+  /// 过滤空词条、同组重名与非法正则
+  List<CustomHighlightItem> _sanitizeItems(List<CustomHighlightItem> source) {
+    final seen = <String>{};
+    final result = <CustomHighlightItem>[];
+    for (final item in source) {
+      final trimmed = item.keyword.trim();
+      if (trimmed.isEmpty) continue;
+      if (item.isRegex && !CustomHighlightRegex.isValid(trimmed)) continue;
+      final String key = item.isRegex ? 're:$trimmed' : 'kw:$trimmed';
+      if (!seen.add(key)) continue;
+      result.add(item.copyWith(keyword: trimmed));
+    }
+    return result;
   }
 }
