@@ -16,7 +16,7 @@ enum QuickInputAction {
   keywordToggle('keywordToggle', Icons.sell_outlined, '关键词高亮'),
 
   /// 其他设置入口
-  settings('settings', Icons.settings_rounded, '其他设置'),
+  settings('settings', Icons.settings_rounded, '其它设置'),
 
   /// 查找替换
   findReplace('findReplace', Icons.find_replace_rounded, '查找替换'),

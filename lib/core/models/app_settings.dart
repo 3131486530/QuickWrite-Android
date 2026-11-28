@@ -353,6 +353,11 @@ class AppSettings {
   /// 字数浮窗是否显示本章字数
   final bool wordCountFloatingWordCountEnabled;
 
+  /// 字数浮窗是否隐藏字数后面的「字」后缀
+  ///
+  /// 开启后浮窗只显示数字，避免在极简样式下多占一个字的宽度
+  final bool wordCountFloatingHideWordSuffix;
+
   /// 字数浮窗显示样式（标准、精简、极简）
   final WordCountFloatingMode wordCountFloatingMode;
 
@@ -514,6 +519,7 @@ class AppSettings {
     this.wordCountFloatingPosition = 'topRight', // 字数浮窗显示位置（默认右上）
     this.wordCountFloatingSpeedEnabled = false, // 字数浮窗是否显示码字速度
     this.wordCountFloatingWordCountEnabled = true, // 字数浮窗是否显示本章字数
+    this.wordCountFloatingHideWordSuffix = false, // 字数浮窗是否隐藏「字」后缀
     this.wordCountFloatingMode = WordCountFloatingMode.defaultMode, // 字数浮窗显示样式
     // 码字统计设置
     this.statsIncludePasteWords = false, // 码字统计是否包含粘贴字数
@@ -673,6 +679,8 @@ class AppSettings {
       wordCountFloatingSpeedEnabled: wordCountFloatingJson['speedEnabled'] as bool? ?? defaults.wordCountFloatingSpeedEnabled,
       wordCountFloatingWordCountEnabled:
           wordCountFloatingJson['wordCountEnabled'] as bool? ?? defaults.wordCountFloatingWordCountEnabled,
+      wordCountFloatingHideWordSuffix:
+          wordCountFloatingJson['hideWordSuffix'] as bool? ?? defaults.wordCountFloatingHideWordSuffix,
       wordCountFloatingMode: WordCountFloatingMode.fromId(wordCountFloatingJson['mode'] as String?),
 
       // 码字统计设置（编辑器）
@@ -839,6 +847,7 @@ class AppSettings {
           'position': wordCountFloatingPosition,
           'speedEnabled': wordCountFloatingSpeedEnabled,
           'wordCountEnabled': wordCountFloatingWordCountEnabled,
+          'hideWordSuffix': wordCountFloatingHideWordSuffix,
           'mode': wordCountFloatingMode.id,
         },
         // 正文自动替换规则
@@ -971,6 +980,7 @@ class AppSettings {
     String? wordCountFloatingPosition,
     bool? wordCountFloatingSpeedEnabled,
     bool? wordCountFloatingWordCountEnabled,
+    bool? wordCountFloatingHideWordSuffix,
     WordCountFloatingMode? wordCountFloatingMode,
     // 码字统计设置
     bool? statsIncludePasteWords,
@@ -1098,6 +1108,8 @@ class AppSettings {
       wordCountFloatingSpeedEnabled: wordCountFloatingSpeedEnabled ?? this.wordCountFloatingSpeedEnabled,
       wordCountFloatingWordCountEnabled:
           wordCountFloatingWordCountEnabled ?? this.wordCountFloatingWordCountEnabled,
+      wordCountFloatingHideWordSuffix:
+          wordCountFloatingHideWordSuffix ?? this.wordCountFloatingHideWordSuffix,
       wordCountFloatingMode: wordCountFloatingMode ?? this.wordCountFloatingMode,
       // 码字统计设置
       statsIncludePasteWords: statsIncludePasteWords ?? this.statsIncludePasteWords,
@@ -1244,6 +1256,7 @@ class AppSettings {
            other.wordCountFloatingPosition == wordCountFloatingPosition &&
            other.wordCountFloatingSpeedEnabled == wordCountFloatingSpeedEnabled &&
            other.wordCountFloatingWordCountEnabled == wordCountFloatingWordCountEnabled &&
+           other.wordCountFloatingHideWordSuffix == wordCountFloatingHideWordSuffix &&
            other.wordCountFloatingMode == wordCountFloatingMode &&
            // 码字统计设置
            other.statsIncludePasteWords == statsIncludePasteWords &&
@@ -1371,6 +1384,7 @@ class AppSettings {
           wordCountFloatingPosition,
           wordCountFloatingSpeedEnabled,
           wordCountFloatingWordCountEnabled,
+          wordCountFloatingHideWordSuffix,
           wordCountFloatingMode,
         ),
       ),

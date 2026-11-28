@@ -90,6 +90,7 @@ class _OtherPanelState extends State<OtherPanel> {
     final wordCountFloatingSpeedEnabled = settingsService.wordCountFloatingSpeedEnabled;
     final wordCountFloatingMode = settingsService.wordCountFloatingMode;
     final wordCountFloatingWordCountEnabled = settingsService.wordCountFloatingWordCountEnabled;
+    final wordCountFloatingHideWordSuffix = settingsService.wordCountFloatingHideWordSuffix;
     final bottomStatusBarEnabled = settingsService.bottomStatusBarEnabled;
     
     // 使用 Column 布局，确保内容区域自适应填充剩余空间
@@ -158,6 +159,7 @@ class _OtherPanelState extends State<OtherPanel> {
                       wordCountFloatingPosition,
                       wordCountFloatingSpeedEnabled,
                       wordCountFloatingWordCountEnabled,
+                      wordCountFloatingHideWordSuffix,
                       wordCountFloatingMode,
                     ),
                   ],
@@ -608,13 +610,14 @@ class _OtherPanelState extends State<OtherPanel> {
 
   /// 构建字数浮窗设置区块（移动端专属）
   ///
-  /// 管理叠加在编辑器上的字数浮窗：开关、显示位置、显示样式与码字速度开关
+  /// 管理叠加在编辑器上的字数浮窗：开关、显示位置、显示样式、字数与码字速度
   Widget _buildWordCountFloatingSection(
     BuildContext context,
     bool enabled,
     String position,
     bool speedEnabled,
     bool wordCountEnabled,
+    bool hideWordSuffix,
     WordCountFloatingMode mode,
   ) {
     // 浮窗显示位置选项
@@ -668,6 +671,15 @@ class _OtherPanelState extends State<OtherPanel> {
             value: wordCountEnabled,
             onChanged: (value) {
               SettingsService.instance.updateWordCountFloatingWordCountEnabled(value);
+              setState(() {});
+            },
+          ),
+          SwitchSettingItem(
+            icon: Icons.short_text_outlined,
+            label: '隐藏「字」后缀',
+            value: hideWordSuffix,
+            onChanged: (value) {
+              SettingsService.instance.updateWordCountFloatingHideWordSuffix(value);
               setState(() {});
             },
           ),

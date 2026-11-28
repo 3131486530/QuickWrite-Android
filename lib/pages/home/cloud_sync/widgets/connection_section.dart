@@ -62,6 +62,12 @@ class _ConnectionSectionState extends State<ConnectionSection> {
   /// S3 是否使用路径风格访问
   bool _s3PathStyle = false;
 
+  /// WebDAV 是否允许 http:// 明文连接（内网自建服务）
+  bool _allowInsecureHttp = false;
+
+  /// WebDAV 是否忽略证书错误（自签证书）
+  bool _ignoreCertificateErrors = false;
+
   /// 密码是否以明文显示
   bool _obscurePassword = true;
 
@@ -84,6 +90,8 @@ class _ConnectionSectionState extends State<ConnectionSection> {
         : '';
     if (provider.storageKind == RemoteStorageKind.webDav) {
       _usernameController.text = provider.username;
+      _allowInsecureHttp = provider.allowInsecureHttp;
+      _ignoreCertificateErrors = provider.ignoreCertificateErrors;
     } else {
       _s3AccessKeyController.text = provider.username;
       _s3BucketController.text = provider.s3Bucket;
@@ -135,6 +143,8 @@ class _ConnectionSectionState extends State<ConnectionSection> {
           _buildServerUrlTile(),
           _buildUsernameTile(),
           _buildPasswordTile(),
+          _buildAllowInsecureTile(),
+          _buildIgnoreCertificateTile(),
         ] else ...[
           _buildS3EndpointTile(),
           _buildS3RegionTile(),
@@ -187,7 +197,9 @@ class _ConnectionSectionState extends State<ConnectionSection> {
     return SettingInputTile(
       icon: Icons.dns_outlined,
       title: '服务器地址',
-      subtitle: '以 https:// 开头的完整 WebDAV 地址',
+      subtitle: _allowInsecureHttp
+          ? 'http:// 或 https:// 开头的完整 WebDAV 地址'
+          : '以 https:// 开头的完整 WebDAV 地址',
       controller: _serverUrlController,
       hintText: 'https://dav.jianguoyun.com/dav/',
     );
@@ -221,6 +233,32 @@ class _ConnectionSectionState extends State<ConnectionSection> {
           size: 18,
         ),
         onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
+      ),
+    );
+  }
+
+  /// 允许 HTTP 连接：内网自建服务多数没有 HTTPS
+  Widget _buildAllowInsecureTile() {
+    return SettingTile(
+      icon: Icons.lock_open_outlined,
+      title: '允许 HTTP 连接',
+      subtitle: '内网自建服务（NAS 等）没有 HTTPS 时开启，账号密码将以明文传输',
+      trailing: QwSwitch(
+        value: _allowInsecureHttp,
+        onChanged: (value) => setState(() => _allowInsecureHttp = value),
+      ),
+    );
+  }
+
+  /// 忽略证书错误：自签证书的服务器需要开启
+  Widget _buildIgnoreCertificateTile() {
+    return SettingTile(
+      icon: Icons.verified_user_outlined,
+      title: '忽略证书错误',
+      subtitle: '服务器使用自签证书时开启，仅建议在自有服务器上使用',
+      trailing: QwSwitch(
+        value: _ignoreCertificateErrors,
+        onChanged: (value) => setState(() => _ignoreCertificateErrors = value),
       ),
     );
   }
@@ -396,6 +434,8 @@ class _ConnectionSectionState extends State<ConnectionSection> {
     region: _s3RegionController.text,
     bucket: _s3BucketController.text,
     pathStyle: _s3PathStyle,
+    allowInsecureHttp: _allowInsecureHttp,
+    ignoreCertificateErrors: _ignoreCertificateErrors,
   );
 
   /// 测试连接：验证地址与凭据是否可用

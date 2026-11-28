@@ -158,7 +158,10 @@ class _WordCountFloatingWindowState extends State<WordCountFloatingWindow> {
               context,
               icon: Icons.text_fields_rounded,
               label: '字数',
-              value: '$wordCount 字',
+              // 设置中可隐藏「字」后缀，仅保留数字
+              value: SettingsService.instance.wordCountFloatingHideWordSuffix
+                  ? '$wordCount'
+                  : '$wordCount 字',
               mode: mode,
             ),
           if (writingSpeed != null) ...[

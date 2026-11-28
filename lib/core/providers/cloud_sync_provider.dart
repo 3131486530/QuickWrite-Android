@@ -57,6 +57,12 @@ class CloudSyncProvider extends ChangeNotifier {
   /// 已保存的 S3 路径风格设置
   bool get s3PathStyle => _service.s3PathStyle;
 
+  /// 已保存的「允许 HTTP 连接」设置（WebDAV）
+  bool get allowInsecureHttp => _service.allowInsecureHttp;
+
+  /// 已保存的「忽略证书错误」设置（WebDAV）
+  bool get ignoreCertificateErrors => _service.ignoreCertificateErrors;
+
   /// 章节是否以归档包上传（仅坚果云为 true）
   bool get chapterPackingEnabled => _service.chapterPackingEnabled;
 

@@ -77,6 +77,17 @@ class CloudConnectionConfig {
   /// S3 是否使用路径风格访问（MinIO 等自建服务通常需要）
   final bool pathStyle;
 
+  /// WebDAV 是否允许 http:// 明文连接
+  ///
+  /// 内网自建服务（NAS、路由器挂载盘）多数没有 HTTPS，开启后才能连接；
+  /// 该开关只对 WebDAV 生效
+  final bool allowInsecureHttp;
+
+  /// WebDAV 是否忽略证书错误
+  ///
+  /// 自建服务常用自签证书，开启后不再校验证书链
+  final bool ignoreCertificateErrors;
+
   const CloudConnectionConfig({
     required this.kind,
     required this.endpoint,
@@ -86,6 +97,8 @@ class CloudConnectionConfig {
     this.region = 'cn-east-1',
     this.bucket = '',
     this.pathStyle = false,
+    this.allowInsecureHttp = false,
+    this.ignoreCertificateErrors = false,
   });
 
   /// 是否把章节合并为归档包上传
@@ -184,12 +197,39 @@ bool isRemoteRateLimitError(Object error) {
 String describeRemoteError(Object error) {
   if (error is DioException) {
     final status = error.response?.statusCode;
+    if (status == 400) return '服务器拒绝了请求，请检查服务器地址是否指向 WebDAV 根路径';
     if (status == 401) return '认证失败，请检查账号与密码';
-    if (status == 403) return '没有访问权限，请检查账号权限或密钥是否正确';
+    if (status == 403) return '没有访问权限，请检查账号权限、密钥或目录访问规则';
     if (status == 404) return '服务器地址或远端目录不存在';
+    if (status == 405) return '服务器不接受该请求方法，请确认地址指向支持 WebDAV 的目录';
+    if (status == 409) return '远端路径冲突，请检查远端目录下是否存在同名目录';
+    if (status == 412) return '远端文件已被其他设备修改，请先同步后再重试';
+    if (status == 423) return '远端文件被服务器锁定，请稍后再试';
     if (status == 429 || status == 503) return '服务端请求过于频繁，请稍后再试';
+    if (status == 507 || status == 509) return '云端空间不足，请清理网盘或对象存储后重试';
     if (status != null) return '服务器返回错误（HTTP $status）';
-    // 未收到响应时通常是网络异常或请求超时
+
+    // 未收到响应时按异常类型给出更具体的指引
+    switch (error.type) {
+      case DioExceptionType.connectionTimeout:
+        return '连接服务器超时，请检查网络、地址与端口是否正确';
+      case DioExceptionType.sendTimeout:
+        return '上传超时，请检查网络状况后重试';
+      case DioExceptionType.receiveTimeout:
+        return '服务器响应超时，请稍后重试';
+      default:
+        break;
+    }
+
+    final text = error.error?.toString() ?? error.message ?? '';
+    if (text.contains('HandshakeException') ||
+        text.contains('CERTIFICATE_VERIFY_FAILED') ||
+        text.contains('certificate')) {
+      return '服务器证书校验失败，自建服务可在连接设置中开启「忽略证书错误」';
+    }
+    if (text.contains('Connection refused') || text.contains('SocketException')) {
+      return '无法连接到服务器，请检查地址、端口与服务是否已启动';
+    }
     return '无法连接到服务器，请检查网络与服务器地址';
   }
   return error.toString();

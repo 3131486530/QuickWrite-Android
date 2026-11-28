@@ -88,7 +88,7 @@ class MobileToolsCard extends StatelessWidget {
       _ToolEntry(MobileToolAction.layout, Icons.space_dashboard_outlined, '布局'),
       _ToolEntry(MobileToolAction.typeset, Icons.format_line_spacing, '排版'),
       _ToolEntry(MobileToolAction.backup, Icons.backup_outlined, '备份'),
-      _ToolEntry(MobileToolAction.other, Icons.tune_rounded, '其他'),
+      _ToolEntry(MobileToolAction.other, Icons.tune_rounded, '其它'),
     ]),
   ];
 

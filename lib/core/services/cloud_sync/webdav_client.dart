@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
+import 'package:dio/io.dart';
 import 'package:flutter/material.dart';
 import 'package:quick_write/core/services/cloud_sync/remote_storage.dart';
 import 'package:quick_write/core/services/cloud_sync/sync_models.dart';
@@ -11,9 +12,11 @@ import 'package:webdav_client/webdav_client.dart' as webdav;
 /// WebDAV 客户端封装
 ///
 /// 在 webdav_client 的基础上提供：
-/// - 服务器地址校验，要求使用 HTTPS，避免账号密码以明文传输
+/// - 服务器地址校验，默认要求 HTTPS，避免账号密码以明文传输；
+///   自建 NAS 等内网环境可显式允许 http:// 与自签证书
 /// - 统一的连接与传输超时
 /// - 请求节流与限流退避，避免触发网盘的访问频率限制
+/// - 重试时重新打开本地文件流，避免流被消费后重试上传空内容
 ///
 /// 该类只负责与远端服务器的通信，不感知具体的同步业务逻辑
 class WebDavClient implements RemoteStorage {
@@ -69,6 +72,8 @@ class WebDavClient implements RemoteStorage {
     required this.username,
     required this.password,
     required this.remoteDir,
+    this.allowInsecureHttp = false,
+    this.ignoreCertificateErrors = false,
   });
 
   /// 服务器地址
@@ -83,6 +88,18 @@ class WebDavClient implements RemoteStorage {
   /// 远端同步根目录（已规范化，无首尾斜杠）
   @override
   final String remoteDir;
+
+  /// 是否允许使用未加密的 http:// 地址
+  ///
+  /// 仅用于内网自建服务（NAS、路由器挂载盘等）无法提供 HTTPS 的场景，
+  /// 开启后账号密码会以明文传输
+  final bool allowInsecureHttp;
+
+  /// 是否忽略服务端证书错误
+  ///
+  /// 自建服务常用自签证书，系统的证书链校验会直接拒绝连接；
+  /// 开启后接受任意证书，仅建议在自有服务器上使用
+  final bool ignoreCertificateErrors;
 
   /// 底层 WebDAV 客户端（首次使用时创建）
   webdav.Client? _rawClient;
@@ -103,10 +120,12 @@ class WebDavClient implements RemoteStorage {
 
   /// 校验服务器地址是否合法
   ///
-  /// 要求地址格式正确且使用 HTTPS 协议
-  static bool isValidServerUrl(String url) {
+  /// 要求地址格式正确；默认只接受 HTTPS，[allowHttp] 为 true 时同时接受 HTTP
+  static bool isValidServerUrl(String url, {bool allowHttp = false}) {
     final uri = Uri.tryParse(url.trim());
-    return uri != null && uri.scheme == 'https' && uri.host.isNotEmpty;
+    if (uri == null || uri.host.isEmpty) return false;
+    if (uri.scheme == 'https') return true;
+    return allowHttp && uri.scheme == 'http';
   }
 
   /// 判断异常是否由服务端请求频率限制引起
@@ -119,8 +138,31 @@ class WebDavClient implements RemoteStorage {
   static String describeError(Object error) => describeRemoteError(error);
 
   /// 测试与服务器的连接是否可用
+  ///
+  /// 优先使用底层客户端的 ping；部分服务端（如个别 NAS 内置 WebDAV）
+  /// 不支持 OPTIONS/HEAD 探测，会返回 405/501，此时退化为对同步目录做
+  /// 一次零深度 PROPFIND，只要能完成鉴权即视为连接可用。
+  /// 同步目录尚未创建（404）同样说明地址与凭据有效。
   @override
-  Future<void> ping() => _withRetry(() => _client.ping());
+  Future<void> ping() async {
+    try {
+      await _withRetry(() => _client.ping());
+    } on DioException catch (e) {
+      final status = e.response?.statusCode;
+      if (status == 404) return;
+      if (status != 405 && status != 501) rethrow;
+      try {
+        await _request(
+          'PROPFIND',
+          remoteDir.isEmpty ? '/' : remoteDir,
+          optionsHandler: (options) => options.headers?['depth'] = '0',
+        );
+      } on DioException catch (inner) {
+        if (inner.response?.statusCode == 404) return;
+        rethrow;
+      }
+    }
+  }
 
   /// 确保远端目录存在（不存在时逐级创建）
   @override
@@ -206,7 +248,9 @@ class WebDavClient implements RemoteStorage {
     await _request(
       'PUT',
       remotePath,
-      data: file.openRead(),
+      // 每次尝试都重新打开文件流：流只能被消费一次，
+      // 复用同一个流会让重试变成空上传，服务端上的文件被截断为 0 字节
+      dataBuilder: () => file.openRead(),
       optionsHandler: (options) => options.headers?['content-length'] = length,
     );
   }
@@ -236,19 +280,15 @@ class WebDavClient implements RemoteStorage {
       optionsHandler: (options) => options.responseType = ResponseType.bytes,
     );
 
-    // 部分服务端会把文件内容重定向到其他地址，跟随一次重定向
+    // 重定向由底层 HTTP 客户端自动跟随；此处仍收到 3xx 时说明重定向未被处理，
+    // 直接给出明确错误，避免把响应体当作文件内容写入
     final status = response.statusCode;
     if (status != null && status >= 300 && status < 400) {
       final location = response.headers.value('location');
-      if (location == null || location.isEmpty) {
-        throw StateError('远端文件下载被重定向，但响应中缺少目标地址');
-      }
-      final redirected = await _request(
-        'GET',
-        location,
-        optionsHandler: (options) => options.responseType = ResponseType.bytes,
+      throw StateError(
+        '远端文件下载被重定向，但客户端未自动跟随'
+        '${location == null || location.isEmpty ? '' : '（目标：$location）'}',
       );
-      return Uint8List.fromList(redirected.data as List<int>);
     }
 
     return Uint8List.fromList(response.data as List<int>);
@@ -438,7 +478,7 @@ class WebDavClient implements RemoteStorage {
   @override
   Future<bool> exists(String key) async {
     try {
-      await _client.readProps(remotePathOf(key));
+      await _withRetry(() => _client.readProps(remotePathOf(key)));
       return true;
     } on DioException catch (e) {
       // 404 表示文件不存在，其余错误继续向上抛出
@@ -453,8 +493,12 @@ class WebDavClient implements RemoteStorage {
   webdav.Client get _client {
     if (_rawClient != null) return _rawClient!;
 
-    if (!isValidServerUrl(serverUrl)) {
-      throw ArgumentError('服务器地址无效，请填写以 https:// 开头的完整地址');
+    if (!isValidServerUrl(serverUrl, allowHttp: allowInsecureHttp)) {
+      throw ArgumentError(
+        allowInsecureHttp
+            ? '服务器地址无效，请填写以 http:// 或 https:// 开头的完整地址'
+            : '服务器地址无效，请填写以 https:// 开头的完整地址',
+      );
     }
 
     final client = webdav.newClient(
@@ -462,6 +506,14 @@ class WebDavClient implements RemoteStorage {
       user: username,
       password: password,
     );
+    if (ignoreCertificateErrors) {
+      // 自签证书不受系统信任链保护，需要自行放行；连接超时仍在适配器层设置
+      client.c.httpClientAdapter = IOHttpClientAdapter(
+        createHttpClient: () => HttpClient()
+          ..connectionTimeout = const Duration(milliseconds: _connectTimeout)
+          ..badCertificateCallback = (cert, host, port) => true,
+      );
+    }
     client.setConnectTimeout(_connectTimeout);
     client.setSendTimeout(_sendTimeout);
     client.setReceiveTimeout(_receiveTimeout);
@@ -483,12 +535,19 @@ class WebDavClient implements RemoteStorage {
   }
 
   /// 拼接远端资源的绝对地址，用于 MOVE 的目标地址头
+  ///
+  /// 逐段编码路径，中文与空格能被正确转义，已编码的 %XX 也不会被再次编码
   String _absoluteUrlOf(String remotePath) {
-    final base = _client.uri.endsWith('/') ? _client.uri : '${_client.uri}/';
+    final raw = _client.uri.toString();
+    final base = raw.endsWith('/') ? raw : '$raw/';
     final relative = remotePath.startsWith('/')
         ? remotePath.substring(1)
         : remotePath;
-    return Uri.encodeFull('$base$relative');
+    final encoded = relative
+        .split('/')
+        .map((segment) => Uri.encodeComponent(segment))
+        .join('/');
+    return '$base$encoded';
   }
 
   /// 发起原始请求并校验响应状态
@@ -499,6 +558,7 @@ class WebDavClient implements RemoteStorage {
     String method,
     String path, {
     dynamic data,
+    dynamic Function()? dataBuilder,
     void Function(Options options)? optionsHandler,
   }) {
     return _withRetry(() async {
@@ -506,7 +566,8 @@ class WebDavClient implements RemoteStorage {
         _client,
         method,
         path,
-        data: data,
+        // 请求体可能是一次性流，每次尝试都由 dataBuilder 重新生成
+        data: dataBuilder != null ? dataBuilder() : data,
         optionsHandler: optionsHandler,
       );
 
@@ -569,6 +630,12 @@ class WebDavClient implements RemoteStorage {
   ///
   /// 服务端限流时采用指数退避并附加随机抖动，避免多个并发请求同时重试
   Duration _retryDelayFor(Object error, int attempt) {
+    // 服务端给出 Retry-After 时按服务端要求等待，避免无效重试继续冲击配额
+    final serverDelay = _retryAfterOf(error);
+    if (serverDelay != null) {
+      return serverDelay > _maxRetryDelay ? _maxRetryDelay : serverDelay;
+    }
+
     if (!isRateLimitError(error)) {
       return _retryBaseDelay * attempt;
     }
@@ -576,6 +643,25 @@ class WebDavClient implements RemoteStorage {
     final exponential = _rateLimitBaseDelay * (1 << (attempt - 1));
     final capped = exponential > _maxRetryDelay ? _maxRetryDelay : exponential;
     return capped + Duration(milliseconds: _random.nextInt(500));
+  }
+
+  /// 解析响应头中的 Retry-After
+  ///
+  /// 支持秒数与 HTTP 日期两种格式，解析失败时返回 null
+  Duration? _retryAfterOf(Object error) {
+    if (error is! DioException) return null;
+    final raw = error.response?.headers.value('retry-after');
+    if (raw == null || raw.trim().isEmpty) return null;
+
+    final seconds = int.tryParse(raw.trim());
+    if (seconds != null) {
+      return seconds <= 0 ? Duration.zero : Duration(seconds: seconds);
+    }
+
+    final date = DateTime.tryParse(raw.trim());
+    if (date == null) return null;
+    final delay = date.difference(DateTime.now());
+    return delay.isNegative ? Duration.zero : delay;
   }
 }
 

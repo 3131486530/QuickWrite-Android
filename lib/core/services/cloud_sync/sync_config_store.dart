@@ -63,6 +63,12 @@ class SyncConfigStore {
   /// S3 是否使用路径风格访问
   bool s3PathStyle = false;
 
+  /// WebDAV 是否允许 http:// 明文连接（内网自建服务）
+  bool allowInsecureHttp = false;
+
+  /// WebDAV 是否忽略证书错误（自签证书）
+  bool ignoreCertificateErrors = false;
+
   /// 云端同步数据存放目录（S3 下作为对象键前缀）
   String remoteDir = defaultRemoteDir;
 
@@ -150,6 +156,9 @@ class SyncConfigStore {
           s3Region = jsonMap['s3Region'] as String? ?? kS3DefaultRegion;
           s3Bucket = jsonMap['s3Bucket'] as String? ?? '';
           s3PathStyle = jsonMap['s3PathStyle'] as bool? ?? false;
+          allowInsecureHttp = jsonMap['allowInsecureHttp'] as bool? ?? false;
+          ignoreCertificateErrors =
+              jsonMap['ignoreCertificateErrors'] as bool? ?? false;
           remoteDir = jsonMap['remoteDir'] as String? ?? defaultRemoteDir;
           isConnected = jsonMap['isConnected'] as bool? ?? false;
           lastSyncTime = jsonMap['lastSyncTime'] != null
@@ -208,6 +217,8 @@ class SyncConfigStore {
         's3Region': s3Region,
         's3Bucket': s3Bucket,
         's3PathStyle': s3PathStyle,
+        'allowInsecureHttp': allowInsecureHttp,
+        'ignoreCertificateErrors': ignoreCertificateErrors,
         'remoteDir': remoteDir,
         'isConnected': isConnected,
         'lastSyncTime': lastSyncTime?.toIso8601String(),
@@ -265,6 +276,8 @@ class SyncConfigStore {
     region: s3Region,
     bucket: s3Bucket,
     pathStyle: s3PathStyle,
+    allowInsecureHttp: allowInsecureHttp,
+    ignoreCertificateErrors: ignoreCertificateErrors,
   );
 
   /// 规范化远端目录

@@ -282,9 +282,12 @@ class _TabItemState extends State<TabItem> {
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // 图标
-                  Icon(widget.tab.icon ?? widget.tab.defaultIcon, size: iconSize, color: fgColor),
-                  SizedBox(width: iconGap),
+                  // 图标：章节与设定标签只显示名称，不再展示前导图标；
+                  // 备份预览仍保留图标，用于区分只读标签
+                  if (widget.tab.type == EditorTabType.backupPreview) ...[
+                    Icon(widget.tab.icon ?? widget.tab.defaultIcon, size: iconSize, color: fgColor),
+                    SizedBox(width: iconGap),
+                  ],
                   
                   // // 预览模式指示器（小圆点）
                   // if (widget.tab.isPreview) ...[

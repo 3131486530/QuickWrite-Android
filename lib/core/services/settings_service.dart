@@ -836,6 +836,9 @@ class SettingsService extends ChangeNotifier {
   /// 获取字数浮窗是否显示本章字数
   bool get wordCountFloatingWordCountEnabled => _settings.wordCountFloatingWordCountEnabled;
 
+  /// 获取字数浮窗是否隐藏「字」后缀
+  bool get wordCountFloatingHideWordSuffix => _settings.wordCountFloatingHideWordSuffix;
+
   /// 获取光标颜色（亮色主题，null 表示跟随主题主色）
   String? get cursorColorLight => _settings.cursorColorLight;
 
@@ -1205,6 +1208,12 @@ class SettingsService extends ChangeNotifier {
   /// 更新字数浮窗的本章字数显示开关
   Future<bool> updateWordCountFloatingWordCountEnabled(bool value) async {
     final newSettings = _settings.copyWith(wordCountFloatingWordCountEnabled: value);
+    return updateSettings(newSettings);
+  }
+
+  /// 更新字数浮窗的「字」后缀显隐
+  Future<bool> updateWordCountFloatingHideWordSuffix(bool value) async {
+    final newSettings = _settings.copyWith(wordCountFloatingHideWordSuffix: value);
     return updateSettings(newSettings);
   }
 

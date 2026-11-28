@@ -430,7 +430,7 @@ class _RightSidebarState extends State<RightSidebar>
       case RightSidebarType.typeset:
         return '排版设置';
       case RightSidebarType.other:
-        return '其他设置';
+        return '其它设置';
       case RightSidebarType.search:
         return '全文搜索';
       case RightSidebarType.history:

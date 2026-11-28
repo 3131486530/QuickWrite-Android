@@ -417,8 +417,8 @@ class _WorkspaceToolbarState extends State<WorkspaceToolbar> {
         const SizedBox(width: 8),
         ToggleLargeToolbarButton(
           icon: Icons.tune_rounded,
-          label: '其他',
-          tooltip: '其他设置',
+          label: '其它',
+          tooltip: '其它设置',
           // 当前侧边栏打开且类型为其他时显示选中状态
           isSelected: isRightSidebarExpanded && rightSidebarType == RightSidebarType.other,
           onPressed: () {

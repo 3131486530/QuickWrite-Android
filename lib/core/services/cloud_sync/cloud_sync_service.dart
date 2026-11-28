@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:quick_write/core/services/cloud_sync/cloud_sync_result.dart';
@@ -264,6 +265,12 @@ class CloudSyncService extends ChangeNotifier {
   /// S3 是否使用路径风格访问
   bool get s3PathStyle => _config.s3PathStyle;
 
+  /// WebDAV 是否允许 http:// 明文连接
+  bool get allowInsecureHttp => _config.allowInsecureHttp;
+
+  /// WebDAV 是否忽略证书错误
+  bool get ignoreCertificateErrors => _config.ignoreCertificateErrors;
+
   /// 远端目录
   String get remoteDir => _config.remoteDir;
 
@@ -330,8 +337,10 @@ class CloudSyncService extends ChangeNotifier {
       await client.ping();
       // 验证远端目录可用
       await client.ensureDirectory(client.remoteDir);
+      // 验证真实写入权限：只读挂载、配额耗尽等问题只有写入时才暴露
+      await _probeWriteAccess(client);
       return CloudSyncResult.success(
-        '连接成功，服务器可正常访问（${config.platformLabel}）',
+        '连接成功，服务器可正常读写（${config.platformLabel}）',
       );
     } catch (e) {
       return CloudSyncResult.failure('连接失败：${describeRemoteError(e)}');
@@ -339,6 +348,16 @@ class CloudSyncService extends ChangeNotifier {
       client.dispose();
       _setBusy(false);
     }
+  }
+
+  /// 在同步目录下写入一个探针文件并删除，验证远端可写
+  ///
+  /// 探针放在内部目录中，不会进入同步文件列表；失败时抛出原始异常，
+  /// 由调用方统一转换为可读提示
+  Future<void> _probeWriteAccess(RemoteStorage client) async {
+    final probePath = '${client.remoteDir}/.quickwrite/.write_probe';
+    await client.uploadBytes(Uint8List.fromList(<int>[0]), probePath);
+    await client.deleteFile(probePath);
   }
 
   /// 建立连接
@@ -363,6 +382,8 @@ class CloudSyncService extends ChangeNotifier {
     } else {
       _config.serverUrl = config.endpoint.trim();
       _config.username = config.account.trim();
+      _config.allowInsecureHttp = config.allowInsecureHttp;
+      _config.ignoreCertificateErrors = config.ignoreCertificateErrors;
       await _config.savePassword(config.secret);
     }
     _config.isConnected = true;
@@ -818,6 +839,8 @@ class CloudSyncService extends ChangeNotifier {
           username: config.account.trim(),
           password: config.secret,
           remoteDir: remoteDir,
+          allowInsecureHttp: config.allowInsecureHttp,
+          ignoreCertificateErrors: config.ignoreCertificateErrors,
         );
       case RemoteStorageKind.s3:
         return S3Client(
@@ -939,8 +962,13 @@ class CloudSyncService extends ChangeNotifier {
     switch (config.kind) {
       case RemoteStorageKind.webDav:
         if (config.endpoint.trim().isEmpty) return '请填写服务器地址';
-        if (!WebDavClient.isValidServerUrl(config.endpoint)) {
-          return '服务器地址无效，请填写以 https:// 开头的完整地址';
+        if (!WebDavClient.isValidServerUrl(
+          config.endpoint,
+          allowHttp: config.allowInsecureHttp,
+        )) {
+          return config.allowInsecureHttp
+              ? '服务器地址无效，请填写以 http:// 或 https:// 开头的完整地址'
+              : '服务器地址无效，请填写以 https:// 开头的完整地址（内网 http 服务请先开启「允许 HTTP 连接」）';
         }
         if (config.account.trim().isEmpty) return '请填写账号';
         if (config.secret.isEmpty) return '请填写密码';
