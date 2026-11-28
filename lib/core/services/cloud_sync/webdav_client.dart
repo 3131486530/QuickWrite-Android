@@ -525,7 +525,12 @@ class WebDavClient implements RemoteStorage {
         remotePath,
         optionsHandler: (options) {
           options.responseType = ResponseType.bytes;
-          if (received > 0) options.headers['range'] = 'bytes=$received-';
+          if (received > 0) {
+            options.headers = {
+              ...?options.headers,
+              'range': 'bytes=$received-',
+            };
+          }
         },
       );
 
