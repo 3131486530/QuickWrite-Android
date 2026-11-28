@@ -431,6 +431,8 @@ Future<void> _openReadingMode(BuildContext context, WorkspaceProvider provider) 
       .map((ChapterModel chapter) => ReaderChapter(
             title: chapter.title.isEmpty ? '未命名章节' : chapter.title,
             loadContent: () => _readChapterContentForReader(provider, chapter),
+            saveContent: (String content) =>
+                _writeChapterContentFromReader(provider, chapter, content),
           ))
       .toList();
 
@@ -459,6 +461,36 @@ Future<String> _readChapterContentForReader(
     if (text != null) return text;
   }
   return provider.readChapterContent(chapter);
+}
+
+/// 阅读模式长按编辑段落后的整章写回
+///
+/// 该章正在编辑器里打开时先同步文本控制器（含光标位置），再落盘，
+/// 避免编辑器里留着旧文本、之后保存又把阅读模式的修改覆盖掉。
+Future<bool> _writeChapterContentFromReader(
+  WorkspaceProvider provider,
+  ChapterModel chapter,
+  String content,
+) async {
+  final tab = provider.currentTab;
+  if (tab != null && tab.type == EditorTabType.chapter && tab.id == chapter.uuid) {
+    final controller = tab.textController;
+    if (controller != null && controller.text != content) {
+      final TextSelection oldSelection =
+          CodeLineSelectionUtils.flatSelectionOf(controller.text, controller.selection);
+      final int offset = oldSelection.baseOffset < 0
+          ? content.length
+          : oldSelection.baseOffset.clamp(0, content.length);
+      controller.text = content;
+      controller.selection =
+          CodeLineSelectionUtils.collapsedSelection(content, offset);
+    }
+  }
+  try {
+    return await provider.saveChapterContent(chapter, content);
+  } catch (_) {
+    return false;
+  }
 }
 
 /// 复制当前章节正文到剪贴板

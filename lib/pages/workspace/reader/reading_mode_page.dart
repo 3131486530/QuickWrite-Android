@@ -16,15 +16,23 @@ import 'package:quick_write/shared/widgets/widgets.dart';
 /// 阅读模式中的一章
 ///
 /// 章节正文按需加载，避免一次性把全书读进内存；
-/// [loadContent] 由调用方决定取文件内容还是编辑器里尚未落盘的正文。
+/// [loadContent] 由调用方决定取文件内容还是编辑器里尚未落盘的正文，
+/// [saveContent] 供长按段落的「编辑」把改后的整章正文写回。
 class ReaderChapter {
-  const ReaderChapter({required this.title, required this.loadContent});
+  const ReaderChapter({
+    required this.title,
+    required this.loadContent,
+    this.saveContent,
+  });
 
   /// 章节标题
   final String title;
 
   /// 读取章节正文
   final Future<String> Function() loadContent;
+
+  /// 写回整章正文，返回是否成功；为空表示该章只读
+  final Future<bool> Function(String content)? saveContent;
 }
 
 /// 打开阅读模式
@@ -172,6 +180,18 @@ class _ReadingModePageState extends State<ReadingModePage> with WidgetsBindingOb
   /// 听书控制条是否可见（听书开启且顶栏可见）
   bool get _ttsBarVisible => _ttsEnabled && _chromeVisible;
 
+  /// 根节点 Key：长按后把屏幕坐标换算成浮层坐标
+  final GlobalKey _rootKey = GlobalKey();
+
+  /// 长按选中的段落序号（null 表示没有选中）
+  int? _selectedParagraph;
+
+  /// 长按位置（浮层定位锚点，Stack 局部坐标）
+  Offset _selectionAnchor = Offset.zero;
+
+  /// 段落浮动栏是否可见
+  bool _selectionBarVisible = false;
+
   @override
   void initState() {
     super.initState();
@@ -240,6 +260,7 @@ class _ReadingModePageState extends State<ReadingModePage> with WidgetsBindingOb
           autofocus: true,
           onKeyEvent: _handleKeyEvent,
           child: Stack(
+          key: _rootKey,
           children: <Widget>[
             SafeArea(
               child: LayoutBuilder(
@@ -286,6 +307,7 @@ class _ReadingModePageState extends State<ReadingModePage> with WidgetsBindingOb
             ),
             _buildTopBar(context, background),
             _buildTtsBar(context, background),
+            _buildSelectionBar(context, background),
           ],
           ),
         ),
@@ -320,6 +342,9 @@ class _ReadingModePageState extends State<ReadingModePage> with WidgetsBindingOb
     // 换章后旧的朗读锚点与段落序号都失效，听书续读时由新章章首重新给锚点
     _speakingParagraph = null;
     _pendingRevealParagraph = null;
+    // 长按选中的段落同样属于旧章，换章时收起浮动栏
+    _selectedParagraph = null;
+    _selectionBarVisible = false;
     String? cached = _contentCache[target];
     if (cached == null) {
       setState(() {
@@ -740,6 +765,11 @@ class _ReadingModePageState extends State<ReadingModePage> with WidgetsBindingOb
     return GestureDetector(
       behavior: HitTestBehavior.translucent,
       onTapUp: (TapUpDetails details) {
+        // 段落浮动栏打开时，先收起浮层与选中态，不触发翻页
+        if (_selectionBarVisible || _selectedParagraph != null) {
+          _hideSelectionBar();
+          return;
+        }
         final double width = MediaQuery.sizeOf(context).width;
         final double x = details.globalPosition.dx;
         if (x < width / 3) {
@@ -824,17 +854,30 @@ class _ReadingModePageState extends State<ReadingModePage> with WidgetsBindingOb
       ),
     );
 
-    // 听书时当前朗读段落铺一层底色作为选中态。
-    // 只画背景、不加内外边距，分页测量不受影响，正文不会被挤出页面。
-    final Widget bodyWidget = _ttsEnabled && block.paragraphIndex == _speakingParagraph
-        ? DecoratedBox(
-            decoration: BoxDecoration(
-              color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.16),
-              borderRadius: BorderRadius.circular(4),
-            ),
-            child: textWidget,
-          )
-        : textWidget;
+    // 听书时当前朗读段落铺一层底色作为选中态；长按选中的段落同样铺底色。
+    // 只画背景、不加内外边距与描边，分页测量不受影响，多行段落也是一整条连续底。
+    final bool speaking = _ttsEnabled && block.paragraphIndex == _speakingParagraph;
+    final bool selected = block.paragraphIndex == _selectedParagraph;
+    final Color accent = Theme.of(context).colorScheme.primary;
+    Widget bodyWidget = textWidget;
+    if (speaking || selected) {
+      bodyWidget = DecoratedBox(
+        decoration: BoxDecoration(
+          color: accent.withValues(alpha: speaking ? 0.16 : 0.12),
+          borderRadius: BorderRadius.circular(4),
+        ),
+        child: textWidget,
+      );
+    }
+
+    // 长按整段：选中该段并弹出浮动栏（编辑 / 从此处读）
+    bodyWidget = GestureDetector(
+      behavior: HitTestBehavior.translucent,
+      onLongPressStart: (LongPressStartDetails details) {
+        _showSelectionBar(block.paragraphIndex, details.globalPosition);
+      },
+      child: bodyWidget,
+    );
 
     // 分隔线属于段落之间的元素：段落被分页切开时，续块不再画分隔线，
     // 否则页内实际高度会比分页测量多出一条线，累积后把末行顶出页面。
@@ -856,6 +899,226 @@ class _ReadingModePageState extends State<ReadingModePage> with WidgetsBindingOb
         ? CustomPaint(painter: _DashedLinePainter(color: color))
         : ColoredBox(color: color);
     return SizedBox(height: _separatorHeight, child: line);
+  }
+
+  /// 长按段落：选中该段并在长按位置弹出浮动栏
+  void _showSelectionBar(int paragraphIndex, Offset globalPosition) {
+    final RenderBox? box = _rootKey.currentContext?.findRenderObject() as RenderBox?;
+    final Offset local = box == null ? globalPosition : box.globalToLocal(globalPosition);
+    setState(() {
+      _selectedParagraph = paragraphIndex;
+      _selectionAnchor = local;
+      _selectionBarVisible = true;
+    });
+  }
+
+  /// 收起段落浮动栏并清掉选中态
+  void _hideSelectionBar() {
+    if (!_selectionBarVisible && _selectedParagraph == null) return;
+    setState(() {
+      _selectionBarVisible = false;
+      _selectedParagraph = null;
+    });
+  }
+
+  /// 段落浮动栏：编辑、从此处读
+  ///
+  /// 以浮层贴在长按位置上方（上方空间不足时贴到下方），不参与正文排版。
+  Widget _buildSelectionBar(BuildContext context, Color background) {
+    if (!_selectionBarVisible) return const SizedBox.shrink();
+    const double barWidth = 172;
+    const double barHeight = 42;
+    final Size size = MediaQuery.sizeOf(context);
+    final double left = (_selectionAnchor.dx - barWidth / 2)
+        .clamp(8.0, math.max(8.0, size.width - barWidth - 8));
+    final double top = _selectionAnchor.dy - barHeight - 10 >= 8
+        ? _selectionAnchor.dy - barHeight - 10
+        : _selectionAnchor.dy + 22;
+    final Color color = ColorUtils.getFontColorForTheme(context);
+    final Color accent = Theme.of(context).colorScheme.primary;
+
+    Widget action({
+      required IconData icon,
+      required String label,
+      required VoidCallback onTap,
+    }) {
+      return Expanded(
+        child: InkWell(
+          onTap: onTap,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: <Widget>[
+              Icon(icon, size: 16, color: accent),
+              const SizedBox(width: 4),
+              Text(
+                label,
+                style: TextStyle(
+                  fontFamily: SettingsService.instance.fontFamily,
+                  fontSize: 13,
+                  color: color,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return Positioned(
+      left: left,
+      top: top,
+      child: Material(
+        color: background,
+        elevation: 4,
+        borderRadius: BorderRadius.circular(barHeight / 2),
+        clipBehavior: Clip.antiAlias,
+        child: SizedBox(
+          width: barWidth,
+          height: barHeight,
+          child: Row(
+            children: <Widget>[
+              action(
+                icon: Icons.edit_outlined,
+                label: '编辑',
+                onTap: _editSelectedParagraph,
+              ),
+              SizedBox(
+                width: 0.5,
+                height: 18,
+                child: ColoredBox(color: color.withValues(alpha: 0.2)),
+              ),
+              action(
+                icon: Icons.volume_up_rounded,
+                label: '从此处读',
+                onTap: _readFromSelectedParagraph,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 编辑选中的段落：弹窗改完写回正文与章节文件
+  Future<void> _editSelectedParagraph() async {
+    final int? index = _selectedParagraph;
+    _hideSelectionBar();
+    if (index == null || index >= _paragraphs.length) return;
+    final SettingsService settings = SettingsService.instance;
+    final TextEditingController controller = TextEditingController(text: _paragraphs[index]);
+    final String? edited = await showDialog<String>(
+      context: context,
+      builder: (BuildContext dialogContext) {
+        return AlertDialog(
+          scrollable: true,
+          title: Text(
+            '编辑段落',
+            style: TextStyle(
+              fontFamily: settings.fontFamily,
+              fontSize: 16,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            minLines: 3,
+            maxLines: 8,
+            keyboardType: TextInputType.multiline,
+            style: TextStyle(
+              fontFamily: settings.fontFamily,
+              fontSize: settings.fontSize,
+              height: settings.lineHeight,
+              color: ColorUtils.getFontColorForTheme(dialogContext),
+            ),
+            decoration: const InputDecoration(
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('取消'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(controller.text),
+              child: const Text('保存'),
+            ),
+          ],
+        );
+      },
+    );
+    controller.dispose();
+    if (!mounted || edited == null) return;
+    await _replaceParagraph(index, edited);
+  }
+
+  /// 用 [text] 替换当前章第 [index] 段，并写回章节文件
+  ///
+  /// 按换行重新拼装整章正文：分页器同样以 `\n` 拆段，改完立刻重新分页，
+  /// 并把编辑后的段落翻到眼前。
+  Future<void> _replaceParagraph(int index, String text) async {
+    final String? content = _content;
+    if (content == null) return;
+    final List<String> lines = content.split('\n');
+    if (index >= lines.length || lines[index] == text) return;
+    lines[index] = text;
+    final String updated = lines.join('\n');
+
+    // 文本变了，朗读锚点与段落序号都会失效：先把朗读状态收干净再停引擎，
+    // 避免停止时触发的完成回调按旧游标继续读
+    final bool wasPlaying = _ttsPlaying;
+    setState(() {
+      _content = updated;
+      _contentCache[_chapterIndex] = updated;
+      _pages = const <ReaderPageSlice>[];
+      _paginationSignature = '';
+      _pendingRevealParagraph = index;
+      _ttsPlaying = false;
+      _speakingParagraph = null;
+      _selectedParagraph = null;
+      _selectionBarVisible = false;
+    });
+    if (wasPlaying) await _tts.stop();
+
+    final Future<bool> Function(String content)? save =
+        widget.chapters[_chapterIndex].saveContent;
+    if (save == null) {
+      SnackBarService.show(context, '段落已修改');
+      return;
+    }
+    bool ok;
+    try {
+      ok = await save(updated);
+    } catch (_) {
+      ok = false;
+    }
+    if (!mounted) return;
+    SnackBarService.show(context, ok ? '段落已保存' : '段落已修改，但写入章节失败');
+  }
+
+  /// 从此处读：开启听书后从选中段落开始朗读
+  Future<void> _readFromSelectedParagraph() async {
+    final int? index = _selectedParagraph;
+    _hideSelectionBar();
+    if (index == null) return;
+    if (!_ttsEnabled) {
+      final bool ready = await _tts.ensureReady();
+      if (!mounted) return;
+      if (!ready) {
+        SnackBarService.show(context, '当前设备没有可用的语音朗读引擎');
+        return;
+      }
+      _tts.onComplete = _onParagraphSpoken;
+      _tts.onError = _onTtsError;
+      setState(() {
+        _ttsEnabled = true;
+        // 开启后把控制条摆出来，方便立即暂停或切换循环
+        _chromeVisible = true;
+      });
+    }
+    _speakFrom(index);
   }
 
   /// 听书控制条：上一段、播放/暂停、下一段、语速、单章循环
@@ -1039,6 +1302,7 @@ class _ReadingModePageState extends State<ReadingModePage> with WidgetsBindingOb
 
   /// 目录：快速切换章节
   void _openCatalog() {
+    _hideSelectionBar();
     final Color background = ColorUtils.getEditorBackgroundColorForTheme(context);
     final Color color = ColorUtils.getFontColorForTheme(context);
     showModalBottomSheet<void>(
@@ -1089,17 +1353,14 @@ class _ReadingModePageState extends State<ReadingModePage> with WidgetsBindingOb
                             fontWeight: current ? FontWeight.w600 : FontWeight.normal,
                           ),
                         ),
-                        trailing: current
-                            ? Icon(
-                                Icons.play_arrow_rounded,
-                                size: 18,
-                                color: Theme.of(context).colorScheme.primary,
-                              )
-                            : null,
                         onTap: () {
                           _pauseForManualTurn();
+                          _hideSelectionBar();
                           Navigator.of(sheetContext).pop();
-                          if (index != _chapterIndex) _loadChapter(index);
+                          if (index == _chapterIndex) return;
+                          // 切章后回到纯阅读状态，顶部功能条一并收起
+                          setState(() => _chromeVisible = false);
+                          _loadChapter(index);
                         },
                       );
                     },
@@ -1115,6 +1376,7 @@ class _ReadingModePageState extends State<ReadingModePage> with WidgetsBindingOb
 
   /// 上一页：首页时回到上一章的最后一页
   void _turnBack() {
+    _hideSelectionBar();
     _pauseForManualTurn();
     if (_pageIndex > 0) {
       _pageController.jumpToPage(_pageIndex - 1);
@@ -1129,6 +1391,7 @@ class _ReadingModePageState extends State<ReadingModePage> with WidgetsBindingOb
 
   /// 下一页：本章最后一页时直接进入下一章，无下一章则不翻页
   void _turnForward() {
+    _hideSelectionBar();
     _pauseForManualTurn();
     if (_pageIndex < _pages.length - 1) {
       _pageController.jumpToPage(_pageIndex + 1);
