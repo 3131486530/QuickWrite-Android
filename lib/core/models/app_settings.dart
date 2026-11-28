@@ -307,6 +307,15 @@ class AppSettings {
   /// 快捷输入栏右侧操作区右侧图标的动作标识，取值同 [quickInputBarLeftAction]
   final String quickInputBarRightAction;
 
+  /// 快捷输入栏右侧操作区第三个图标的动作标识，取值同 [quickInputBarLeftAction]，
+  /// 'none' 表示不占用位置
+  final String quickInputBarThirdAction;
+
+  /// 大纲编辑器底部快捷输入（自定义符号栏）面板是否默认展开
+  ///
+  /// 关掉后唤起键盘不再自动弹出该面板，需要时点工具栏图标手动展开
+  final bool outlineQuickInputPanelOpen;
+
   /// 快捷输入栏的自定义符号列表（文本格式，一行一个符号）
   ///
   /// 写法与源码一致：符号用单引号包裹，成对符号在逗号后追加
@@ -493,7 +502,9 @@ class AppSettings {
     this.punctuationAutoCompleteEnabled = true, // 是否开启标点符号自动补全（移动端）
     this.pairedSymbolEnterJumpEnabled = false, // 是否开启成对符号回车跳出
     this.quickInputBarLeftAction = 'quickPhrase', // 快捷输入栏右侧操作区左侧图标
-    this.quickInputBarRightAction = 'settings', // 快捷输入栏右侧操作区右侧图标
+    this.quickInputBarRightAction = 'settings',
+    this.quickInputBarThirdAction = 'none',
+    this.outlineQuickInputPanelOpen = false, // 快捷输入栏右侧操作区右侧图标
     this.quickInputSymbolsText, // 快捷输入栏自定义符号列表（null 表示使用默认列表）
     this.quickPhrases = const [], // 快捷短语列表（移动端）
     this.textReplacementRules = const [], // 正文自动替换规则
@@ -647,6 +658,8 @@ class AppSettings {
       pairedSymbolEnterJumpEnabled: autoBackupJson['pairedSymbolEnterJumpEnabled'] as bool? ?? defaults.pairedSymbolEnterJumpEnabled,
       quickInputBarLeftAction: autoBackupJson['quickInputBarLeftAction'] as String? ?? defaults.quickInputBarLeftAction,
       quickInputBarRightAction: autoBackupJson['quickInputBarRightAction'] as String? ?? defaults.quickInputBarRightAction,
+      quickInputBarThirdAction: autoBackupJson['quickInputBarThirdAction'] as String? ?? defaults.quickInputBarThirdAction,
+      outlineQuickInputPanelOpen: autoBackupJson['outlineQuickInputPanelOpen'] as bool? ?? defaults.outlineQuickInputPanelOpen,
       quickInputSymbolsText: autoBackupJson['quickInputSymbolsText'] as String?,
       quickPhrases: _parseQuickPhrases(autoBackupJson['quickPhrases']),
 
@@ -815,6 +828,8 @@ class AppSettings {
           'pairedSymbolEnterJumpEnabled': pairedSymbolEnterJumpEnabled,
           'quickInputBarLeftAction': quickInputBarLeftAction,
           'quickInputBarRightAction': quickInputBarRightAction,
+          'quickInputBarThirdAction': quickInputBarThirdAction,
+          'outlineQuickInputPanelOpen': outlineQuickInputPanelOpen,
           'quickInputSymbolsText': quickInputSymbolsText,
           'quickPhrases': quickPhrases.map((phrase) => phrase.toJson()).toList(growable: false),
         },
@@ -942,6 +957,8 @@ class AppSettings {
     // 快捷输入栏右侧操作区图标
     String? quickInputBarLeftAction,
     String? quickInputBarRightAction,
+    String? quickInputBarThirdAction,
+    bool? outlineQuickInputPanelOpen,
     // 快捷输入栏自定义符号列表（传入 null 表示恢复默认列表）
     Object? quickInputSymbolsText = _unset,
     // 快捷短语列表（移动端）
@@ -1066,6 +1083,8 @@ class AppSettings {
       // 快捷输入栏右侧操作区图标
       quickInputBarLeftAction: quickInputBarLeftAction ?? this.quickInputBarLeftAction,
       quickInputBarRightAction: quickInputBarRightAction ?? this.quickInputBarRightAction,
+      quickInputBarThirdAction: quickInputBarThirdAction ?? this.quickInputBarThirdAction,
+      outlineQuickInputPanelOpen: outlineQuickInputPanelOpen ?? this.outlineQuickInputPanelOpen,
       // 快捷输入栏自定义符号列表
       quickInputSymbolsText: quickInputSymbolsText == _unset ? this.quickInputSymbolsText : quickInputSymbolsText as String?,
       // 快捷短语列表
@@ -1212,6 +1231,8 @@ class AppSettings {
            // 快捷输入栏右侧操作区图标
            other.quickInputBarLeftAction == quickInputBarLeftAction &&
            other.quickInputBarRightAction == quickInputBarRightAction &&
+           other.quickInputBarThirdAction == quickInputBarThirdAction &&
+           other.outlineQuickInputPanelOpen == outlineQuickInputPanelOpen &&
            other.quickInputSymbolsText == quickInputSymbolsText &&
            // 快捷短语列表
            listEquals(other.quickPhrases, quickPhrases) &&
@@ -1338,6 +1359,8 @@ class AppSettings {
         pairedSymbolEnterJumpEnabled,
         quickInputBarLeftAction,
         quickInputBarRightAction,
+        quickInputBarThirdAction,
+        outlineQuickInputPanelOpen,
         quickInputSymbolsText,
         Object.hashAll(quickPhrases),
         Object.hash(Object.hashAll(textReplacementRules), autoReplaceEnabled),

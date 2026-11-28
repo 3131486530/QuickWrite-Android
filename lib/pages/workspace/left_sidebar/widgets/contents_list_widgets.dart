@@ -405,7 +405,8 @@ class ListItem extends StatelessWidget {
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 300),
             curve: Curves.easeInOut,
-            padding: EdgeInsets.only(left: leftIndent, right: 8),
+            // 上下留白：标题换行成多行时仍有舒适的点击区域
+            padding: EdgeInsets.only(left: leftIndent, right: 8, top: 6, bottom: 6),
             decoration: BoxDecoration(
               color: isSelected
                   ? colorScheme.primary.withValues(alpha: 0.12)
@@ -416,12 +417,14 @@ class ListItem extends StatelessWidget {
             ),
             child: Row(
               children: [
-                // 左侧：序号或图标
-                if (leading != null)
-                  leading!
-                else if (indexText != null)
+                // 左侧：序号或图标（无前导元素时不占用缩进）
+                if (leading != null) ...[
+                  leading!,
+                  const SizedBox(width: 8),
+                ] else if (indexText != null) ...[
                   IndexBadge(text: indexText!, isSelected: isSelected),
-                const SizedBox(width: 8),
+                  const SizedBox(width: 8),
+                ],
                 // 中间：标题和副标题
                 Expanded(
                   child: Column(
@@ -438,8 +441,8 @@ class ListItem extends StatelessWidget {
                               ? colorScheme.primary
                               : colorScheme.onSurface,
                         ),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
+                        // 章节名/设定名过长时自动换行，完整展示多行标题
+                        softWrap: true,
                       ),
                       if (subtitle != null) ...[
                         const SizedBox(height: 2),

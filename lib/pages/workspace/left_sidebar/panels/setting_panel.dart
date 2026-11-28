@@ -17,6 +17,7 @@ import 'package:quick_write/core/utils/file_explorer.dart';
 import 'package:quick_write/core/utils/platform_capabilities.dart';
 import '../widgets/contents_list_widgets.dart';
 import '../widgets/contents_top_bar.dart';
+import '../widgets/contents_row_metrics.dart';
 import '../widgets/contents_sortable.dart';
 
 /// 设定面板
@@ -103,8 +104,21 @@ class _SettingPanelState extends State<SettingPanel>
   /// 设定列表是否倒序排列
   bool _isReversed = false;
 
-  /// 设定项固定高度
+  /// 设定项单行高度
   static const double _settingItemExtent = 48.0;
+
+  /// 设定名每多换一行增加的高度
+  static const double _settingTitleLineExtent = 18.0;
+
+  /// 设定名可用宽度相对列表宽度的扣减量
+  ///
+  /// 包含列表左右内边距、左侧缩进、右上角操作按钮与间距
+  static const double _titleWidthInset = 68.0;
+
+  /// 目录列表当前可用宽度，由 LayoutBuilder 写入
+  ///
+  /// 标题行数必须按真实宽度估算，行高才能随多行标题正确撑开
+  double _listRowWidth = 0;
 
   /// 分组标题高度（Container height 40 + vertical margin 4）
   static const double _groupHeaderExtent = 44.0;
@@ -318,6 +332,17 @@ class _SettingPanelState extends State<SettingPanel>
   /// 分组标题与设定项作为同一可拖拽列表中的行，支持设定项跨分组拖拽；
   /// 拖拽分组标题期间折叠所有分组，结束后恢复。
   Widget _buildSettingList(BuildContext context) {
+    // 取到列表真实宽度后再构建行：标题换行行数依赖宽度，行高才能算准
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        _listRowWidth = constraints.maxWidth;
+        return _buildSettingListBody(context);
+      },
+    );
+  }
+
+  /// 构建设定列表主体
+  Widget _buildSettingListBody(BuildContext context) {
     final workspaceProvider = context.watch<WorkspaceProvider>();
     final rows = buildContentsRows();
     if (rows.isEmpty) {
@@ -505,6 +530,35 @@ class _SettingPanelState extends State<SettingPanel>
   @override
   bool get contentsReversed => _isReversed;
 
+  /// 设定行的实际高度
+  ///
+  /// 设定名过长时自动换行显示多行，行高按估算的行数同步撑高；
+  /// 宽度尚未测量到时按单行高度返回，避免首帧行高异常
+  double _settingRowExtent(String title) {
+    return contentsRowExtent(
+      title: title,
+      style: Theme.of(context).textTheme.titleSmall,
+      maxWidth: _listRowWidth - _titleWidthInset,
+      textScaler: MediaQuery.textScalerOf(context),
+      singleLineExtent: _settingItemExtent,
+      lineExtent: _settingTitleLineExtent,
+    );
+  }
+
+  /// 按当前目录行布局定位设定项的起始偏移
+  ///
+  /// 行高随标题行数变化后不能再按等距换算，改为复用列表构建时累计的偏移表。
+  ({double start, double extent})? _locateSettingSlot(String itemUuid) {
+    buildContentsRows();
+    final int slotIndex = _listSlots.indexWhere((slot) => slot.id == itemUuid);
+    if (slotIndex < 0) return null;
+    final double start = _listSlots[slotIndex].startOffset;
+    final double extent = slotIndex + 1 < _listSlots.length
+        ? _listSlots[slotIndex + 1].startOffset - start
+        : _settingItemExtent;
+    return (start: start, extent: extent);
+  }
+
   /// 构建当前显示顺序的目录行
   ///
   /// 同时刷新分组偏移、批量命中表与设定项序号缓存，供吸顶、批量选择与行构建复用。
@@ -529,14 +583,15 @@ class _SettingPanelState extends State<SettingPanel>
       for (var i = 0; i < displayItems.length; i++) {
         final item = displayItems[i];
         _itemNumberByUuid[item.uuid] = i + 1;
+        final double extent = _settingRowExtent(item.title);
         listSlots.add((startOffset: offset, id: item.uuid));
         rows.add(ContentsRow(
           key: 'i:${item.uuid}',
           groupUuid: '',
-          extent: _settingItemExtent,
+          extent: extent,
           itemUuid: item.uuid,
         ));
-        offset += _settingItemExtent;
+        offset += extent;
       }
     } else {
       final groupGroups = _groupSettingItemsByGroup(items, groups);
@@ -585,14 +640,15 @@ class _SettingPanelState extends State<SettingPanel>
 
         final displayGroupItems = _isReversed ? groupItems.reversed.toList() : groupItems;
         for (final item in displayGroupItems) {
+          final double extent = _settingRowExtent(item.title);
           listSlots.add((startOffset: offset, id: item.uuid));
           rows.add(ContentsRow(
             key: 'i:${item.uuid}',
             groupUuid: groupUuid,
-            extent: _settingItemExtent,
+            extent: extent,
             itemUuid: item.uuid,
           ));
-          offset += _settingItemExtent;
+          offset += extent;
         }
       }
     }
@@ -824,12 +880,8 @@ class _SettingPanelState extends State<SettingPanel>
         child: MouseRegion(
           onEnter: (_) => _selectionController.onItemPointerEnter(item.uuid),
           child: ListItem(
-            leftIndent: 30,
-            leading: Icon(
-              Icons.summarize_outlined,
-              size: 18,
-              color: isSelected ? colorScheme.primary : colorScheme.onSurfaceVariant,
-            ),
+            // 设定名前面不再显示图标
+            leftIndent: 12,
             title: item.title,
             isSelected: isSelected,
             onTap: () => _selectionController.onItemTap(item.uuid),
@@ -844,12 +896,8 @@ class _SettingPanelState extends State<SettingPanel>
     }
 
     return ListItem(
-      leftIndent: 30,
-      leading: Icon(
-        Icons.summarize_outlined,
-        size: 18,
-        color: isSelected ? colorScheme.primary : colorScheme.onSurfaceVariant,
-      ),
+      // 设定名前面不再显示图标
+      leftIndent: 12,
       title: item.title,
       isSelected: isSelected,
       isPressed: isPressed,
@@ -1399,6 +1447,17 @@ class _SettingPanelState extends State<SettingPanel>
     // 延迟一帧确保布局完成
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_scrollController.hasClients) return;
+
+      // 优先按列表累计偏移定位：行高随设定名行数变化，等距换算已不成立
+      final slot = _locateSettingSlot(targetUuid);
+      if (slot != null) {
+        final double viewportHeight = _scrollController.position.viewportDimension;
+        final double currentOffset = _scrollController.offset;
+        if (slot.start >= currentOffset && slot.start + slot.extent <= currentOffset + viewportHeight) return;
+        final double maxScroll = _scrollController.position.maxScrollExtent;
+        _scrollController.jumpTo((slot.start - viewportHeight / 3).clamp(0.0, maxScroll));
+        return;
+      }
 
       final provider = context.read<WorkspaceProvider>();
       final currentGroups = provider.settingGroups;

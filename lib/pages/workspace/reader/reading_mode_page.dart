@@ -1467,19 +1467,9 @@ class _ReadingModePageState extends State<ReadingModePage> with WidgetsBindingOb
                     itemCount: widget.chapters.length,
                     itemBuilder: (BuildContext context, int index) {
                       final bool current = index == _chapterIndex;
-                      return ListTile(
-                        dense: true,
-                        title: Text(
-                          widget.chapters[index].title,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontFamily: SettingsService.instance.fontFamily,
-                            fontSize: 13,
-                            color: current ? Theme.of(context).colorScheme.primary : color,
-                            fontWeight: current ? FontWeight.w600 : FontWeight.normal,
-                          ),
-                        ),
+                      // 用 InkWell + 自适应高度的文本替代 ListTile：
+                      // 章节名过长时自动换行显示多行，高度随行数增长，不再被固定行高裁剪
+                      return InkWell(
                         onTap: () {
                           _pauseForManualTurn();
                           _hideSelectionBar();
@@ -1489,6 +1479,20 @@ class _ReadingModePageState extends State<ReadingModePage> with WidgetsBindingOb
                           setState(() => _chromeVisible = false);
                           _loadChapter(index);
                         },
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                          child: Text(
+                            widget.chapters[index].title,
+                            softWrap: true,
+                            style: TextStyle(
+                              height: 1.35,
+                              fontFamily: SettingsService.instance.fontFamily,
+                              fontSize: 13,
+                              color: current ? Theme.of(context).colorScheme.primary : color,
+                              fontWeight: current ? FontWeight.w600 : FontWeight.normal,
+                            ),
+                          ),
+                        ),
                       );
                     },
                   ),

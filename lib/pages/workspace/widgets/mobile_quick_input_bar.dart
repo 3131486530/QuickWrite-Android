@@ -195,6 +195,15 @@ class _MobileQuickInputBarState extends State<MobileQuickInputBar> with WidgetsB
     context.read<WorkspaceProvider>().openRightSidebar(RightSidebarType.search);
   }
 
+  /// 以阅读模式打开当前章节
+  ///
+  /// 阅读模式占满全屏，先收起输入法避免键盘遮住正文
+  Future<void> _handleReadingModeTap() async {
+    final provider = context.read<WorkspaceProvider>();
+    FocusManager.instance.primaryFocus?.unfocus();
+    await openReadingModeFromEditor(context, provider);
+  }
+
   /// 打开随机取名弹窗
   ///
   /// 打开前先记录编辑器是否处于光标焦点，收起输入法后再弹窗；
@@ -280,9 +289,10 @@ class _MobileQuickInputBarState extends State<MobileQuickInputBar> with WidgetsB
   /// 不需要改动配置值，也不需要在设置面板中禁止这种组合。
   List<QuickInputAction> _visibleActions() {
     final settings = SettingsService.instance;
-    return [
+    return <QuickInputAction>[
       settings.quickInputBarLeftAction,
       settings.quickInputBarRightAction,
+      settings.quickInputBarThirdAction,
     ].where((action) => !action.isNone).toList(growable: false);
   }
 
@@ -317,6 +327,8 @@ class _MobileQuickInputBarState extends State<MobileQuickInputBar> with WidgetsB
         return _buildSmallActionButton(action, icon, _handleFullTextSearchTap);
       case QuickInputAction.randomName:
         return _buildSmallActionButton(action, icon, _handleRandomNameTap);
+      case QuickInputAction.readingMode:
+        return _buildSmallActionButton(action, icon, _handleReadingModeTap);
       case QuickInputAction.quickPhrase:
         return PressScaleIconButton(
           key: _phraseButtonKey,

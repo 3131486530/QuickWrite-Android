@@ -19,6 +19,7 @@ import 'package:quick_write/core/utils/batch_selection_controller.dart';
 import 'package:quick_write/shared/widgets/widgets.dart';
 import 'package:quick_write/shared/widgets/sortable/sliver_sortable_list.dart';
 import '../widgets/contents_list_widgets.dart';
+import '../widgets/contents_row_metrics.dart';
 import '../widgets/contents_top_bar.dart';
 import '../widgets/contents_sortable.dart';
 
@@ -107,8 +108,21 @@ class _ChapterPanelState extends State<ChapterPanel>
   /// 章节列表滚动视图的 GlobalKey，用于触摸拖拽时按全局坐标换算列表内容坐标
   final GlobalKey _listKey = GlobalKey();
 
-  /// 章节项固定高度
+  /// 章节项单行高度
   static const double _chapterItemExtent = 56.0;
+
+  /// 章节名每多换一行增加的高度
+  static const double _chapterTitleLineExtent = 18.0;
+
+  /// 章节名可用宽度相对列表宽度的扣减量
+  ///
+  /// 包含列表左右内边距、左侧缩进、右上角操作按钮与间距
+  static const double _titleWidthInset = 64.0;
+
+  /// 目录列表当前可用宽度，由 LayoutBuilder 写入
+  ///
+  /// 标题行数必须按真实宽度估算，行高才能随多行标题正确撑开
+  double _listRowWidth = 0;
 
   /// 分组标题高度（Container height 40 + vertical margin 4）
   static const double _groupHeaderExtent = 44.0;
@@ -315,6 +329,17 @@ class _ChapterPanelState extends State<ChapterPanel>
   /// 分卷标题与章节作为同一可拖拽列表中的行，支持章节跨分卷拖拽；
   /// 拖拽分卷标题期间折叠所有分卷，结束后恢复。
   Widget _buildChapterList(BuildContext context, WorkspaceProvider workspaceProvider) {
+    // 取到列表真实宽度后再构建行：标题换行行数依赖宽度，行高才能算准
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        _listRowWidth = constraints.maxWidth;
+        return _buildChapterListBody(context, workspaceProvider);
+      },
+    );
+  }
+
+  /// 构建章节列表主体
+  Widget _buildChapterListBody(BuildContext context, WorkspaceProvider workspaceProvider) {
     final rows = buildContentsRows();
     if (rows.isEmpty) {
       return _buildEmptyState(context);
@@ -501,6 +526,35 @@ class _ChapterPanelState extends State<ChapterPanel>
   @override
   bool get contentsReversed => _isChapterReversed;
 
+  /// 章节行的实际高度
+  ///
+  /// 章节名过长时自动换行显示多行，行高按估算的行数同步撑高；
+  /// 宽度尚未测量到时按单行高度返回，避免首帧行高异常
+  double _chapterRowExtent(String title) {
+    return contentsRowExtent(
+      title: title,
+      style: Theme.of(context).textTheme.titleSmall,
+      maxWidth: _listRowWidth - _titleWidthInset,
+      textScaler: MediaQuery.textScalerOf(context),
+      singleLineExtent: _chapterItemExtent,
+      lineExtent: _chapterTitleLineExtent,
+    );
+  }
+
+  /// 按当前目录行布局定位章节的起始偏移
+  ///
+  /// 行高随标题行数变化后不能再按等距换算，改为复用列表构建时累计的偏移表。
+  ({double start, double extent})? _locateChapterSlot(String chapterId) {
+    buildContentsRows();
+    final int slotIndex = _listSlots.indexWhere((slot) => slot.id == chapterId);
+    if (slotIndex < 0) return null;
+    final double start = _listSlots[slotIndex].startOffset;
+    final double extent = slotIndex + 1 < _listSlots.length
+        ? _listSlots[slotIndex + 1].startOffset - start
+        : _chapterItemExtent;
+    return (start: start, extent: extent);
+  }
+
   /// 构建当前显示顺序的目录行
   ///
   /// 同时刷新分组偏移、批量命中表与章节序号缓存，供吸顶、批量选择与行构建复用。
@@ -527,14 +581,15 @@ class _ChapterPanelState extends State<ChapterPanel>
       }
       final displayChapters = _isChapterReversed ? chapters.reversed.toList() : chapters;
       for (final chapter in displayChapters) {
+        final double extent = _chapterRowExtent(chapter.title);
         listSlots.add((startOffset: offset, id: chapter.uuid));
         rows.add(ContentsRow(
           key: 'i:${chapter.uuid}',
           groupUuid: '',
-          extent: _chapterItemExtent,
+          extent: extent,
           itemUuid: chapter.uuid,
         ));
-        offset += _chapterItemExtent;
+        offset += extent;
       }
     } else {
       final volumeGroups = _groupChaptersByVolume(chapters, volumes);
@@ -583,14 +638,15 @@ class _ChapterPanelState extends State<ChapterPanel>
 
         final displayVolumeChapters = _isChapterReversed ? volumeChapters.reversed.toList() : volumeChapters;
         for (final chapter in displayVolumeChapters) {
+          final double extent = _chapterRowExtent(chapter.title);
           listSlots.add((startOffset: offset, id: chapter.uuid));
           rows.add(ContentsRow(
             key: 'i:${chapter.uuid}',
             groupUuid: volumeUuid,
-            extent: _chapterItemExtent,
+            extent: extent,
             itemUuid: chapter.uuid,
           ));
-          offset += _chapterItemExtent;
+          offset += extent;
         }
       }
     }
@@ -757,7 +813,7 @@ class _ChapterPanelState extends State<ChapterPanel>
         child: MouseRegion(
           onEnter: (_) => _selectionController.onItemPointerEnter(chapter.uuid),
           child: ListItem(
-            indexText: '$volumeIndex',
+            // 章节名前面不再显示序号徽标
             title: chapter.title,
             subtitle: '${chapter.wordCount}字',
             isSelected: isSelected,
@@ -774,7 +830,7 @@ class _ChapterPanelState extends State<ChapterPanel>
     }
 
     return ListItem(
-      indexText: '$volumeIndex',
+      // 章节名前面不再显示序号徽标
       title: chapter.title,
       subtitle: '${chapter.wordCount}字',
       isSelected: isSelected,
@@ -1382,6 +1438,17 @@ class _ChapterPanelState extends State<ChapterPanel>
     // 延迟一帧确保布局完成
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_scrollController.hasClients) return;
+
+      // 优先按列表累计偏移定位：行高随章节名行数变化，等距换算已不成立
+      final slot = _locateChapterSlot(chapterId);
+      if (slot != null) {
+        final double viewportHeight = _scrollController.position.viewportDimension;
+        final double currentOffset = _scrollController.offset;
+        if (slot.start >= currentOffset && slot.start + slot.extent <= currentOffset + viewportHeight) return;
+        final double maxScroll = _scrollController.position.maxScrollExtent;
+        _scrollController.jumpTo((slot.start - viewportHeight / 3).clamp(0.0, maxScroll));
+        return;
+      }
 
       final hasVolumes = volumes.isNotEmpty;
 

@@ -358,7 +358,7 @@ Future<void> handleMobileToolAction(BuildContext context, MobileToolAction actio
       break;
     case MobileToolAction.readMode:
       // 以翻页方式阅读，排版沿用编辑器的正文与标题样式
-      await _openReadingMode(context, provider);
+      await openReadingModeFromEditor(context, provider);
       break;
     case MobileToolAction.randomName:
       // 打开随机取名弹窗，原本在正文输入时回插取到的名字
@@ -412,7 +412,7 @@ Future<void> _restoreEditorFocusAfterOverlay(WorkspaceProvider provider) async {
 ///
 /// 章节正文按需加载；当前正在编辑的章节直接取编辑器里的文本，
 /// 保证刚写下还没落盘的内容也能立刻读到。
-Future<void> _openReadingMode(BuildContext context, WorkspaceProvider provider) async {
+Future<void> openReadingModeFromEditor(BuildContext context, WorkspaceProvider provider) async {
   final List<ChapterModel> chapters = provider.chapters;
   if (chapters.isEmpty) {
     SnackBarService.show(context, '本书还没有章节');

@@ -879,6 +879,20 @@ class SettingsService extends ChangeNotifier {
         fallback: QuickInputAction.defaultRight,
       );
 
+  /// 获取快捷输入栏右侧操作区第三个图标的动作
+  ///
+  /// 默认「无」，即右侧操作区只显示两个图标；设为具体动作后多出一个图标位
+  QuickInputAction get quickInputBarThirdAction => _normalizeQuickInputAction(
+        QuickInputAction.fromId(
+          _settings.quickInputBarThirdAction,
+          fallback: QuickInputAction.none,
+        ),
+        fallback: QuickInputAction.none,
+      );
+
+  /// 大纲编辑器底部快捷输入（自定义符号栏）面板是否默认展开
+  bool get outlineQuickInputPanelOpen => _settings.outlineQuickInputPanelOpen;
+
   /// 过滤已下线的快捷动作
   QuickInputAction _normalizeQuickInputAction(
     QuickInputAction action, {
@@ -1246,12 +1260,25 @@ class SettingsService extends ChangeNotifier {
     return updateSettings(newSettings);
   }
 
-  /// 更新快捷输入栏右侧操作区左右两个图标的动作
-  Future<bool> updateQuickInputBarActions(QuickInputAction left, QuickInputAction right) async {
+  /// 更新快捷输入栏右侧操作区图标的动作
+  ///
+  /// [third] 为空时保留原有的第三个图标设置，避免两图标的调用方误清空第三位
+  Future<bool> updateQuickInputBarActions(
+    QuickInputAction left,
+    QuickInputAction right, [
+    QuickInputAction? third,
+  ]) async {
     final newSettings = _settings.copyWith(
       quickInputBarLeftAction: left.id,
       quickInputBarRightAction: right.id,
+      quickInputBarThirdAction: third?.id,
     );
+    return updateSettings(newSettings);
+  }
+
+  /// 更新大纲编辑器底部快捷输入面板是否默认展开
+  Future<bool> updateOutlineQuickInputPanelOpen(bool value) async {
+    final newSettings = _settings.copyWith(outlineQuickInputPanelOpen: value);
     return updateSettings(newSettings);
   }
 
@@ -1414,6 +1441,8 @@ class SettingsService extends ChangeNotifier {
       pairedSymbolEnterJumpEnabled: AppSettings.defaults.pairedSymbolEnterJumpEnabled,
       quickInputBarLeftAction: AppSettings.defaults.quickInputBarLeftAction,
       quickInputBarRightAction: AppSettings.defaults.quickInputBarRightAction,
+      quickInputBarThirdAction: AppSettings.defaults.quickInputBarThirdAction,
+      outlineQuickInputPanelOpen: AppSettings.defaults.outlineQuickInputPanelOpen,
       quickInputSymbolsText: AppSettings.defaults.quickInputSymbolsText,
       quickPhrases: AppSettings.defaults.quickPhrases,
       textReplacementRules: AppSettings.defaults.textReplacementRules,

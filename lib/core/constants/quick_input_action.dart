@@ -26,6 +26,7 @@ enum QuickInputAction {
 
   /// 随机取名
   randomName('randomName', Icons.casino_outlined, '随机取名'),
+  readingMode('readingMode', Icons.auto_stories_outlined, '阅读模式'),
 
   // ===== 以下动作与「编辑 / 工具 / 设置」区域的功能一一对应 =====
 

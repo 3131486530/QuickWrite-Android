@@ -101,7 +101,14 @@ class _MobileOutlineToolbarState extends State<MobileOutlineToolbar> with Widget
   bool? _isLandscape;
 
   /// 当前展开的二级面板，null 表示未展开
-  OutlineToolbarPanel? _panel = OutlineToolbarPanel.quickInput;
+  ///
+  /// 默认不展开任何面板：快捷输入（自定义符号栏）默认收起，
+  /// 仅当设置里记住的「默认展开」为真时才自动展开，避免每次唤起键盘都占掉编辑区高度
+  OutlineToolbarPanel? _panel = _defaultPanel();
+
+  /// 按设置决定首次唤起键盘时展开哪个面板
+  static OutlineToolbarPanel? _defaultPanel() =>
+      SettingsService.instance.outlineQuickInputPanelOpen ? OutlineToolbarPanel.quickInput : null;
 
   @override
   void initState() {
@@ -168,7 +175,7 @@ class _MobileOutlineToolbarState extends State<MobileOutlineToolbar> with Widget
     setState(() {
       // 键盘重新唤起或屏幕旋转时回到默认面板：竖屏展开快捷输入，横屏收起以保留编辑区高度
       if (keyboardOpening || orientationChanged) {
-        _panel = isLandscape ? null : OutlineToolbarPanel.quickInput;
+        _panel = isLandscape ? null : _defaultPanel();
       }
     });
   }
@@ -189,6 +196,16 @@ class _MobileOutlineToolbarState extends State<MobileOutlineToolbar> with Widget
   /// 点击已展开面板的入口时收起该面板，主工具栏保持显示。
   void _togglePanel(OutlineToolbarPanel panel) {
     setState(() => _panel = _panel == panel ? null : panel);
+    _rememberPanelState();
+  }
+
+  /// 记住快捷输入（自定义符号栏）面板的展开状态
+  ///
+  /// 用户手动开/关过后按记忆恢复，避免重复开启或重复关闭
+  void _rememberPanelState() {
+    final bool open = _panel == OutlineToolbarPanel.quickInput;
+    if (SettingsService.instance.outlineQuickInputPanelOpen == open) return;
+    SettingsService.instance.updateOutlineQuickInputPanelOpen(open);
   }
 
   /// 当前应当展开的二级面板
@@ -350,6 +367,7 @@ class _MobileOutlineToolbarState extends State<MobileOutlineToolbar> with Widget
   /// 以实际展开的面板为准，避免节点模式遗留的面板值导致按钮点亮状态错位。
   void _toggleTablePanel(OutlineToolbarPanel entry, OutlineToolbarPanel? effective) {
     setState(() => _panel = effective == entry ? null : entry);
+    _rememberPanelState();
   }
 
   /// 构建表格模式的二级面板入口
@@ -698,9 +716,10 @@ class _MobileOutlineToolbarState extends State<MobileOutlineToolbar> with Widget
   /// 「无」不占位、不渲染。
   List<QuickInputAction> _quickInputActions() {
     final settings = SettingsService.instance;
-    return [
+    return <QuickInputAction>[
       settings.quickInputBarLeftAction,
       settings.quickInputBarRightAction,
+      settings.quickInputBarThirdAction,
     ].where((action) => !action.isNone).toList(growable: false);
   }
 
@@ -755,6 +774,16 @@ class _MobileOutlineToolbarState extends State<MobileOutlineToolbar> with Widget
           tooltip: action.label,
           enabled: true,
           onPressed: () => _handleRandomNameTap(context, state),
+        );
+      case QuickInputAction.readingMode:
+        return _buildActionButton(
+          icon: icon,
+          tooltip: action.label,
+          enabled: true,
+          onPressed: () {
+            FocusManager.instance.primaryFocus?.unfocus();
+            openReadingModeFromEditor(context, context.read<WorkspaceProvider>());
+          },
         );
       case QuickInputAction.quickPhrase:
         return PressScaleIconButton(

@@ -84,6 +84,7 @@ class _OtherPanelState extends State<OtherPanel> {
     final pairedSymbolEnterJumpEnabled = settingsService.pairedSymbolEnterJumpEnabled;
     final quickInputBarLeftAction = settingsService.quickInputBarLeftAction;
     final quickInputBarRightAction = settingsService.quickInputBarRightAction;
+    final quickInputBarThirdAction = settingsService.quickInputBarThirdAction;
     final wordCountFloatingEnabled = settingsService.wordCountFloatingEnabled;
     final wordCountFloatingPosition = settingsService.wordCountFloatingPosition;
     final wordCountFloatingSpeedEnabled = settingsService.wordCountFloatingSpeedEnabled;
@@ -144,6 +145,7 @@ class _OtherPanelState extends State<OtherPanel> {
                       pairedSymbolEnterJumpEnabled,
                       quickInputBarLeftAction,
                       quickInputBarRightAction,
+                      quickInputBarThirdAction,
                     ),
                   ],
 
@@ -421,6 +423,7 @@ class _OtherPanelState extends State<OtherPanel> {
     bool pairedSymbolEnterJumpEnabled,
     QuickInputAction leftAction,
     QuickInputAction rightAction,
+    QuickInputAction thirdAction,
   ) {
     final colorScheme = Theme.of(context).colorScheme;
 
@@ -454,7 +457,7 @@ class _OtherPanelState extends State<OtherPanel> {
             value: leftAction.id,
             items: _quickInputActionItems,
             onChanged: (value) => _updateQuickInputAction(
-              isLeft: true,
+              slot: 0,
               action: QuickInputAction.fromId(value, fallback: leftAction),
             ),
           ),
@@ -465,11 +468,31 @@ class _OtherPanelState extends State<OtherPanel> {
             value: rightAction.id,
             items: _quickInputActionItems,
             onChanged: (value) => _updateQuickInputAction(
-              isLeft: false,
+              slot: 1,
               action: QuickInputAction.fromId(value, fallback: rightAction),
             ),
           ),
+          _buildDropdownSettingItem(
+            context,
+            icon: thirdAction.icon,
+            label: '右侧图标三',
+            value: thirdAction.id,
+            items: _quickInputActionItems,
+            onChanged: (value) => _updateQuickInputAction(
+              slot: 2,
+              action: QuickInputAction.fromId(value, fallback: thirdAction),
+            ),
+          ),
         ],
+        SwitchSettingItem(
+          icon: Icons.keyboard_alt_outlined,
+          label: '大纲符号栏默认展开',
+          value: SettingsService.instance.outlineQuickInputPanelOpen,
+          onChanged: (value) {
+            SettingsService.instance.updateOutlineQuickInputPanelOpen(value);
+            setState(() {});
+          },
+        ),
         SwitchSettingItem(
           icon: Icons.auto_fix_high_outlined,
           label: '标点自动补全',
@@ -500,28 +523,35 @@ class _OtherPanelState extends State<OtherPanel> {
     );
   }
 
-  /// 更新快捷输入栏某一侧的图标
+  /// 更新快捷输入栏右侧操作区某一个图标槽位的动作
   ///
-  /// 普通动作左右互斥：所选动作已出现在另一侧时交换两侧位置；
-  /// 「无」允许两侧同时设置（此时快捷输入栏右侧不显示任何图标），
-  /// 因此不参与互斥交换，也不会把另一侧的动作顶掉。
-  void _updateQuickInputAction({required bool isLeft, required QuickInputAction action}) {
+  /// [slot] 0/1/2 依次对应「右侧图标一/二/三」。
+  /// 普通动作三个槽位互斥：所选动作已出现在其它槽位时与当前槽位交换位置；
+  /// 「无」允许重复设置（该槽位不显示图标），不参与互斥交换。
+  void _updateQuickInputAction({required int slot, required QuickInputAction action}) {
     final service = SettingsService.instance;
-    final QuickInputAction oldLeft = service.quickInputBarLeftAction;
-    final QuickInputAction oldRight = service.quickInputBarRightAction;
-    final bool exclusive = !action.isNone;
+    final List<QuickInputAction> slots = <QuickInputAction>[
+      service.quickInputBarLeftAction,
+      service.quickInputBarRightAction,
+      service.quickInputBarThirdAction,
+    ];
+    if (slot < 0 || slot >= slots.length) return;
 
-    if (isLeft) {
-      service.updateQuickInputBarActions(
-        action,
-        exclusive && oldRight == action ? oldLeft : oldRight,
-      );
-    } else {
-      service.updateQuickInputBarActions(
-        exclusive && oldLeft == action ? oldRight : oldLeft,
-        action,
-      );
+    if (!action.isNone) {
+      // 同一动作只允许出现一次：与已占用该动作的槽位互换
+      final int occupied = slots.indexWhere((QuickInputAction item) => item == action && item != QuickInputAction.none);
+      if (occupied >= 0 && occupied != slot) {
+        final QuickInputAction old = slots[slot];
+        slots[slot] = action;
+        slots[occupied] = old;
+        service.updateQuickInputBarActions(slots[0], slots[1], slots[2]);
+        setState(() {});
+        return;
+      }
     }
+
+    slots[slot] = action;
+    service.updateQuickInputBarActions(slots[0], slots[1], slots[2]);
     setState(() {});
   }
 
