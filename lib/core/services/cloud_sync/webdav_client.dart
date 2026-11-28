@@ -90,18 +90,6 @@ class WebDavClient implements RemoteStorage {
   /// 缓存过期时间远小于同步间隔，既能复用结果，也不会读到过旧的数据
   static const Duration _listCacheTtl = Duration(seconds: 20);
 
-  /// 坚果云的列举缓存有效期
-  ///
-  /// 一次同步在坚果云上往往持续一两分钟，按 20 秒过期会让同一轮同步内
-  /// 反复重新列举；放宽到 90 秒后，补丁机制才能覆盖完整一轮同步。
-  /// 仍远小于常见的自动同步间隔，不会长时间看不到其他设备的改动
-  static const Duration _jianguoyunListCacheTtl = Duration(seconds: 90);
-
-  /// 按服务端选择列举缓存有效期
-  Duration get _listCacheTtlFor => isJianguoyunHost(serverUrl)
-      ? _jianguoyunListCacheTtl
-      : _listCacheTtl;
-
   /// 递归列举允许的最大目录深度
   ///
   /// 正常书稿结构的层级很浅，设置上限可以防止服务端返回异常目录时陷入无限展开
@@ -276,7 +264,7 @@ class WebDavClient implements RemoteStorage {
     final cachedAt = _listCacheAt;
     if (cached != null &&
         cachedAt != null &&
-        DateTime.now().difference(cachedAt) < _listCacheTtlFor) {
+        DateTime.now().difference(cachedAt) < _listCacheTtl) {
       return List<RemoteSyncFile>.of(cached);
     }
 
