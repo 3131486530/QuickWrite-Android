@@ -1069,9 +1069,9 @@ class _ReadingModePageState extends State<ReadingModePage> with WidgetsBindingOb
 
   /// 段落编辑面板：照搬长按浮动胶囊栏的材质与控件样式
   ///
-  /// 同背景色、同 elevation 4、同「高度一半」的胶囊圆角（[StadiumBorder] 即任意高度
-  /// 都等于 height / 2，与 barHeight / 2 同一条规则）、同字号 accent 图标动作，
-  /// 动作之间同样用 0.5×18 的细竖线分隔，只是把动作换成取消 / 保存。
+  /// 同背景色、同 elevation 4、同字号 accent 图标动作（按钮自身不带圆角，靠外层裁切），
+  /// 动作之间同样用 0.5×18 的细竖线分隔，只是把动作换成取消 / 保存；
+  /// 外层圆角取小一号的 14，不用高度一半的胶囊。
   Widget _buildParagraphEditorPanel(
     BuildContext dialogContext,
     TextEditingController controller,
@@ -1090,7 +1090,6 @@ class _ReadingModePageState extends State<ReadingModePage> with WidgetsBindingOb
     }) {
       return InkWell(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(21),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
           child: Row(
@@ -1117,7 +1116,9 @@ class _ReadingModePageState extends State<ReadingModePage> with WidgetsBindingOb
       child: Material(
         color: background,
         elevation: 4,
-        shape: const StadiumBorder(),
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.all(Radius.circular(14)),
+        ),
         clipBehavior: Clip.antiAlias,
         child: Padding(
           padding: const EdgeInsets.fromLTRB(18, 10, 18, 6),
