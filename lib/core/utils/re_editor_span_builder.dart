@@ -3,9 +3,11 @@ import 'package:quick_write/core/services/settings_service.dart';
 import 'package:quick_write/core/services/workspace/custom_highlight_service.dart';
 import 'package:quick_write/core/services/workspace/outline_keyword_service.dart';
 import 'package:quick_write/core/services/workspace/sensitive_word_service.dart';
+import 'package:quick_write/core/models/custom_highlight.dart';
 import 'package:quick_write/core/models/outline_keyword.dart';
 import 'package:quick_write/core/utils/color_utils.dart';
 import 'package:quick_write/core/utils/custom_highlight_regex.dart';
+import 'package:quick_write/core/utils/keyword_multi_matcher.dart';
 import 'package:quick_write/core/utils/highlight_range_resolver.dart';
 import 'package:re_editor/re_editor.dart';
 
@@ -70,6 +72,35 @@ class ReEditorSpanBuilder {
   /// 配置指纹变化时清空，避免旧表达式长期驻留。
   final Map<String, RegExp?> _regexCache = <String, RegExp?>{};
 
+  // 词库缓存：修订号不变时复用前缀树、词条与颜色，避免每次输入重建
+  int _literalRevision = -1;
+  KeywordMultiMatcher? _literalMatcher;
+  List<CustomHighlightItem> _literalItems = const <CustomHighlightItem>[];
+  List<int> _literalSlots = const <int>[];
+  List<Color> _literalColors = const <Color>[];
+
+  int _sensitiveRevision = -1;
+  KeywordMultiMatcher? _sensitiveMatcher;
+
+  /// 依据当前自定义高亮配置重建字面量匹配缓存
+  void _rebuildLiteralCache(CustomHighlightService service) {
+    _literalRevision = service.revision;
+    _literalItems = service.items;
+    final List<String> keywords = <String>[];
+    final List<int> slots = <int>[];
+    final List<Color> colors = <Color>[];
+    for (int i = 0; i < _literalItems.length; i++) {
+      final CustomHighlightItem item = _literalItems[i];
+      if (item.isRegex || item.keyword.isEmpty) continue;
+      keywords.add(item.keyword);
+      slots.add(i);
+      colors.add(ColorUtils.parseHex(item.colorHex));
+    }
+    _literalSlots = slots;
+    _literalColors = colors;
+    _literalMatcher = keywords.isEmpty ? null : KeywordMultiMatcher(keywords);
+  }
+
   /// 根据当前文本与高亮配置刷新缓存
   ///
   /// 文本与配置均未变化时直接复用缓存，避免逐帧重复解析。
@@ -79,8 +110,11 @@ class ReEditorSpanBuilder {
     if (signature != _configSignature) _regexCache.clear();
     _text = text;
     _configSignature = signature;
-    _lineStarts = HighlightRangeResolver.lineStarts(text);
     _ranges = _resolveRanges(context, text);
+    // 没有任何高亮范围时无需按行切分的偏移表，省掉一次全文遍历与列表分配；
+    // 逐行渲染会因范围为空直接走纯文本分支
+    _lineStarts =
+        _ranges.isEmpty ? const <int>[] : HighlightRangeResolver.lineStarts(text);
   }
 
   /// 构建单行的 TextSpan，供 re_editor 逐行调用
@@ -121,7 +155,8 @@ class ReEditorSpanBuilder {
     }
 
     // 将全文范围换算为行内范围后按边界切片着色
-    final int lineStart = _lineStarts[index];
+    // 范围非空时偏移表必然存在；这里仍做越界兜底，避免异常文本导致渲染崩溃
+    final int lineStart = index < _lineStarts.length ? _lineStarts[index] : 0;
     for (final HighlightRange range in lineRanges) {
       final int start = (range.start - lineStart).clamp(cursor, lineText.length);
       final int end = (range.end - lineStart).clamp(start, lineText.length);
@@ -212,19 +247,45 @@ class ReEditorSpanBuilder {
       ));
     }
 
-    // 自定义高亮：字面量沿用原逐字匹配，正则模式另行编译并解析
+    // 自定义高亮：字面量词条合并为一次前缀树扫描，正则模式各自编译解析
+    //
+    // 逐条全文扫描在词库上百条时会把正文扫描上百遍；合并为一遍后再按词条
+    // 原顺序回填，保证同起点重叠时仍由排在前面的词条着色。前缀树与词条
+    // 颜色按修订号缓存，敲字时只做一次匹配，不再重复建树与解析颜色。
     final CustomHighlightService? service = customHighlightService;
     if (service != null && service.enabled) {
-      for (final item in service.items) {
-        final Color color = ColorUtils.parseHex(item.colorHex);
-        if (item.isRegex) {
-          // 非法正则（本地配置损坏或云端同步而来）直接跳过，不参与着色
-          final RegExp? regex = _regexFor(item.keyword);
-          if (regex == null) continue;
-          ranges.addAll(HighlightRangeResolver.parseRegexRanges(text, regex, color));
-        } else {
-          ranges.addAll(HighlightRangeResolver.parseKeywordRanges(text, item.keyword, color));
+      if (_literalRevision != service.revision) _rebuildLiteralCache(service);
+      final List<CustomHighlightItem> items = _literalItems;
+      final List<List<HighlightRange>> perItem =
+          List<List<HighlightRange>>.generate(items.length, (_) => <HighlightRange>[]);
+      for (int i = 0; i < items.length; i++) {
+        final CustomHighlightItem item = items[i];
+        if (!item.isRegex) continue;
+        // 非法正则（本地配置损坏或云端同步而来）直接跳过，不参与着色
+        final RegExp? regex = _regexFor(item.keyword);
+        if (regex == null) continue;
+        perItem[i] = HighlightRangeResolver.parseRegexRanges(
+          text,
+          regex,
+          ColorUtils.parseHex(item.colorHex),
+        );
+      }
+      final KeywordMultiMatcher? matcher = _literalMatcher;
+      if (matcher != null && !matcher.isEmpty) {
+        final List<int> slots = _literalSlots;
+        final List<Color> colors = _literalColors;
+        for (final KeywordHit hit in matcher.findMatches(text)) {
+          final int index = hit.pattern;
+          perItem[slots[index]].add(HighlightRange(
+            hit.start,
+            hit.end,
+            colors[index],
+            HighlightRangeResolver.customKeywordPriority,
+          ));
         }
+      }
+      for (final List<HighlightRange> itemRanges in perItem) {
+        if (itemRanges.isNotEmpty) ranges.addAll(itemRanges);
       }
     }
 
@@ -240,16 +301,26 @@ class ReEditorSpanBuilder {
     // 标红关闭时不做任何词条匹配，码字过程中不产生额外开销
     final SensitiveWordService? sensitiveService = sensitiveWordService;
     if (sensitiveService != null && sensitiveService.highlightEnabled) {
-      // 颜色优先取用户自定义值，未设置时跟随主题错误色
-      final String customHex = sensitiveService.colorHex;
-      final Color sensitiveColor = customHex.isEmpty
-          ? Theme.of(context).colorScheme.error
-          : ColorUtils.parseHex(customHex);
-      ranges.addAll(HighlightRangeResolver.parseSensitiveWordRanges(
-        text,
-        sensitiveService.words,
-        sensitiveColor,
-      ));
+      if (_sensitiveRevision != sensitiveService.revision) {
+        _sensitiveRevision = sensitiveService.revision;
+        _sensitiveMatcher = KeywordMultiMatcher(<String>[
+          for (final String word in sensitiveService.words)
+            if (word.isNotEmpty) word.toLowerCase(),
+        ]);
+      }
+      final KeywordMultiMatcher? matcher = _sensitiveMatcher;
+      if (matcher != null && !matcher.isEmpty) {
+        // 颜色优先取用户自定义值，未设置时跟随主题错误色
+        final String customHex = sensitiveService.colorHex;
+        final Color sensitiveColor = customHex.isEmpty
+            ? Theme.of(context).colorScheme.error
+            : ColorUtils.parseHex(customHex);
+        ranges.addAll(HighlightRangeResolver.resolveSensitiveWordRanges(
+          text,
+          matcher,
+          sensitiveColor,
+        ));
+      }
     }
 
     // 查找匹配高亮由 QwTextFieldPainter 同级的正文 painter 绘制，不再写入 span
@@ -338,19 +409,14 @@ class ReEditorSpanBuilder {
         ..write(outlineKeywordService?.revision ?? -1);
     }
 
+    // 自定义高亮只需比对「是否启用 + 修订号」：任何词库改动都会递增修订号，
+    // 避免每次输入都把全部词条拼进指纹（词库上百条时这段字符串开销不小）
     final CustomHighlightService? service = customHighlightService;
-    if (service != null && service.enabled) {
-      for (final item in service.items) {
-        buffer
-          ..write('|')
-          ..write(item.keyword)
-          ..write(':')
-          ..write(item.colorHex)
-          // 模式切换必须触发重新解析（缓存的编译结果也会随之清空）
-          ..write(':')
-          ..write(item.isRegex ? 'R' : 'L');
-      }
-    }
+    buffer
+      ..write('|')
+      ..write(service?.enabled ?? false)
+      ..write('|')
+      ..write(service?.revision ?? -1);
 
     // 敏感词标红开关与词库版本共同决定是否参与高亮、是否需要重新解析词条
     final SensitiveWordService? sensitiveService = sensitiveWordService;

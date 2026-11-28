@@ -1,6 +1,8 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:quick_write/core/utils/keyword_multi_matcher.dart';
+import 'package:quick_write/core/models/custom_highlight.dart';
 import 'package:flutter/services.dart';
 import 'package:quick_write/core/services/reader/reader_tts_service.dart';
 import 'package:quick_write/core/services/settings_service.dart';
@@ -685,15 +687,40 @@ class _ReadingModePageState extends State<ReadingModePage> with WidgetsBindingOb
 
     final CustomHighlightService? service = widget.customHighlightService;
     if (service != null && service.enabled) {
-      for (final item in service.items) {
+      // 字面量词条合并成一次前缀树扫描，避免词库大时把整章文本反复扫多遍
+      final List<CustomHighlightItem> items = service.items;
+      final List<List<HighlightRange>> perItem =
+          List<List<HighlightRange>>.generate(items.length, (_) => <HighlightRange>[]);
+      final List<String> keywords = <String>[];
+      final List<int> slots = <int>[];
+      final List<Color> colors = <Color>[];
+      for (int i = 0; i < items.length; i++) {
+        final CustomHighlightItem item = items[i];
         final Color color = ColorUtils.parseHex(item.colorHex);
         if (item.isRegex) {
           final RegExp? regex = CustomHighlightRegex.tryCompile(item.keyword);
           if (regex == null) continue;
-          ranges.addAll(HighlightRangeResolver.parseRegexRanges(text, regex, color));
-        } else {
-          ranges.addAll(HighlightRangeResolver.parseKeywordRanges(text, item.keyword, color));
+          perItem[i] = HighlightRangeResolver.parseRegexRanges(text, regex, color);
+        } else if (item.keyword.isNotEmpty) {
+          keywords.add(item.keyword);
+          slots.add(i);
+          colors.add(color);
         }
+      }
+      if (keywords.isNotEmpty) {
+        final KeywordMultiMatcher matcher = KeywordMultiMatcher(keywords);
+        for (final KeywordHit hit in matcher.findMatches(text)) {
+          final int index = hit.pattern;
+          perItem[slots[index]].add(HighlightRange(
+            hit.start,
+            hit.end,
+            colors[index],
+            HighlightRangeResolver.customKeywordPriority,
+          ));
+        }
+      }
+      for (final List<HighlightRange> itemRanges in perItem) {
+        if (itemRanges.isNotEmpty) ranges.addAll(itemRanges);
       }
     }
 

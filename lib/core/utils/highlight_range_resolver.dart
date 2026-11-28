@@ -1,5 +1,6 @@
 import 'package:flutter/widgets.dart';
 import 'package:quick_write/core/utils/custom_highlight_regex.dart';
+import 'package:quick_write/core/utils/keyword_multi_matcher.dart';
 
 /// 带颜色与优先级的高亮范围
 ///
@@ -188,88 +189,146 @@ class HighlightRangeResolver {
     List<String> words,
     Color color,
   ) {
-    if (words.isEmpty || text.isEmpty) return const [];
+    if (words.isEmpty || text.isEmpty) return const <HighlightRange>[];
 
-    final String lowerText = text.toLowerCase();
-    // 按长度降序匹配，保证长词优先着色
-    final List<String> sorted = [
+    // 词库统一小写后建前缀树，一次遍历全文找出全部命中，
+    // 避免逐个敏感词各扫一遍全文（词库大时是输入卡顿的主要来源）
+    final List<String> lowerWords = <String>[
       for (final word in words)
         if (word.isNotEmpty) word.toLowerCase(),
-    ]..sort((a, b) => b.length.compareTo(a.length));
+    ];
+    return resolveSensitiveWordRanges(
+      text,
+      KeywordMultiMatcher(lowerWords),
+      color,
+    );
+  }
 
-    final List<HighlightRange> ranges = [];
-    for (final word in sorted) {
-      int searchStart = 0;
-      while (searchStart <= lowerText.length - word.length) {
-        final int index = lowerText.indexOf(word, searchStart);
-        if (index == -1) break;
-        ranges.add(HighlightRange(
-          index,
-          index + word.length,
-          color,
-          sensitiveWordPriority,
-          fontWeight: FontWeight.w600,
-          decoration: TextDecoration.lineThrough,
-          decorationColor: color,
-        ));
-        searchStart = index + word.length;
-      }
+  /// 复用已构建的前缀树解析敏感词范围
+  ///
+  /// 词库未变时调用方可缓存 [matcher]，避免每敲一个字都重建一次前缀树。
+  static List<HighlightRange> resolveSensitiveWordRanges(
+    String text,
+    KeywordMultiMatcher matcher,
+    Color color,
+  ) {
+    if (text.isEmpty || matcher.isEmpty) return const <HighlightRange>[];
+    final String lowerText = text.toLowerCase();
+    final List<KeywordHit> hits = matcher.findMatches(lowerText);
+    if (hits.isEmpty) return const <HighlightRange>[];
+
+    // 按词长降序、起点升序排列：合并重叠时同优先级下先出现者生效，
+    // 由此保持「长词优先着色」的既有表现
+    final List<String> matched = matcher.keywords;
+    hits.sort((KeywordHit a, KeywordHit b) {
+      final int byLength = matched[b.pattern].length.compareTo(matched[a.pattern].length);
+      if (byLength != 0) return byLength;
+      return a.start.compareTo(b.start);
+    });
+
+    final List<HighlightRange> ranges = <HighlightRange>[];
+    for (final KeywordHit hit in hits) {
+      ranges.add(HighlightRange(
+        hit.start,
+        hit.end,
+        color,
+        sensitiveWordPriority,
+        fontWeight: FontWeight.w600,
+        decoration: TextDecoration.lineThrough,
+        decorationColor: color,
+      ));
     }
     return ranges;
   }
 
   /// 合并带颜色的范围，处理重叠区域（高优先级覆盖低优先级）
   ///
-  /// 使用扫描线算法：以所有范围的边界点为切分点，将文本切成不重叠的小段，
-  /// 每段使用覆盖它的最高优先级范围的颜色，颜色相同的连续小段会被合并。
+  ///
+  /// 使用扫描线算法：按所有边界点把文本切成不重叠的小段，每段取覆盖它的
+  /// 最高优先级范围。活动集合随边界点逐步进出，避免原先「每个小段都遍历
+  /// 全部范围」的 O(区间数²) 开销——正文高亮命中密集时这是输入卡顿的来源。
   static List<HighlightRange> mergeRanges(List<HighlightRange> input) {
     if (input.isEmpty) return const [];
 
-    // 收集所有边界点并排序去重
-    final Set<int> points = {};
+    final int count = input.length;
+    final List<int> byStart = List<int>.generate(count, (int i) => i)
+      ..sort((int a, int b) {
+        final int byValue = input[a].start.compareTo(input[b].start);
+        return byValue != 0 ? byValue : a.compareTo(b);
+      });
+    final List<int> byEnd = List<int>.generate(count, (int i) => i)
+      ..sort((int a, int b) {
+        final int byValue = input[a].end.compareTo(input[b].end);
+        return byValue != 0 ? byValue : a.compareTo(b);
+      });
+
+    final List<int> points = <int>[];
     for (final HighlightRange range in input) {
       points.add(range.start);
       points.add(range.end);
     }
-    final List<int> sortedPoints = points.toList()..sort();
+    points.sort();
+
+    final List<bool> active = List<bool>.filled(count, false);
+    final List<int> activeList = <int>[];
+    int startCursor = 0;
+    int endCursor = 0;
 
     final List<HighlightRange> result = [];
-    for (int i = 0; i < sortedPoints.length - 1; i++) {
-      final int segStart = sortedPoints[i];
-      final int segEnd = sortedPoints[i + 1];
+    for (int i = 0; i < points.length - 1; i++) {
+      final int segStart = points[i];
+      final int segEnd = points[i + 1];
       if (segStart >= segEnd) continue;
 
-      // 找出覆盖此段的所有范围中优先级最高的
-      HighlightRange? best;
-      for (final HighlightRange range in input) {
-        if (range.start <= segStart && range.end >= segEnd) {
-          if (best == null || range.priority > best.priority) {
-            best = range;
-          }
+      // 覆盖本段需要 range.start <= segStart 且 range.end >= segEnd
+      while (endCursor < count && input[byEnd[endCursor]].end < segEnd) {
+        final int index = byEnd[endCursor++];
+        if (active[index]) {
+          active[index] = false;
+          activeList.remove(index);
         }
       }
-      if (best == null) continue;
+      while (startCursor < count && input[byStart[startCursor]].start <= segStart) {
+        final int index = byStart[startCursor++];
+        if (!active[index]) {
+          active[index] = true;
+          activeList.add(index);
+        }
+      }
+      if (activeList.isEmpty) continue;
 
-      // 与上一段颜色、呈现方式、字重、装饰线相同且连续时合并为一段
+      // 同优先级时保留原始顺序在前的范围，与逐条遍历的实现保持一致
+      int best = activeList.first;
+      for (int j = 1; j < activeList.length; j++) {
+        final int candidate = activeList[j];
+        final int candidatePriority = input[candidate].priority;
+        final int bestPriority = input[best].priority;
+        if (candidatePriority > bestPriority ||
+            (candidatePriority == bestPriority && candidate < best)) {
+          best = candidate;
+        }
+      }
+
+      final HighlightRange bestRange = input[best];
       if (result.isNotEmpty &&
-          result.last.color == best.color &&
-          result.last.background == best.background &&
-          result.last.fontWeight == best.fontWeight &&
-          result.last.decoration == best.decoration &&
-          result.last.decorationColor == best.decorationColor &&
+          result.last.color == bestRange.color &&
+          result.last.background == bestRange.background &&
+          result.last.fontWeight == bestRange.fontWeight &&
+          result.last.decoration == bestRange.decoration &&
+          result.last.decorationColor == bestRange.decorationColor &&
           result.last.end == segStart) {
         result[result.length - 1] = HighlightRange(result.last.start, segEnd,
-            best.color, best.priority,
-            background: best.background,
-            fontWeight: best.fontWeight,
-            decoration: best.decoration,
-            decorationColor: best.decorationColor);
+            bestRange.color, bestRange.priority,
+            background: bestRange.background,
+            fontWeight: bestRange.fontWeight,
+            decoration: bestRange.decoration,
+            decorationColor: bestRange.decorationColor);
       } else {
-        result.add(HighlightRange(segStart, segEnd, best.color, best.priority,
-            background: best.background,
-            fontWeight: best.fontWeight,
-            decoration: best.decoration,
-            decorationColor: best.decorationColor));
+        result.add(HighlightRange(segStart, segEnd, bestRange.color, bestRange.priority,
+            background: bestRange.background,
+            fontWeight: bestRange.fontWeight,
+            decoration: bestRange.decoration,
+            decorationColor: bestRange.decorationColor));
       }
     }
     return result;

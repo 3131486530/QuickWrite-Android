@@ -37,6 +37,21 @@ class CustomHighlightService extends ChangeNotifier {
   /// 配置文件完整路径（load 成功后才有值）
   String? _configFilePath;
 
+  /// 展开后的词条缓存与分组缓存
+  ///
+  /// [_config.items] 每次调用都会重新展开全部分组并分配列表，而编辑器正文
+  /// 每输入一个字都要按词条重建高亮，这里缓存展开结果，配置变更时失效。
+  List<CustomHighlightItem>? _itemsCache;
+  List<CustomHighlightGroup>? _groupsCache;
+
+  /// 配置修订号
+  ///
+  /// 任何一次 [notifyListeners]（启用开关、增删改分组、替换词库）都会自增，
+  /// 渲染层据此判断高亮配置是否需要重新解析，无需每次遍历全部词条。
+  int _revision = 0;
+
+  int get revision => _revision;
+
   /// 获取当前配置（只读）
   CustomHighlightConfig get config => _config;
 
@@ -44,15 +59,26 @@ class CustomHighlightService extends ChangeNotifier {
   bool get enabled => _config.enabled;
 
   /// 分组列表（只读）
-  List<CustomHighlightGroup> get groups => List.unmodifiable(_config.groups);
+  List<CustomHighlightGroup> get groups => _groupsCache ??= List.unmodifiable(_config.groups);
 
   /// 全部词条（展开所有分组，颜色取所属分组色，只读）
   ///
   /// 渲染层（编辑器、阅读模式）仍按扁平列表遍历，分组改造无需改动渲染路径。
-  List<CustomHighlightItem> get items => List.unmodifiable(_config.items);
+  List<CustomHighlightItem> get items => _itemsCache ??= List.unmodifiable(_config.items);
 
   /// 全部词条数量（用于面板展示）
-  int get wordCount => _config.items.length;
+  int get wordCount => _itemsCache?.length ?? _config.items.length;
+
+  /// 配置变更通知
+  ///
+  /// 统一在此处递增修订号并清空展开缓存，避免新增写入口时漏掉失效逻辑。
+  @override
+  void notifyListeners() {
+    _revision++;
+    _itemsCache = null;
+    _groupsCache = null;
+    super.notifyListeners();
+  }
 
   /// 从指定书籍根目录加载配置
   ///
@@ -75,6 +101,11 @@ class CustomHighlightService extends ChangeNotifier {
       debugPrint('加载自定义高亮配置失败: $e，使用空配置');
       _config = CustomHighlightConfig.empty;
     }
+
+    // 配置整体替换后同步失效缓存与修订号，避免复用加载前的展开结果
+    _itemsCache = null;
+    _groupsCache = null;
+    _revision++;
   }
 
   /// 保存当前配置到文件
