@@ -998,7 +998,7 @@ class _ReadingModePageState extends State<ReadingModePage> with WidgetsBindingOb
       child: Material(
         color: background,
         elevation: 4,
-        borderRadius: BorderRadius.circular(barHeight / 2),
+        borderRadius: BorderRadius.circular(14),
         clipBehavior: Clip.antiAlias,
         child: SizedBox(
           width: barWidth,

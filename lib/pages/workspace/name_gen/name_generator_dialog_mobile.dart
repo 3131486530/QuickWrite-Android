@@ -36,14 +36,62 @@ const int _batchCount = 5;
 /// 点击任意名字即复制到剪贴板并关闭面板，被点击的名字作为返回值返回；
 /// 面板被取消时返回 null，由调用方决定是否插入编辑器。
 Future<String?> showMobileNameGeneratorDialog({required BuildContext context}) {
-  // 统一走底部面板焦点保护：挂起输入框取焦能力、收起输入法并等键盘占位
-  // 归零再弹；关闭后按打开前的节点归还焦点。三者缺一都会让面板被顶起。
-  return showFocusSafeBottomSheet<String>(
+  // 统一走浮层焦点保护：挂起输入框取焦能力、收起输入法并等键盘占位归零再弹，
+  // 关闭后按打开前的节点归还焦点，避免面板被输入法顶起。
+  return runWithOverlayFocusGuard<String>(
     context: context,
-    useSafeArea: true,
-    showDragHandle: true,
-    backgroundColor: Theme.of(context).colorScheme.surface,
-    builder: (context) => const _MobileNameGeneratorDialog(),
+    present: (BuildContext overlayContext) => showGeneralDialog<String>(
+      context: overlayContext,
+      barrierDismissible: true,
+      barrierLabel: '关闭取名面板',
+      barrierColor: Colors.black.withValues(alpha: 0.12),
+      transitionDuration: const Duration(milliseconds: 160),
+      pageBuilder: (
+        BuildContext dialogContext,
+        Animation<double> animation,
+        Animation<double> secondaryAnimation,
+      ) {
+        final Size screen = MediaQuery.sizeOf(dialogContext);
+        final double keyboard = MediaQuery.viewInsetsOf(dialogContext).bottom;
+        // 浮动面板：四周留白、小圆角、投影，与阅读模式长按浮层同一套观感
+        return Align(
+          alignment: Alignment.bottomCenter,
+          child: AnimatedPadding(
+            duration: const Duration(milliseconds: 160),
+            curve: Curves.easeOut,
+            padding: EdgeInsets.only(
+              left: 12,
+              right: 12,
+              bottom: 12 + keyboard,
+            ),
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                maxWidth: 520,
+                maxHeight: screen.height * 0.68,
+              ),
+              child: Material(
+                color: Theme.of(dialogContext).colorScheme.surface,
+                elevation: 4,
+                borderRadius: BorderRadius.circular(14),
+                clipBehavior: Clip.antiAlias,
+                child: const _MobileNameGeneratorDialog(),
+              ),
+            ),
+          ),
+        );
+      },
+      transitionBuilder: (
+        BuildContext context,
+        Animation<double> animation,
+        Animation<double> secondaryAnimation,
+        Widget child,
+      ) {
+        return FadeTransition(
+          opacity: CurvedAnimation(parent: animation, curve: Curves.easeOut),
+          child: child,
+        );
+      },
+    ),
   );
 }
 
@@ -330,34 +378,24 @@ class _MobileNameGeneratorDialogState extends State<_MobileNameGeneratorDialog> 
 
   @override
   Widget build(BuildContext context) {
-    // 面板最高占屏幕的 85%，内容较少时按内容高度收缩
-    final double maxHeight = MediaQuery.sizeOf(context).height * 0.85;
-    // 键盘弹起时底部留白避让，保证生成按钮始终可点
-    final double keyboardInset = MediaQuery.viewInsetsOf(context).bottom;
-
-    return Padding(
-      padding: EdgeInsets.only(bottom: keyboardInset),
-      child: ConstrainedBox(
-        constraints: BoxConstraints(maxHeight: maxHeight),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // 主内容区可滚动；生成按钮固定于底部，便于随时触发生成
-            Flexible(
-              child: ListView(
-                shrinkWrap: true,
-                padding: const EdgeInsets.fromLTRB(_horizontalPadding, 4, _horizontalPadding, 4),
-                children: [
-                  _buildDictionarySelector(),
-                  const SizedBox(height: 16),
-                  _buildResultsSection(),
-                ],
-              ),
-            ),
-            _buildGenerateBar(),
-          ],
+    // 高度与键盘留白由外层浮动面板统一控制，这里只负责纵向排布：
+    // 内容区可滚动，生成按钮固定于底部，内容少时按内容高度收缩
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Flexible(
+          child: ListView(
+            shrinkWrap: true,
+            padding: const EdgeInsets.fromLTRB(_horizontalPadding, 14, _horizontalPadding, 4),
+            children: [
+              _buildDictionarySelector(),
+              const SizedBox(height: 16),
+              _buildResultsSection(),
+            ],
+          ),
         ),
-      ),
+        _buildGenerateBar(),
+      ],
     );
   }
 
