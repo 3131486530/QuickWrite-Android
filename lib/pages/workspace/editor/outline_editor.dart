@@ -496,6 +496,12 @@ class OutlineEditorState extends State<OutlineEditor>
   /// 布局设置卡片是否已展开
   bool _isSettingsCardVisible = false;
 
+  /// 最近一次已知的大纲标题文本（用于捕获标题编辑前的快照）
+  String _lastOutlineTitle = '';
+
+  /// 正在按快照回写标题，期间的文本变化不再记入撤销栈
+  bool _applyingTitleSnapshot = false;
+
   // ================= 生命周期 =================
 
   @override
@@ -533,6 +539,10 @@ class OutlineEditorState extends State<OutlineEditor>
     // 先创建撤销管理器，确保后续创建的控制器能被注册
     _undoManager = OutlineUndoManager(captureSnapshot: captureUndoSnapshot, applySnapshot: applyUndoSnapshot);
 
+    // 标题输入框不属于节点文本控制器，单独监听文本变化并记入撤销栈
+    _lastOutlineTitle = _titleController.text;
+    _titleController.addListener(_onTitleTextChanged);
+
     // 从关联文件加载内容
     if (widget.filePath != null && widget.filePath!.isNotEmpty) {
       _loadFromFile();
@@ -550,6 +560,7 @@ class OutlineEditorState extends State<OutlineEditor>
     _cleanupUnsavedImages();
     _scrollGuard.dispose();
     SettingsService.instance.removeListener(_onSettingsChanged);
+    _titleController.removeListener(_onTitleTextChanged);
     _undoManager.dispose();
     for (final controller in _controllers.values) {
       controller.dispose();
@@ -608,7 +619,12 @@ class OutlineEditorState extends State<OutlineEditor>
     if (widget.title != oldWidget.title &&
         _titleController.text != widget.title &&
         !_titleFocusNode.hasFocus) {
+      // 外部改名不是用户编辑，不进入撤销栈：赋值会同步触发监听器，
+      // 需先置位抑制标记，否则会以旧基线误记一条撤销
+      _applyingTitleSnapshot = true;
       _titleController.text = widget.title;
+      _applyingTitleSnapshot = false;
+      _lastOutlineTitle = widget.title;
     }
     // 大纲文件改名或移动后迁移伴生数据与图片
     if (widget.filePath != oldWidget.filePath && !widget.readOnly) {
@@ -2522,6 +2538,23 @@ class OutlineEditorState extends State<OutlineEditor>
 
   // ================= 撤销/恢复 =================
 
+  /// 标题文本变化时记入撤销栈
+  ///
+  /// 标题输入框不在 [OutlineUndoManager] 的控制器集合内，由这里自行
+  /// 捕获编辑前后的快照并交给撤销管理器；连续输入由管理器合并。
+  void _onTitleTextChanged() {
+    if (_applyingTitleSnapshot) return;
+    final String title = _titleController.text;
+    if (title == _lastOutlineTitle) return;
+    final OutlineTreeSnapshot after = captureUndoSnapshot();
+    final OutlineTreeSnapshot before = after.copyWithTitle(
+      titleText: _lastOutlineTitle,
+      titleSelection: TextSelection.collapsed(offset: _lastOutlineTitle.length),
+    );
+    _undoManager.recordTitleEdit(before: before, after: after);
+    _lastOutlineTitle = title;
+  }
+
   /// 捕获当前大纲编辑器的状态快照
   ///
   /// 由 [OutlineUndoManager] 在 beginBatch/endBatch 和撤销/重做时调用。
@@ -2543,6 +2576,8 @@ class OutlineEditorState extends State<OutlineEditor>
     TextSelection? focusSelection,
     Map<String, String>? nodeTextOverrides,
     Map<String, int>? nodeCaretOffsets,
+    String? titleTextOverride,
+    TextSelection? titleSelectionOverride,
   }) {
     // 深拷贝整棵树，避免后续修改影响快照
     final rootsClone = _roots.map((r) => r.clone()).toList();
@@ -2635,6 +2670,9 @@ class OutlineEditorState extends State<OutlineEditor>
       selectAllLevel: _selectAllLevel,
       selectionAnchorIndex: _selectionAnchorIndex,
       noteEditingNodeId: _noteEditingNodeId,
+      // 标题同样纳入快照，撤销/恢复才能一并回退标题的改动
+      titleText: titleTextOverride ?? _titleController.text,
+      titleSelection: titleSelectionOverride ?? _titleController.selection,
     );
   }
 
@@ -2677,12 +2715,30 @@ class OutlineEditorState extends State<OutlineEditor>
     final bool noteEditorSwitched = _noteEditingNodeId != (focusNote ? noteNodeId : null);
     _noteEditingNodeId = focusNote ? noteNodeId : null;
 
+    // 标题文本变化时回写标题输入框，撤销/恢复才对标题生效
+    final String? snapshotTitle = snapshot.titleText;
+    final bool titleChanged = snapshotTitle != null && snapshotTitle != _titleController.text;
+    if (titleChanged) {
+      _applyingTitleSnapshot = true;
+      _titleController.value = TextEditingValue(
+        text: snapshotTitle,
+        selection: snapshot.titleSelection ?? TextSelection.collapsed(offset: snapshotTitle.length),
+      );
+      _applyingTitleSnapshot = false;
+      _lastOutlineTitle = snapshotTitle;
+      // 标题由外部持有（文件保存与标签页标题都依赖该回调），必须同步通知
+      widget.onTitleChanged?.call(snapshotTitle);
+    }
+
     setState(() {});
 
     // 撤销/重做可能恢复关键词，同步刷新书籍级索引
     _syncKeywordsToService();
 
-    if (focusNote) {
+    if (titleChanged) {
+      // 标题是本次撤销/恢复的落点，光标交还标题输入框
+      _titleFocusNode.requestFocus();
+    } else if (focusNote) {
       _focusNoteNode(
         noteNodeId!,
         _noteCaretAtChange(noteBefore, noteNode.note),
@@ -2693,7 +2749,7 @@ class OutlineEditorState extends State<OutlineEditor>
       _restoreFocusFromSnapshot(snapshot);
     }
     // 撤销可能移除正在编辑的表格等控件，焦点丢失时交还编辑器保证快捷键可用
-    _restoreEditorFocusIfIdle();
+    if (!titleChanged) _restoreEditorFocusIfIdle();
 
     // 通知统计信息更新（撤销/重做后内容已变化）
     _notifyStatsChanged();

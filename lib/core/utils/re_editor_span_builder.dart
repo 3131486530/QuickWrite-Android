@@ -240,10 +240,15 @@ class ReEditorSpanBuilder {
     // 标红关闭时不做任何词条匹配，码字过程中不产生额外开销
     final SensitiveWordService? sensitiveService = sensitiveWordService;
     if (sensitiveService != null && sensitiveService.highlightEnabled) {
+      // 颜色优先取用户自定义值，未设置时跟随主题错误色
+      final String customHex = sensitiveService.colorHex;
+      final Color sensitiveColor = customHex.isEmpty
+          ? Theme.of(context).colorScheme.error
+          : ColorUtils.parseHex(customHex);
       ranges.addAll(HighlightRangeResolver.parseSensitiveWordRanges(
         text,
         sensitiveService.words,
-        Theme.of(context).colorScheme.error,
+        sensitiveColor,
       ));
     }
 
@@ -352,6 +357,8 @@ class ReEditorSpanBuilder {
     buffer
       ..write('|')
       ..write(sensitiveService?.highlightEnabled ?? false)
+      ..write('|')
+      ..write(sensitiveService?.colorHex ?? '')
       ..write('|')
       ..write(sensitiveService?.revision ?? -1);
     return buffer.toString();

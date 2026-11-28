@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:quick_write/core/models/custom_highlight.dart';
+import 'package:quick_write/core/services/cache_services/misc_cache_service.dart';
 import 'package:quick_write/core/services/workspace/custom_highlight_service.dart';
 import 'package:quick_write/core/utils/color_utils.dart';
 import 'package:quick_write/core/utils/custom_highlight_regex.dart';
@@ -14,6 +15,7 @@ import 'package:quick_write/shared/widgets/qw_tooltip.dart';
 import 'package:quick_write/shared/widgets/toolbar_button.dart';
 import 'right_sidebar_widgets.dart';
 import 'package:quick_write/shared/widgets/qw_text_field.dart';
+import 'package:quick_write/pages/workspace/right_sidebar/widgets/custom_highlight_library_dialog.dart';
 
 /// 显示自定义高亮设置对话框
 ///
@@ -145,6 +147,10 @@ class _CustomHighlightDialogContent extends StatefulWidget {
 class _CustomHighlightDialogContentState
     extends State<_CustomHighlightDialogContent> {
   /// 新增关键词输入框控制器
+  /// 新增项"正则模式"开关的记忆键
+  static const String _newKeywordRegexSwitchKey =
+      'custom_highlight.new_is_regex';
+
   final TextEditingController _keywordInputController = TextEditingController();
 
   /// 新增关键词输入框焦点节点（与 ImeCursorFixerWrapper 共用）
@@ -154,6 +160,8 @@ class _CustomHighlightDialogContentState
   String _newKeywordColorHex = '#FFB300';
 
   /// 新增项是否使用正则模式（默认常规，保持原有行为）
+  ///
+  /// 该选择会被记忆，下次打开对话框沿用，并随云同步恢复
   bool _newKeywordIsRegex = false;
 
   /// 当前进入编辑模式的关键词索引（null 表示无编辑中项）
@@ -171,6 +179,14 @@ class _CustomHighlightDialogContentState
   @override
   void initState() {
     super.initState();
+    // 新增项颜色沿用上次选择的颜色（随云同步恢复），减少重复选色
+    _newKeywordColorHex =
+        MiscCacheService.instance.getCustomHighlightLastColorHex();
+    // 新增项的匹配模式同样记忆，避免每次都要重新切到正则
+    _newKeywordIsRegex = MiscCacheService.instance.getSwitchState(
+      _newKeywordRegexSwitchKey,
+      fallback: false,
+    );
     // 监听 service 变化以刷新列表（外部修改时也能同步）
     widget.service.addListener(_onServiceChanged);
   }
@@ -191,6 +207,17 @@ class _CustomHighlightDialogContentState
     if (mounted) setState(() {});
   }
 
+  /// 打开词库编辑弹窗
+  ///
+  /// 关闭后刷新当前列表；弹窗内部已直接写回 service，无需再落盘。
+  Future<void> _openLibraryDialog() async {
+    await showCustomHighlightLibraryDialog(
+      context: context,
+      service: widget.service,
+    );
+    if (mounted) setState(() {});
+  }
+
   /// 选择颜色（用于新增关键词）
   Future<void> _pickNewKeywordColor() async {
     await ColorPickerDialog.show(
@@ -198,6 +225,8 @@ class _CustomHighlightDialogContentState
       title: '选择高亮颜色',
       initialColorHex: _newKeywordColorHex,
       onColorSelected: (colorHex) {
+        // 记忆本次选择，下次打开对话框及换设备后沿用
+        MiscCacheService.instance.saveCustomHighlightLastColorHex(colorHex);
         setState(() => _newKeywordColorHex = colorHex);
       },
     );
@@ -210,6 +239,8 @@ class _CustomHighlightDialogContentState
       title: '选择高亮颜色',
       initialColorHex: currentHex,
       onColorSelected: (colorHex) {
+        // 已有项改色同样记入"上次选择"，新增项可一键复用
+        MiscCacheService.instance.saveCustomHighlightLastColorHex(colorHex);
         widget.service.updateItemColor(index, colorHex);
       },
     );
@@ -405,6 +436,19 @@ class _CustomHighlightDialogContentState
             child: Text(
               '$count',
               style: context.bodySmall?.copyWith(color: colorScheme.primary),
+            ),
+          ),
+          const Spacer(),
+          // 词库编辑：一次性增删改全部高亮项，用法与敏感词词库一致
+          TextButton.icon(
+            onPressed: _openLibraryDialog,
+            icon: const Icon(Icons.edit_outlined, size: 16),
+            label: const Text('编辑词库'),
+            style: TextButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              minimumSize: const Size(0, 32),
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              visualDensity: VisualDensity.compact,
             ),
           ),
         ],
@@ -621,7 +665,14 @@ class _CustomHighlightDialogContentState
         iconSize: 16,
         unselectedColor: colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
         circular: true,
-        onChanged: (value) => setState(() => _newKeywordIsRegex = value),
+        onChanged: (value) {
+          setState(() => _newKeywordIsRegex = value);
+          // 记忆模式选择，换设备后自动恢复
+          MiscCacheService.instance.saveSwitchState(
+            _newKeywordRegexSwitchKey,
+            value,
+          );
+        },
       ),
     );
   }

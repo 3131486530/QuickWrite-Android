@@ -240,6 +240,52 @@ class MiscCacheService extends CacheService<MiscCacheData> {
     return await save(_data);
   }
 
+  // ================= 正文敏感词标红颜色 =================
+
+  /// 获取正文敏感词标红颜色（空字符串表示跟随主题错误色）
+  String getSensitiveWordColorHex() {
+    return _data.sensitiveWordColorHex;
+  }
+
+  /// 保存正文敏感词标红颜色
+  Future<bool> saveSensitiveWordColorHex(String colorHex) async {
+    _data = _data.copyWith(sensitiveWordColorHex: colorHex);
+    return await save(_data);
+  }
+
+  // ================= 自定义高亮选择记忆 =================
+
+  /// 获取自定义高亮上次选择的颜色
+  String getCustomHighlightLastColorHex() {
+    final value = _data.customHighlightLastColorHex;
+    return value.isEmpty ? '#FFB300' : value;
+  }
+
+  /// 保存自定义高亮上次选择的颜色
+  Future<bool> saveCustomHighlightLastColorHex(String colorHex) async {
+    _data = _data.copyWith(customHighlightLastColorHex: colorHex);
+    return await save(_data);
+  }
+
+  // ================= 通用开关记忆 =================
+
+  /// 读取某个开关最近一次的选择
+  ///
+  /// 从未记忆过时返回 [fallback]，保证旧版本升级上来仍是原有默认表现。
+  bool getSwitchState(String key, {required bool fallback}) {
+    return _data.switchStates[key] ?? fallback;
+  }
+
+  /// 记忆某个开关的选择
+  ///
+  /// 与已有取值相同时直接返回，避免无谓的落盘与云同步。
+  Future<bool> saveSwitchState(String key, bool value) async {
+    if (_data.switchStates[key] == value) return true;
+    final states = Map<String, bool>.from(_data.switchStates)..[key] = value;
+    _data = _data.copyWith(switchStates: states);
+    return await save(_data);
+  }
+
   // ================= 云同步支持 =================
 
   /// 保存数据时同步刷新修改时间，使其它设备能判定这是较新的操作记忆

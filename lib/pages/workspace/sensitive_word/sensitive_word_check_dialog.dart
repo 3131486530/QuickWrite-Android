@@ -2,8 +2,10 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:quick_write/core/providers/workspace_provider.dart';
+import 'package:quick_write/core/utils/color_utils.dart';
 import 'package:quick_write/core/utils/typography_extension.dart';
 import 'package:quick_write/pages/workspace/sensitive_word/widgets/sensitive_word_editor_dialog.dart';
+import 'package:quick_write/shared/dialogs/color_picker_dialog.dart';
 import 'package:quick_write/shared/widgets/qw_dialogs.dart';
 import 'package:quick_write/shared/widgets/qw_switch.dart';
 
@@ -99,6 +101,32 @@ class _SensitiveWordCheckDialogState extends State<_SensitiveWordCheckDialog> {
     if (mounted) setState(() {});
   }
 
+  /// 当前标红颜色：未自定义时回落到主题错误色
+  Color _currentHighlightColor(ColorScheme colorScheme) {
+    final hex = widget.provider.sensitiveWordService.colorHex;
+    return hex.isEmpty ? colorScheme.error : ColorUtils.parseHex(hex);
+  }
+
+  /// 选择正文敏感词标红颜色
+  ///
+  /// 未自定义时以主题错误色作为选择器初始值；选色后写入杂项缓存并参与云同步。
+  Future<void> _pickHighlightColor() async {
+    final service = widget.provider.sensitiveWordService;
+    final current = service.colorHex.isEmpty
+        ? null
+        : service.colorHex;
+    await ColorPickerDialog.show(
+      context: context,
+      title: '选择敏感词标红颜色',
+      initialColorHex: current ??
+          ColorUtils.toHex(Theme.of(context).colorScheme.error),
+      onColorSelected: (colorHex) async {
+        await service.setColorHex(colorHex);
+        if (mounted) setState(() {});
+      },
+    );
+  }
+
   /// 打开词库编辑弹窗，保存后重新扫描
   Future<void> _editWordLibrary() async {
     final changed = await showSensitiveWordEditorDialog(
@@ -173,6 +201,41 @@ class _SensitiveWordCheckDialogState extends State<_SensitiveWordCheckDialog> {
             ),
           ),
           const Spacer(),
+          // 标红颜色：自定义正文敏感词的高亮颜色
+          Tooltip(
+            message: '标红颜色',
+            child: InkWell(
+              onTap: _pickHighlightColor,
+              borderRadius: BorderRadius.circular(6),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.palette_outlined,
+                      size: 16,
+                      color: colorScheme.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 4),
+                    Container(
+                      width: 14,
+                      height: 14,
+                      decoration: BoxDecoration(
+                        color: _currentHighlightColor(colorScheme),
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: colorScheme.outlineVariant,
+                          width: 1,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 4),
           TextButton.icon(
             onPressed: _editWordLibrary,
             icon: const Icon(Icons.edit_outlined, size: 18),
@@ -334,7 +397,7 @@ class _SensitiveWordCheckDialogState extends State<_SensitiveWordCheckDialog> {
                   Icon(
                     Icons.description_outlined,
                     size: 14,
-                    color: colorScheme.error,
+                    color: _currentHighlightColor(colorScheme),
                   ),
                   const SizedBox(width: 6),
                   // 卷名（如有）
@@ -364,13 +427,14 @@ class _SensitiveWordCheckDialogState extends State<_SensitiveWordCheckDialog> {
                       vertical: 2,
                     ),
                     decoration: BoxDecoration(
-                      color: colorScheme.error.withValues(alpha: 0.12),
+                      color: _currentHighlightColor(colorScheme)
+                          .withValues(alpha: 0.12),
                       borderRadius: BorderRadius.circular(10),
                     ),
                     child: Text(
                       '${result.totalMatches}',
                       style: context.labelSmall?.copyWith(
-                        color: colorScheme.error,
+                        color: _currentHighlightColor(colorScheme),
                         fontWeight: FontWeight.w600,
                       ),
                     ),
@@ -510,10 +574,10 @@ class _SensitiveWordCheckDialogState extends State<_SensitiveWordCheckDialog> {
         TextSpan(
           text: text.substring(match.start, match.end),
           style: TextStyle(
-            color: colorScheme.error,
+            color: _currentHighlightColor(colorScheme),
             fontWeight: FontWeight.w600,
             decoration: TextDecoration.lineThrough,
-            decorationColor: colorScheme.error,
+            decorationColor: _currentHighlightColor(colorScheme),
           ),
         ),
       );

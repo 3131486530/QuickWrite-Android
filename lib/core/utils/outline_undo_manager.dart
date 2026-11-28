@@ -29,6 +29,15 @@ class OutlineTreeSnapshot {
   /// 撤销/恢复据此把视口、焦点和光标交还给当时正在编辑的备注区。
   final String? noteEditingNodeId;
 
+  /// 大纲标题文本（章节标题输入框的内容）
+  ///
+  /// 标题输入框不属于节点文本控制器，需要单独纳入快照，
+  /// 否则标题编辑不进撤销栈，撤销/恢复对标题无效。
+  final String? titleText;
+
+  /// 大纲标题的文本选区（标题编辑时才有值）
+  final TextSelection? titleSelection;
+
   OutlineTreeSnapshot({
     required this.roots,
     this.focusedNodeId,
@@ -37,7 +46,28 @@ class OutlineTreeSnapshot {
     required this.selectAllLevel,
     this.selectionAnchorIndex,
     this.noteEditingNodeId,
+    this.titleText,
+    this.titleSelection,
   });
+
+  /// 创建一份修改了标题字段的副本
+  OutlineTreeSnapshot copyWithTitle({
+    String? titleText,
+    TextSelection? titleSelection,
+    bool clearTitleSelection = false,
+  }) {
+    return OutlineTreeSnapshot(
+      roots: roots,
+      focusedNodeId: focusedNodeId,
+      focusedSelection: focusedSelection,
+      selectedNodeIds: selectedNodeIds,
+      selectAllLevel: selectAllLevel,
+      selectionAnchorIndex: selectionAnchorIndex,
+      noteEditingNodeId: noteEditingNodeId,
+      titleText: titleText ?? this.titleText,
+      titleSelection: clearTitleSelection ? null : (titleSelection ?? this.titleSelection),
+    );
+  }
 }
 
 /// 撤销/恢复操作
@@ -67,6 +97,9 @@ class OutlineUndoAction {
   /// 被编辑备注的节点 ID（仅备注编辑合并判断时使用，其余操作为 null）
   final String? editedNoteNodeId;
 
+  /// 是否为大纲标题编辑（标题编辑合并判断时使用）
+  final bool editedTitle;
+
   OutlineUndoAction({
     required this.before,
     required this.after,
@@ -74,6 +107,7 @@ class OutlineUndoAction {
     required this.timestamp,
     this.editedNodeId,
     this.editedNoteNodeId,
+    this.editedTitle = false,
   });
 }
 
@@ -263,6 +297,37 @@ class OutlineUndoManager {
         description: '编辑备注',
         timestamp: now,
         editedNoteNodeId: nodeId,
+      ));
+      if (_undoStack.length > maxLevels) {
+        _undoStack.removeAt(0);
+      }
+    }
+    _redoStack.clear();
+  }
+
+  /// 记录一次大纲标题编辑
+  ///
+  /// 标题输入框同样不属于节点文本控制器，由编辑器在标题文本变化时
+  /// 捕获修改前后的快照后交给此方法；1 秒内的连续输入合并为一条记录。
+  void recordTitleEdit({
+    required OutlineTreeSnapshot before,
+    required OutlineTreeSnapshot after,
+  }) {
+    final now = DateTime.now();
+    final lastAction = _undoStack.isEmpty ? null : _undoStack.last;
+    if (lastAction != null &&
+        lastAction.editedTitle &&
+        now.difference(lastAction.timestamp).inMilliseconds < 1000) {
+      // 连续输入合并：before 保持不变，after 更新为当前状态
+      lastAction.after = after;
+      lastAction.timestamp = now;
+    } else {
+      _undoStack.add(OutlineUndoAction(
+        before: before,
+        after: after,
+        description: '编辑标题',
+        timestamp: now,
+        editedTitle: true,
       ));
       if (_undoStack.length > maxLevels) {
         _undoStack.removeAt(0);

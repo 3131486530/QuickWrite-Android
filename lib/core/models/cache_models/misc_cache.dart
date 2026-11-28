@@ -5,6 +5,7 @@
 /// 缓存内容包括：
 /// - 书架上当前选中的分组 ID（应用重启后恢复）
 /// - 每本书的已展开设定分类 ID 列表
+/// - 各类开关/选项的最近一次选择（随云同步恢复）
 class MiscCacheData {
   /// 书架选中的分组 ID
   ///
@@ -46,6 +47,24 @@ class MiscCacheData {
   /// 开启后正文中的敏感词会立即标红，关闭后仅保留敏感词检测弹窗的扫描结果
   final bool sensitiveWordHighlightEnabled;
 
+  /// 正文敏感词标红颜色（#RRGGBB）
+  ///
+  /// 空字符串表示跟随主题错误色，用户自定义后按该颜色标红
+  final String sensitiveWordColorHex;
+
+  /// 自定义高亮上次使用的颜色（#RRGGBB）
+  ///
+  /// 记忆新增高亮项时选择的颜色，下次打开对话框沿用，换设备后同样恢复
+  final String customHighlightLastColorHex;
+
+  /// 通用开关记忆映射
+  ///
+  /// Key: 开关稳定标识（如 'custom_highlight.new_is_regex'）
+  /// Value: 该开关最近一次的用户选择
+  /// 用于记忆界面上各类一次性开关/选项的选择，避免每次打开都回到默认值，
+  /// 该字段随杂项缓存一起参与云同步与云恢复
+  final Map<String, bool> switchStates;
+
   /// 书籍展开状态映射
   ///
   /// Key: 书籍 UUID
@@ -60,6 +79,9 @@ class MiscCacheData {
     this.toolsSectionOrder = const ['bookInfo', 'stats'],
     this.keywordHighlightEnabled = true,
     this.sensitiveWordHighlightEnabled = false,
+    this.sensitiveWordColorHex = '',
+    this.customHighlightLastColorHex = '#FFB300',
+    this.switchStates = const {},
     this.books = const {},
   });
 
@@ -88,6 +110,12 @@ class MiscCacheData {
       keywordHighlightEnabled: json['keywordHighlightEnabled'] as bool? ?? true,
       sensitiveWordHighlightEnabled:
           json['sensitiveWordHighlightEnabled'] as bool? ?? false,
+      sensitiveWordColorHex: json['sensitiveWordColorHex'] as String? ?? '',
+      customHighlightLastColorHex:
+          json['customHighlightLastColorHex'] as String? ?? '#FFB300',
+      switchStates: (json['switchStates'] as Map<String, dynamic>?)
+              ?.map((key, value) => MapEntry(key, value == true)) ??
+          const {},
       books: books,
     );
   }
@@ -102,6 +130,9 @@ class MiscCacheData {
       'toolsSectionOrder': toolsSectionOrder,
       'keywordHighlightEnabled': keywordHighlightEnabled,
       'sensitiveWordHighlightEnabled': sensitiveWordHighlightEnabled,
+      'sensitiveWordColorHex': sensitiveWordColorHex,
+      'customHighlightLastColorHex': customHighlightLastColorHex,
+      'switchStates': switchStates,
       'books': books.map((key, value) => MapEntry(key, value.toJson())),
     };
   }
@@ -115,6 +146,9 @@ class MiscCacheData {
     List<String>? toolsSectionOrder,
     bool? keywordHighlightEnabled,
     bool? sensitiveWordHighlightEnabled,
+    String? sensitiveWordColorHex,
+    String? customHighlightLastColorHex,
+    Map<String, bool>? switchStates,
     Map<String, BookGroupExpandCache>? books,
   }) {
     return MiscCacheData(
@@ -126,6 +160,10 @@ class MiscCacheData {
       keywordHighlightEnabled: keywordHighlightEnabled ?? this.keywordHighlightEnabled,
       sensitiveWordHighlightEnabled:
           sensitiveWordHighlightEnabled ?? this.sensitiveWordHighlightEnabled,
+      sensitiveWordColorHex: sensitiveWordColorHex ?? this.sensitiveWordColorHex,
+      customHighlightLastColorHex:
+          customHighlightLastColorHex ?? this.customHighlightLastColorHex,
+      switchStates: switchStates ?? this.switchStates,
       books: books ?? this.books,
     );
   }

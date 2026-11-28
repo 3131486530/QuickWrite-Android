@@ -666,6 +666,36 @@ class WebDavClient implements RemoteStorage {
     }
   }
 
+  /// 列出远端指定目录下的文件及 ETag，供元数据读取判断是否需要下载
+  @override
+  Future<List<RemoteSyncFile>> listFilesWithMeta(String remotePath) async {
+    final entries = await _listEntries(remotePath);
+    return [
+      for (final entry in entries)
+        if (entry.isDir != true &&
+            entry.name != null &&
+            entry.name!.isNotEmpty)
+          RemoteSyncFile(
+            key: entry.name!,
+            etag: _normalizeEtag(entry.eTag ?? ''),
+            size: entry.size ?? 0,
+            modifiedAt: entry.mTime,
+          ),
+    ];
+  }
+
+  @override
+  String? contentIdOf(String key) {
+    final cache = _listCache;
+    if (cache == null) return null;
+    for (final entry in cache) {
+      if (entry.key == key) {
+        return entry.etag.isEmpty ? null : entry.etag;
+      }
+    }
+    return null;
+  }
+
   /// 列出远端指定目录下的直接文件名，目录不存在时返回空列表
   @override
   Future<List<String>> listFileNames(String remotePath) async {

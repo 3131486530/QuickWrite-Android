@@ -161,6 +161,25 @@ abstract class RemoteStorage {
   /// 列出远端指定目录下的直接文件名
   Future<List<String>> listFileNames(String remotePath);
 
+  /// 列出远端指定目录下的文件及其内容标识
+  ///
+  /// 内容标识用于判断远端文件是否发生变化：元数据读取据此跳过未变化的文件，
+  /// 避免按书籍数量逐次下载。默认实现拿不到 ETag，此时调用方会退回完整下载，
+  /// 支持 ETag 的服务端（如 WebDAV）应覆写本方法
+  Future<List<RemoteSyncFile>> listFilesWithMeta(String remotePath) async {
+    final names = await listFileNames(remotePath);
+    return [
+      for (final name in names)
+        RemoteSyncFile(key: name, etag: '', size: 0),
+    ];
+  }
+
+  /// 查询逻辑键对应的远端内容标识
+  ///
+  /// 仅在本地已掌握该文件最新状态时返回，例如刚完成上传且服务端回了 ETag；
+  /// 返回 null 表示未知，调用方不应据此做任何缓存判断
+  String? contentIdOf(String key) => null;
+
   /// 列出远端指定目录下的子目录名
   Future<List<String>> listDirectoryNames(String remotePath);
 

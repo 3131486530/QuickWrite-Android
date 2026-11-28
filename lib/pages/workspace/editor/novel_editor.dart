@@ -13,6 +13,7 @@ import 'package:quick_write/core/services/workspace/custom_highlight_service.dar
 import 'package:quick_write/core/services/workspace/outline_keyword_service.dart';
 import 'package:quick_write/core/services/workspace/sensitive_word_service.dart';
 import 'package:quick_write/core/utils/chinese_word_segmenter.dart';
+import 'package:quick_write/core/utils/chapter_title_undo_history.dart';
 import 'package:quick_write/core/utils/clean_scroll.dart';
 import 'package:quick_write/core/utils/clipboard_state_cache.dart';
 import 'package:quick_write/core/utils/code_line_selection_utils.dart';
@@ -259,6 +260,23 @@ class NovelEditorState extends State<NovelEditor> with WidgetsBindingObserver {
   /// 由内容变化监听消费，从而把事件来源准确传给码字统计。
   NovelEditType? _pendingEditType;
 
+  /// 章节标题的撤销/重做历史
+  ///
+  /// 标题输入框使用外部控制器，不在正文撤销栈内，需单独维护。
+  final ChapterTitleUndoHistory _titleUndoHistory = ChapterTitleUndoHistory();
+
+  /// 最近一次已知的章节标题文本（用于判定标题是否变化、捕获编辑前文本）
+  String _lastChapterTitle = '';
+
+  /// 正在按历史回写标题，期间的文本变化不再记录
+  bool _applyingTitleHistory = false;
+
+  /// 正文最后一次编辑时间（用于与标题编辑比较撤销先后顺序）
+  DateTime? _lastBodyEditAt;
+
+  /// 上一次撤销/重做作用在标题还是正文（null 表示尚无历史操作）
+  bool? _lastHistoryTargetIsTitle;
+
   /// 上一次的内容行数据引用
   ///
   /// 仅移动光标时 re_editor 不会重建行数据，据此区分"内容变化"与"选区变化"。
@@ -378,6 +396,9 @@ class NovelEditorState extends State<NovelEditor> with WidgetsBindingObserver {
     final TextEditingController? titleController = widget.chapterTitleController;
     if (titleController != null) {
       EditorFocusKeep.trackTitleInput(_titleFocusNode, titleController);
+      // 章节标题单独记录撤销历史，撤销/恢复才对标题生效
+      _lastChapterTitle = titleController.text;
+      titleController.addListener(_onChapterTitleChanged);
     }
     _lastCodeLines = widget.controller.value.codeLines;
     _previousTextLength = widget.controller.text.length;
@@ -449,6 +470,7 @@ class NovelEditorState extends State<NovelEditor> with WidgetsBindingObserver {
     _scrollController.removeListener(_hideKeywordCardOnScroll);
     _scrollGuard.dispose();
     widget.controller.removeListener(_onControllerChanged);
+    widget.chapterTitleController?.removeListener(_onChapterTitleChanged);
     _focusNode.removeListener(_onFocusChanged);
     EditorFocusKeep.untrackTitleInput(_titleFocusNode);
     _titleFocusNode.dispose();
@@ -521,6 +543,22 @@ class NovelEditorState extends State<NovelEditor> with WidgetsBindingObserver {
 
     // 标签页切换到后台后收起关键词悬浮卡片
     if (!widget.isActive) _hideKeywordCard();
+
+    // 章节标题控制器被换成另一个实例（切章）时重绑监听并清空标题撤销栈，
+    // 否则旧章节的标题历史会串到新章节上
+    if (!identical(widget.chapterTitleController, oldWidget.chapterTitleController)) {
+      oldWidget.chapterTitleController?.removeListener(_onChapterTitleChanged);
+      final TextEditingController? titleController = widget.chapterTitleController;
+      _titleUndoHistory.clear();
+      _lastHistoryTargetIsTitle = null;
+      if (titleController != null) {
+        _lastChapterTitle = titleController.text;
+        titleController.addListener(_onChapterTitleChanged);
+        EditorFocusKeep.trackTitleInput(_titleFocusNode, titleController);
+      } else {
+        _lastChapterTitle = '';
+      }
+    }
   }
 
   @override
@@ -1011,6 +1049,11 @@ class NovelEditorState extends State<NovelEditor> with WidgetsBindingObserver {
 
     final NovelEditType type = _pendingEditType ?? NovelEditType.keyboard;
     _pendingEditType = null;
+    // 撤销/重做本身不算新编辑，其余编辑更新正文编辑时间，供标题与正文的撤销排序使用
+    if (type != NovelEditType.undo && type != NovelEditType.redo) {
+      _lastBodyEditAt = DateTime.now();
+      _lastHistoryTargetIsTitle = null;
+    }
     widget.onEditEvent?.call(type);
   }
 
@@ -1200,23 +1243,112 @@ class NovelEditorState extends State<NovelEditor> with WidgetsBindingObserver {
   }
 
   /// 是否可撤销（只读模式下不可撤销）
-  bool get canUndo => !widget.readOnly && widget.controller.canUndo;
+  bool get canUndo => !widget.readOnly && (widget.controller.canUndo || _titleUndoHistory.canUndo);
 
   /// 是否可重做（只读模式下不可重做）
-  bool get canRedo => !widget.readOnly && widget.controller.canRedo;
+  bool get canRedo => !widget.readOnly && (widget.controller.canRedo || _titleUndoHistory.canRedo);
+
+  /// 撤销时是否应先回退章节标题
+  ///
+  /// 标题与正文各自维护撤销栈，按最后一次编辑的先后决定撤销哪一边：
+  /// 标题输入晚于正文编辑就撤标题，否则交回正文撤销栈处理。
+  bool _shouldUndoTitleFirst() {
+    if (!_titleUndoHistory.canUndo) return false;
+    final DateTime? titleAt = _titleUndoHistory.lastEditAt;
+    final DateTime? bodyAt = _lastBodyEditAt;
+    if (bodyAt == null) return true;
+    return titleAt != null && titleAt.isAfter(bodyAt);
+  }
 
   /// 撤销
   void undo() {
-    if (widget.readOnly || !widget.controller.canUndo) return;
-    _runEdit(NovelEditType.undo, widget.controller.undo);
-    widget.controller.makeCursorCenterIfInvisible();
+    if (widget.readOnly) return;
+    if (_shouldUndoTitleFirst()) {
+      final ChapterTitleEdit? edit = _titleUndoHistory.undo();
+      if (edit != null) {
+        _applyChapterTitleText(edit.textBefore);
+        _lastHistoryTargetIsTitle = true;
+        return;
+      }
+    }
+    if (widget.controller.canUndo) {
+      _runEdit(NovelEditType.undo, widget.controller.undo);
+      widget.controller.makeCursorCenterIfInvisible();
+      // 标记正文为最近操作，连续撤销继续回退正文
+      _lastBodyEditAt = DateTime.now();
+      _lastHistoryTargetIsTitle = false;
+      return;
+    }
+    // 正文已无可撤销内容时退而撤销标题
+    final ChapterTitleEdit? edit = _titleUndoHistory.undo();
+    if (edit != null) {
+      _applyChapterTitleText(edit.textBefore);
+      _lastHistoryTargetIsTitle = true;
+    }
   }
 
   /// 重做
   void redo() {
-    if (widget.readOnly || !widget.controller.canRedo) return;
-    _runEdit(NovelEditType.redo, widget.controller.redo);
-    widget.controller.makeCursorCenterIfInvisible();
+    if (widget.readOnly) return;
+    // 重做沿上一次撤销的对象回退，避免正文与标题交替错乱
+    final bool wantTitle = _lastHistoryTargetIsTitle ?? false;
+    if (wantTitle && _titleUndoHistory.canRedo) {
+      final ChapterTitleEdit? edit = _titleUndoHistory.redo();
+      if (edit != null) {
+        _applyChapterTitleText(edit.textAfter);
+        return;
+      }
+    }
+    if (widget.controller.canRedo) {
+      _runEdit(NovelEditType.redo, widget.controller.redo);
+      widget.controller.makeCursorCenterIfInvisible();
+      _lastBodyEditAt = DateTime.now();
+      _lastHistoryTargetIsTitle = false;
+      return;
+    }
+    if (_titleUndoHistory.canRedo) {
+      final ChapterTitleEdit? edit = _titleUndoHistory.redo();
+      if (edit != null) {
+        _applyChapterTitleText(edit.textAfter);
+        _lastHistoryTargetIsTitle = true;
+      }
+    }
+  }
+
+  /// 章节标题文本变化时记入标题撤销栈
+  void _onChapterTitleChanged() {
+    if (_applyingTitleHistory) return;
+    final TextEditingController? controller = widget.chapterTitleController;
+    if (controller == null) return;
+    final String title = controller.text;
+    if (title == _lastChapterTitle) return;
+    // 仅标题输入框持有焦点时才视为用户编辑，避免切换章节等程序化赋值污染撤销栈
+    if (!_titleFocusNode.hasFocus) {
+      _lastChapterTitle = title;
+      return;
+    }
+    _titleUndoHistory.record(before: _lastChapterTitle, after: title);
+    _lastChapterTitle = title;
+    _lastHistoryTargetIsTitle = null;
+    if (mounted) setState(() {});
+  }
+
+  /// 按撤销/重做记录回写章节标题
+  void _applyChapterTitleText(String text) {
+    final TextEditingController? controller = widget.chapterTitleController;
+    if (controller == null) return;
+    _applyingTitleHistory = true;
+    controller.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    );
+    _applyingTitleHistory = false;
+    _lastChapterTitle = text;
+    widget.onChapterTitleChanged?.call(text);
+    _scheduleTitleAreaMeasure();
+    if (mounted) setState(() {});
+    // 标题是本次撤销/重做的落点，光标交还标题输入框
+    _titleFocusNode.requestFocus();
   }
 
   /// 剪切
@@ -1346,13 +1478,14 @@ class NovelEditorState extends State<NovelEditor> with WidgetsBindingObserver {
       ContextMenuItem(
         labelText: '撤销',
         icon: Icons.undo,
-        enabled: !isReadOnly && widget.controller.canUndo,
+        // 章节标题的改动也在撤销栈内，故统一用编辑器级判定
+        enabled: !isReadOnly && canUndo,
         onTap: undo,
       ),
       ContextMenuItem(
         labelText: '恢复',
         icon: Icons.redo,
-        enabled: !isReadOnly && widget.controller.canRedo,
+        enabled: !isReadOnly && canRedo,
         onTap: redo,
       ),
 

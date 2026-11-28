@@ -10,6 +10,7 @@ import 'package:quick_write/core/models/volume.dart';
 import 'package:quick_write/core/services/app_paths.dart';
 import 'package:quick_write/core/services/cache_services/chapter_cursor_cache_service.dart';
 import 'package:quick_write/core/services/cache_services/outline_last_edit_cache_service.dart';
+import 'package:quick_write/core/services/cloud_sync/meta_snapshot_cache.dart';
 import 'package:quick_write/core/services/cloud_sync/metadata_codec.dart';
 import 'package:quick_write/core/services/cloud_sync/metadata_merger.dart';
 import 'package:quick_write/core/services/cloud_sync/metadata_types.dart';
@@ -75,9 +76,11 @@ class MetadataSync {
     required RemoteStorage storage,
     required SyncStateStore stateStore,
     MetadataMerger merger = const MetadataMerger(),
+    MetaSnapshotCache? snapshotCache,
   }) : _storage = storage,
        _stateStore = stateStore,
-       _merger = merger;
+       _merger = merger,
+       _snapshotCache = snapshotCache ?? MetaSnapshotCache();
 
   /// 远端通信客户端
   final RemoteStorage _storage;
@@ -88,10 +91,17 @@ class MetadataSync {
   /// 元数据合并器
   final MetadataMerger _merger;
 
+  /// 远端元数据快照缓存
+  ///
+  /// 用于跳过内容未变化的元数据文件下载，按请求计费的网盘可省下
+  /// 与书籍数量相当的请求
+  final MetaSnapshotCache _snapshotCache;
+
   // ================= 执行入口 =================
 
   /// 执行一次元数据同步
   Future<MetadataSyncResult> run({required Isar isar}) async {
+    await _snapshotCache.load();
     final remote = await _loadRemote();
 
     // 远端元数据整体缺失但本地留有同步基线，说明远端数据已被清空，
@@ -100,6 +110,7 @@ class MetadataSync {
     if (isRemoteCleared) {
       debugPrint('远端元数据为空且本地留有基线，按重新关联处理');
       _stateStore.clearSyncBaselines();
+      _snapshotCache.clear();
     }
 
     final outcome = await _merger.merge(
@@ -112,6 +123,8 @@ class MetadataSync {
     final removalCount = await _applyRemovals(isar, outcome);
     await _applyUpserts(isar, outcome);
     final uploadedFileCount = await _pushMerged(outcome.merged, remote);
+    // 缓存只在同步完整跑完时落盘，失败中断时下轮仍按远端真实内容校正
+    await _snapshotCache.save();
 
     // 基线更新为本次合并后的存活实体，未成功完成同步时不会走到这里
     _stateStore.setEntityBaselines(outcome.aliveKeys);
@@ -170,17 +183,23 @@ class MetadataSync {
     final global = await _readSnapshot(kGlobalMetadataFileName);
     final perBook = <String, MetadataSnapshot>{};
 
-    final fileNames = await _storage.listFileNames(_booksMetaDirPath);
-    final bookFileNames = [
-      for (final fileName in fileNames)
-        if (fileName.endsWith('.gz')) fileName,
-    ];
-
-    for (final fileName in bookFileNames) {
+    // 带 ETag 列举：与上一轮一致的书籍元数据直接复用本地缓存，不再下载
+    final bookEntries = await _storage.listFilesWithMeta(_booksMetaDirPath);
+    final validPaths = <String>{};
+    for (final entry in bookEntries) {
+      final fileName = entry.key;
+      if (!fileName.endsWith('.gz')) continue;
       final bookUuid = fileName.substring(0, fileName.length - '.gz'.length);
-      final snapshot = await _readSnapshot('$kBooksMetaSubDirName/$fileName');
+      final relativePath = '$kBooksMetaSubDirName/$fileName';
+      validPaths.add('$kMetadataDirName/$relativePath');
+      final snapshot = await _readSnapshot(
+        relativePath,
+        contentId: entry.contentId,
+      );
       if (snapshot != null) perBook[bookUuid] = snapshot;
     }
+    // 远端已删除的书籍不再保留缓存，避免缓存只增不减
+    _snapshotCache.retainOnly(validPaths);
 
     // 元数据缺失时会被当作「远端暂无数据」而不报错，此处记录实际读到的内容便于排查
     final entityCount = perBook.values.fold(
@@ -206,11 +225,21 @@ class MetadataSync {
   }
 
   /// 读取单个元数据文件，文件不存在时返回 null
-  Future<MetadataSnapshot?> _readSnapshot(String relativePath) async {
+  Future<MetadataSnapshot?> _readSnapshot(
+    String relativePath, {
+    String? contentId,
+  }) async {
+    final path = '$kMetadataDirName/$relativePath';
+    final cached = contentId == null
+        ? null
+        : _snapshotCache.read(path, contentId);
+    if (cached != null) return MetadataSnapshot.fromBytes(cached);
+
     final bytes = await _storage.downloadBytesIfExists(
-      _storage.remotePathOf('$kMetadataDirName/$relativePath'),
+      _storage.remotePathOf(path),
     );
     if (bytes == null) return null;
+    if (contentId != null) _snapshotCache.write(path, contentId, bytes);
     return MetadataSnapshot.fromBytes(bytes);
   }
 
@@ -451,12 +480,13 @@ class MetadataSync {
         continue;
       }
 
-      await _storage.uploadBytes(
-        snapshot.toBytes(),
-        _storage.remotePathOf(
-          '$kMetadataDirName/$kBooksMetaSubDirName/$bookUuid.gz',
-        ),
-      );
+      final relativePath = '$kBooksMetaSubDirName/$bookUuid.gz';
+      final path = '$kMetadataDirName/$relativePath';
+      final bytes = snapshot.toBytes();
+      await _storage.uploadBytes(bytes, _storage.remotePathOf(path));
+      // 刚写入的内容与远端此刻一致，直接登记缓存，下一轮无需再下载
+      final contentId = _storage.contentIdOf(path);
+      if (contentId != null) _snapshotCache.write(path, contentId, bytes);
       uploaded++;
     }
 

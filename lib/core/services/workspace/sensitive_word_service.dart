@@ -33,6 +33,9 @@ class SensitiveWordService extends ChangeNotifier {
   /// 正文敏感词标红开关（默认开启）
   bool _highlightEnabled = false;
 
+  /// 正文敏感词标红颜色（空字符串表示跟随主题错误色）
+  String _colorHex = '';
+
   /// 词库版本号
   ///
   /// 每次词库内容变化时递增，供正文编辑器的样式构建器判断是否需要重算缓存。
@@ -47,6 +50,9 @@ class SensitiveWordService extends ChangeNotifier {
   /// 正文是否开启敏感词标红
   bool get highlightEnabled => _highlightEnabled;
 
+  /// 正文敏感词标红颜色（空字符串表示跟随主题错误色）
+  String get colorHex => _colorHex;
+
   /// 词库版本号
   int get revision => _revision;
 
@@ -59,6 +65,8 @@ class SensitiveWordService extends ChangeNotifier {
 
     // 标红开关为本机偏好，从杂项缓存恢复
     _highlightEnabled = MiscCacheService.instance.isSensitiveWordHighlightEnabled();
+    // 标红颜色同样来自杂项缓存，随云同步在多设备间保持一致
+    _colorHex = MiscCacheService.instance.getSensitiveWordColorHex();
 
     try {
       final file = File(AppPaths.instance.sensitiveWordFilePath);
@@ -82,6 +90,19 @@ class SensitiveWordService extends ChangeNotifier {
     if (_highlightEnabled == enabled) return;
     _highlightEnabled = enabled;
     await MiscCacheService.instance.saveSensitiveWordHighlightEnabled(enabled);
+    notifyListeners();
+  }
+
+  /// 设置正文敏感词标红颜色
+  ///
+  /// 传空字符串表示恢复跟随主题错误色；颜色写入杂项缓存并参与云同步，
+  /// 变化后递增词库版本号，让编辑器的样式缓存立即失效重算。
+  Future<void> setColorHex(String colorHex) async {
+    final normalized = colorHex.trim().toUpperCase();
+    if (_colorHex == normalized) return;
+    _colorHex = normalized;
+    _revision++;
+    await MiscCacheService.instance.saveSensitiveWordColorHex(normalized);
     notifyListeners();
   }
 

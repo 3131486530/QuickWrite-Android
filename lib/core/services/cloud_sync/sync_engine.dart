@@ -104,8 +104,9 @@ class SyncEngine {
     final index = await _buildIndex();
 
     // 与计划生成共用同一次远端列举：回收站清理与差异比对都基于这份清单，
-    // 避免重复请求
-    await _storage.ensureDirectory(_storage.remoteDir);
+    // 避免重复请求。
+    // 不再预先创建同步根目录：列举本身在目录缺失时返回空清单，
+    // 而上传通道会按需创建父目录，这一层 MKCOL 属于纯粹的浪费
     final remoteFiles = await _storage.listFilesRecursive();
     final plan = _planFrom(index, remoteFiles);
 
@@ -249,8 +250,7 @@ class SyncEngine {
   ///
   /// 供同步预演使用：只比对不执行，不改动任何远端或本地状态
   Future<SyncPlan> _buildPlanFrom(WorkspaceIndex index) async {
-    // 确保远端同步目录存在，避免首次同步时列举失败
-    await _storage.ensureDirectory(_storage.remoteDir);
+    // 目录不存在时列举返回空清单，无需为预演额外发一次建目录请求
     final remoteFiles = await _storage.listFilesRecursive();
     return _planFrom(index, remoteFiles);
   }
