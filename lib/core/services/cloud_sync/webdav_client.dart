@@ -90,6 +90,18 @@ class WebDavClient implements RemoteStorage {
   /// 缓存过期时间远小于同步间隔，既能复用结果，也不会读到过旧的数据
   static const Duration _listCacheTtl = Duration(seconds: 20);
 
+  /// 坚果云的列举缓存有效期
+  ///
+  /// 一次同步在坚果云上往往持续一两分钟，按 20 秒过期会让同一轮同步内
+  /// 反复重新列举；放宽到 90 秒后，补丁机制才能覆盖完整一轮同步。
+  /// 仍远小于常见的自动同步间隔，不会长时间看不到其他设备的改动
+  static const Duration _jianguoyunListCacheTtl = Duration(seconds: 90);
+
+  /// 按服务端选择列举缓存有效期
+  Duration get _listCacheTtlFor => isJianguoyunHost(serverUrl)
+      ? _jianguoyunListCacheTtl
+      : _listCacheTtl;
+
   /// 递归列举允许的最大目录深度
   ///
   /// 正常书稿结构的层级很浅，设置上限可以防止服务端返回异常目录时陷入无限展开
@@ -264,7 +276,7 @@ class WebDavClient implements RemoteStorage {
     final cachedAt = _listCacheAt;
     if (cached != null &&
         cachedAt != null &&
-        DateTime.now().difference(cachedAt) < _listCacheTtl) {
+        DateTime.now().difference(cachedAt) < _listCacheTtlFor) {
       return List<RemoteSyncFile>.of(cached);
     }
 
@@ -473,6 +485,58 @@ class WebDavClient implements RemoteStorage {
     }
   }
 
+  /// 把远端绝对路径换算成逻辑键
+  String? _keyOfRemotePath(String remotePath) {
+    final root = remoteDir.replaceAll(RegExp(r'^/+|/+$'), '');
+    final path = remotePath.replaceAll(RegExp(r'^/+|/+$'), '');
+    if (root.isEmpty) return path.isEmpty ? null : path;
+    if (path == root) return null;
+    final prefix = '$root/';
+    if (!path.startsWith(prefix)) return null;
+    return path.substring(prefix.length);
+  }
+
+  /// 把一次成功的上传合并进列举缓存
+  ///
+  /// 直接清空缓存会让后续每个阶段都重新发起 PROPFIND；对按请求计费的网盘，
+  /// 一轮同步里多出的两轮列举就是实打实的配额消耗。只有服务端回了 ETag、
+  /// 能确定远端新状态时才走补丁，否则退回整表失效——
+  /// 宁可多一次请求，也不能让快照与远端不一致
+  void _patchCacheAfterUpload(
+    String remotePath,
+    Response<dynamic> response,
+    int size,
+  ) {
+    final key = _keyOfRemotePath(remotePath);
+    final etag = _normalizeEtag(response.headers.value('etag') ?? '');
+    if (key == null || etag.isEmpty) {
+      _invalidateListCache();
+      return;
+    }
+    _upsertCacheEntry(
+      RemoteSyncFile(key: key, etag: etag, size: size),
+    );
+  }
+
+  /// 把一次成功的删除合并进列举缓存
+  void _patchCacheAfterDelete(String remotePath) {
+    final key = _keyOfRemotePath(remotePath);
+    final cache = _listCache;
+    if (key == null || cache == null) {
+      _invalidateListCache();
+      return;
+    }
+    cache.removeWhere((entry) => entry.key == key);
+  }
+
+  /// 就地替换缓存中的同一个逻辑键
+  void _upsertCacheEntry(RemoteSyncFile entry) {
+    final cache = _listCache;
+    if (cache == null) return;
+    cache.removeWhere((item) => item.key == entry.key);
+    cache.add(entry);
+  }
+
   /// 使递归列举缓存失效
   ///
   /// 任何会改变远端文件集合的操作完成后都必须调用，
@@ -518,10 +582,11 @@ class WebDavClient implements RemoteStorage {
   Future<void> uploadFile(String localPath, String remotePath) async {
     final file = File(localPath);
     final length = await file.length();
+    late final Response<dynamic> response;
     try {
       // 直传模式先直接写入：增量同步时远端目录通常已经存在，
       // 预先建目录等于每次同步都白付一个请求
-      await _uploadFileOnce(
+      response = await _uploadFileOnce(
         file,
         length,
         remotePath,
@@ -533,13 +598,18 @@ class WebDavClient implements RemoteStorage {
       final status = e.response?.statusCode;
       if (status != 409 && status != 404) rethrow;
       resetDirectoryCache();
-      await _uploadFileOnce(file, length, remotePath, ensureParent: true);
+      response = await _uploadFileOnce(
+        file,
+        length,
+        remotePath,
+        ensureParent: true,
+      );
     }
-    _invalidateListCache();
+    _patchCacheAfterUpload(remotePath, response, length);
   }
 
   /// 执行一次上传尝试
-  Future<void> _uploadFileOnce(
+  Future<Response<dynamic>> _uploadFileOnce(
     File file,
     int length,
     String remotePath, {
@@ -547,7 +617,7 @@ class WebDavClient implements RemoteStorage {
   }) async {
     if (ensureParent) await _ensureParentDirectory(remotePath);
 
-    await _request(
+    return _request(
       'PUT',
       remotePath,
       // 每次尝试都重新打开文件流：流只能被消费一次，
@@ -564,14 +634,14 @@ class WebDavClient implements RemoteStorage {
   Future<void> uploadBytes(Uint8List bytes, String remotePath) async {
     await _ensureParentDirectory(remotePath);
 
-    await _request(
+    final response = await _request(
       'PUT',
       remotePath,
       data: bytes,
       optionsHandler: (options) =>
           options.headers?['content-length'] = bytes.length,
     );
-    _invalidateListCache();
+    _patchCacheAfterUpload(remotePath, response, bytes.length);
   }
 
   /// 下载远端文件到内存
@@ -794,12 +864,12 @@ class WebDavClient implements RemoteStorage {
       await _request('DELETE', remotePath);
     } on DioException catch (e) {
       if (e.response?.statusCode == 404) {
-        _invalidateListCache();
+        _patchCacheAfterDelete(remotePath);
         return;
       }
       rethrow;
     }
-    _invalidateListCache();
+    _patchCacheAfterDelete(remotePath);
   }
 
   /// 发起一次 MOVE 请求
