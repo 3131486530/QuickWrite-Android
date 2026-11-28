@@ -818,7 +818,9 @@ class CloudSyncService extends ChangeNotifier {
   bool get _hasCompleteCredentials {
     switch (_config.storageKind) {
       case RemoteStorageKind.webDav:
-        return WebDavClient.isValidServerUrl(_config.serverUrl) &&
+        return WebDavClient.isValidServerUrl(
+              SyncConfigStore.normalizeServerUrl(_config.serverUrl),
+            ) &&
             _config.username.isNotEmpty &&
             _config.password.isNotEmpty;
       case RemoteStorageKind.s3:
@@ -835,7 +837,8 @@ class CloudSyncService extends ChangeNotifier {
     switch (config.kind) {
       case RemoteStorageKind.webDav:
         return WebDavClient(
-          serverUrl: config.endpoint.trim(),
+          // 统一补齐协议并去掉末尾斜杠，用户手工粘贴的地址也能正常使用
+          serverUrl: SyncConfigStore.normalizeServerUrl(config.endpoint),
           username: config.account.trim(),
           password: config.secret,
           remoteDir: remoteDir,
@@ -963,7 +966,7 @@ class CloudSyncService extends ChangeNotifier {
       case RemoteStorageKind.webDav:
         if (config.endpoint.trim().isEmpty) return '请填写服务器地址';
         if (!WebDavClient.isValidServerUrl(
-          config.endpoint,
+          SyncConfigStore.normalizeServerUrl(config.endpoint),
           allowHttp: config.allowInsecureHttp,
         )) {
           return config.allowInsecureHttp

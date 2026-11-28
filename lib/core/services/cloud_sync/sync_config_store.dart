@@ -282,15 +282,35 @@ class SyncConfigStore {
 
   /// 规范化远端目录
   ///
-  /// 去除首尾多余的斜杠，为空时使用默认目录
+  /// 去除首尾多余的斜杠与重复分隔符，丢弃 `.`、`..` 这类会逃出同步根目录的层级，
+  /// 为空时使用默认目录
   static String normalizeRemoteDir(String dir) {
-    var value = dir.trim();
-    while (value.startsWith('/')) {
-      value = value.substring(1);
+    final segments = <String>[];
+    for (final segment in dir.trim().split('/')) {
+      final value = segment.trim();
+      // 空段来自重复的斜杠，`.` 与 `..` 会跳出同步根目录，一律忽略
+      if (value.isEmpty || value == '.' || value == '..') continue;
+      segments.add(value);
     }
-    while (value.endsWith('/')) {
-      value = value.substring(0, value.length - 1);
+    return segments.isEmpty ? defaultRemoteDir : segments.join('/');
+  }
+
+  /// 规范化服务器地址
+  ///
+  /// 用户经常直接粘贴域名或带尾部斜杠的地址，这里补齐 https:// 并去掉末尾斜杠，
+  /// 避免地址校验通过、拼接出来的请求路径却多出斜杠
+  static String normalizeServerUrl(String url) {
+    var value = url.trim();
+    if (value.isEmpty) return value;
+    if (!value.contains('://')) value = 'https://$value';
+
+    final uri = Uri.tryParse(value);
+    if (uri == null || uri.host.isEmpty) return value;
+
+    var path = uri.path;
+    while (path.endsWith('/')) {
+      path = path.substring(0, path.length - 1);
     }
-    return value.isEmpty ? defaultRemoteDir : value;
+    return uri.replace(path: path).toString();
   }
 }

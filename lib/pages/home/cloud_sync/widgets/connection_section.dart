@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import 'package:quick_write/core/providers/cloud_sync_provider.dart';
 import 'package:quick_write/core/services/cloud_sync/remote_storage.dart';
 import 'package:quick_write/core/services/cloud_sync/s3_client.dart';
+import 'package:quick_write/core/services/cloud_sync/sync_config_store.dart';
 import 'package:quick_write/core/utils/platform_capabilities.dart';
 import 'package:quick_write/pages/home/cloud_sync/widgets/setting_input_tile.dart';
 import 'package:quick_write/pages/home/settings/setting_widgets.dart';
@@ -440,8 +441,10 @@ class _ConnectionSectionState extends State<ConnectionSection> {
 
   /// 测试连接：验证地址与凭据是否可用
   Future<void> _testConnection(BuildContext context) async {
+    final config = _normalizedFormConfig;
+    _syncFormWithConfig(config);
     final result = await context.read<CloudSyncProvider>().testConnection(
-      _formConfig,
+      config,
     );
     if (!context.mounted) return;
     SnackBarService.show(context, result.message);
@@ -449,11 +452,45 @@ class _ConnectionSectionState extends State<ConnectionSection> {
 
   /// 建立连接：保存配置并连接云服务
   Future<void> _connect(BuildContext context) async {
-    final result = await context.read<CloudSyncProvider>().connect(
-      _formConfig,
-    );
+    final config = _normalizedFormConfig;
+    _syncFormWithConfig(config);
+    final result = await context.read<CloudSyncProvider>().connect(config);
     if (!context.mounted) return;
     SnackBarService.show(context, result.message);
+  }
+
+  /// 规范化后的连接参数
+  ///
+  /// 地址补齐协议、去掉末尾斜杠，远端目录去掉多余层级；
+  /// 用户手工粘贴的地址也能直接使用，不会因斜杠拼接出错
+  CloudConnectionConfig get _normalizedFormConfig {
+    final config = _formConfig;
+    return CloudConnectionConfig(
+      kind: config.kind,
+      endpoint: config.kind == RemoteStorageKind.webDav
+          ? SyncConfigStore.normalizeServerUrl(config.endpoint)
+          : config.endpoint.trim(),
+      account: config.account,
+      secret: config.secret,
+      remoteDir: SyncConfigStore.normalizeRemoteDir(config.remoteDir),
+      region: config.region,
+      bucket: config.bucket,
+      pathStyle: config.pathStyle,
+      allowInsecureHttp: config.allowInsecureHttp,
+      ignoreCertificateErrors: config.ignoreCertificateErrors,
+    );
+  }
+
+  /// 把规范化后的地址回填到输入框，让界面与真正生效的配置保持一致
+  void _syncFormWithConfig(CloudConnectionConfig config) {
+    setState(() {
+      if (config.kind == RemoteStorageKind.webDav) {
+        _serverUrlController.text = config.endpoint;
+      } else {
+        _s3EndpointController.text = config.endpoint;
+      }
+      _remoteDirController.text = config.remoteDir;
+    });
   }
 
   /// 断开连接：清除连接状态

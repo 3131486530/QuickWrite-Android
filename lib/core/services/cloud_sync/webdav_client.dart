@@ -65,6 +65,17 @@ class WebDavClient implements RemoteStorage {
     '.snapshots', // 首次同步前的整包快照
   };
 
+  /// 递归列举结果的有效期
+  ///
+  /// 同步过程通常在数分钟内完成，期间远端只会有本端自身的写入；
+  /// 缓存过期时间远小于同步间隔，既能复用结果，也不会读到过旧的数据
+  static const Duration _listCacheTtl = Duration(seconds: 20);
+
+  /// 递归列举允许的最大目录深度
+  ///
+  /// 正常书稿结构的层级很浅，设置上限可以防止服务端返回异常目录时陷入无限展开
+  static const int _maxListDepth = 32;
+
   // ================= 构造与属性 =================
 
   WebDavClient({
@@ -106,6 +117,16 @@ class WebDavClient implements RemoteStorage {
 
   /// 已确认存在的远端目录，避免重复发起创建请求
   final Set<String> _ensuredDirs = {};
+
+  /// 最近一次递归列举的结果
+  ///
+  /// 一次同步会多次列举同一棵目录树（预演、执行、冲突判断），
+  /// 而 PROPFIND 是网盘配额消耗的大头；短时间内复用结果既能提速，
+  /// 也能避免列举本身触发限流
+  List<RemoteSyncFile>? _listCache;
+
+  /// 列举结果的生成时间，用于判断缓存是否过期
+  DateTime? _listCacheAt;
 
   /// 请求节流器
   final _RequestThrottle _throttle = _RequestThrottle(
@@ -171,9 +192,13 @@ class WebDavClient implements RemoteStorage {
 
   /// 清除已创建目录的缓存
   ///
-  /// 远端目录被整体删除后，缓存中的目录已不存在，需要重新创建
+  /// 远端目录被整体删除后，缓存中的目录已不存在，需要重新创建；
+  /// 文件列表同样可能因目录重建而变化，一并失效
   @override
-  void resetDirectoryCache() => _ensuredDirs.clear();
+  void resetDirectoryCache() {
+    _ensuredDirs.clear();
+    _invalidateListCache();
+  }
 
   /// 递归列出远端同步目录下的全部文件
   ///
@@ -181,12 +206,22 @@ class WebDavClient implements RemoteStorage {
   /// 返回结果中的逻辑键为相对于同步根目录的路径，内部目录不会进入结果
   @override
   Future<List<RemoteSyncFile>> listFilesRecursive() async {
+    // 缓存仍有效时直接复用，避免对同一棵目录树重复发起 PROPFIND
+    final cached = _listCache;
+    final cachedAt = _listCacheAt;
+    if (cached != null &&
+        cachedAt != null &&
+        DateTime.now().difference(cachedAt) < _listCacheTtl) {
+      return List<RemoteSyncFile>.of(cached);
+    }
+
     final files = <RemoteSyncFile>[];
-    // 待展开的目录队列，元素为相对于同步根目录的目录路径，空字符串表示根目录
-    final pendingDirs = <String>[''];
+    // 待展开的目录队列，元素为相对于同步根目录的目录路径与当前深度，
+    // 空字符串表示根目录
+    final pendingDirs = <(String, int)>[('', 0)];
 
     while (pendingDirs.isNotEmpty) {
-      final relativeDir = pendingDirs.removeAt(0);
+      final (relativeDir, depth) = pendingDirs.removeAt(0);
       final remotePath = relativeDir.isEmpty
           ? remoteDir
           : '$remoteDir/$relativeDir';
@@ -200,7 +235,9 @@ class WebDavClient implements RemoteStorage {
         if (entry.isDir == true) {
           // 内部目录不参与文件同步
           if (_internalDirNames.contains(name)) continue;
-          pendingDirs.add(relativePath);
+          // 超过深度上限的目录不再展开，防止异常结构导致无限列举
+          if (depth + 1 > _maxListDepth) continue;
+          pendingDirs.add((relativePath, depth + 1));
           continue;
         }
 
@@ -218,7 +255,29 @@ class WebDavClient implements RemoteStorage {
       }
     }
 
+    _listCache = List<RemoteSyncFile>.of(files);
+    _listCacheAt = DateTime.now();
     return files;
+  }
+
+  /// 使递归列举缓存失效
+  ///
+  /// 任何会改变远端文件集合的操作完成后都必须调用，
+  /// 否则后续读取可能拿到写入前的旧列表
+  void _invalidateListCache() {
+    _listCache = null;
+    _listCacheAt = null;
+  }
+
+  /// 丢弃底层连接并在下次请求时重建
+  ///
+  /// 网络中断、代理切换后 Dio 的连接池可能保留了已失效的连接，
+  /// 继续复用会让后续请求持续失败，因此整体丢弃重建
+  void _resetTransport() {
+    _rawClient?.c.close(force: true);
+    _rawClient = null;
+    _ensuredDirs.clear();
+    _invalidateListCache();
   }
 
   /// 释放底层连接资源
@@ -227,6 +286,7 @@ class WebDavClient implements RemoteStorage {
     _rawClient?.c.close(force: true);
     _rawClient = null;
     _ensuredDirs.clear();
+    _invalidateListCache();
   }
 
   // ================= 文件传输 =================
@@ -241,10 +301,28 @@ class WebDavClient implements RemoteStorage {
   /// 从而显著减少请求次数
   @override
   Future<void> uploadFile(String localPath, String remotePath) async {
-    await _ensureParentDirectory(remotePath);
-
     final file = File(localPath);
     final length = await file.length();
+    try {
+      await _uploadFileOnce(file, length, remotePath);
+    } on DioException catch (e) {
+      // 远端目录被其他客户端删除后，本端缓存的“已创建目录”已失效，
+      // 服务端会返回 409；清空目录缓存、重新创建父目录后重试一次
+      if (e.response?.statusCode != 409) rethrow;
+      resetDirectoryCache();
+      await _uploadFileOnce(file, length, remotePath);
+    }
+    _invalidateListCache();
+  }
+
+  /// 执行一次上传尝试
+  Future<void> _uploadFileOnce(
+    File file,
+    int length,
+    String remotePath,
+  ) async {
+    await _ensureParentDirectory(remotePath);
+
     await _request(
       'PUT',
       remotePath,
@@ -269,6 +347,7 @@ class WebDavClient implements RemoteStorage {
       optionsHandler: (options) =>
           options.headers?['content-length'] = bytes.length,
     );
+    _invalidateListCache();
   }
 
   /// 下载远端文件到内存
@@ -424,6 +503,7 @@ class WebDavClient implements RemoteStorage {
       await deleteFile(toPath);
       await _moveOnce(fromPath, toPath, overwrite: overwrite);
     }
+    _invalidateListCache();
   }
 
   /// 删除远端文件
@@ -434,9 +514,13 @@ class WebDavClient implements RemoteStorage {
     try {
       await _request('DELETE', remotePath);
     } on DioException catch (e) {
-      if (e.response?.statusCode == 404) return;
+      if (e.response?.statusCode == 404) {
+        _invalidateListCache();
+        return;
+      }
       rethrow;
     }
+    _invalidateListCache();
   }
 
   /// 发起一次 MOVE 请求
@@ -579,14 +663,38 @@ class WebDavClient implements RemoteStorage {
 
   /// 构造响应错误
   ///
-  /// 便于上层通过状态码统一判断错误类型
+  /// 便于上层通过状态码统一判断错误类型；服务端在响应体里给出具体原因时
+  /// 一并保留，错误提示才能说明“为什么失败”而不只是状态码
   DioException _badResponseError(Response<dynamic> response) {
     return DioException(
       requestOptions: response.requestOptions,
       response: response,
       type: DioExceptionType.badResponse,
-      error: response.statusMessage,
+      error: _serverReasonOf(response) ?? response.statusMessage,
     );
+  }
+
+  /// 提取服务端返回的错误说明
+  ///
+  /// WebDAV 服务端通常在响应体中以 XML 或纯文本说明失败原因
+  /// （如空间不足、目标被锁定），最多保留一小段便于展示的文本
+  String? _serverReasonOf(Response<dynamic> response) {
+    final data = response.data;
+    if (data is! String) return null;
+    if (data.isEmpty) return null;
+
+    // 响应体可能很长（例如整目录列举的结果），只看开头即可
+    final head = data.length > 2000 ? data.substring(0, 2000) : data;
+    final match = RegExp(
+      r'<(?:[a-zA-Z]+:)?(?:message|responsedescription)>([^<]{1,300})<',
+      caseSensitive: false,
+    ).firstMatch(head);
+    final raw = match?.group(1) ?? (head.trimLeft().startsWith('<') ? null : head);
+    if (raw == null) return null;
+
+    final text = raw.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (text.isEmpty) return null;
+    return text.length > 120 ? '${text.substring(0, 120)}…' : text;
   }
 
   // ================= 重试机制 =================
@@ -606,12 +714,39 @@ class WebDavClient implements RemoteStorage {
         attempt++;
         final rateLimited = isRateLimitError(e);
         final maxAttempts = rateLimited ? _maxRateLimitRetries : _maxRetries;
-        if (!_isRetryable(e) || attempt > maxAttempts) rethrow;
+        if (!_isRetryable(e) || attempt > maxAttempts) {
+          // 连接级失败（断网、切换网络、代理抖动）后底层连接池可能已失效，
+          // 继续复用会让后续请求持续失败，此处丢弃连接以便下次重建
+          if (_isTransportFailure(e)) _resetTransport();
+          rethrow;
+        }
 
         // 放宽请求间隔并进入全局冷却，避免并发的其他请求继续冲击已被限流的服务端
         if (rateLimited) _throttle.slowDown();
         _throttle.cooldown(_retryDelayFor(e, attempt));
       }
+    }
+  }
+
+  /// 判断错误是否属于连接级失败
+  ///
+  /// 这类失败与当前连接本身有关（而不是某次请求的内容），
+  /// 重建连接后往往可以立即恢复
+  bool _isTransportFailure(Object error) {
+    if (error is! DioException) return false;
+    if (error.response?.statusCode != null) return false;
+
+    switch (error.type) {
+      case DioExceptionType.connectionTimeout:
+      case DioExceptionType.sendTimeout:
+      case DioExceptionType.receiveTimeout:
+      case DioExceptionType.connectionError:
+        return true;
+      case DioExceptionType.badCertificate:
+      case DioExceptionType.badResponse:
+      case DioExceptionType.cancel:
+      case DioExceptionType.unknown:
+        return false;
     }
   }
 

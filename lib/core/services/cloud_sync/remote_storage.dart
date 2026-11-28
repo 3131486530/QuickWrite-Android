@@ -197,17 +197,17 @@ bool isRemoteRateLimitError(Object error) {
 String describeRemoteError(Object error) {
   if (error is DioException) {
     final status = error.response?.statusCode;
-    if (status == 400) return '服务器拒绝了请求，请检查服务器地址是否指向 WebDAV 根路径';
-    if (status == 401) return '认证失败，请检查账号与密码';
-    if (status == 403) return '没有访问权限，请检查账号权限、密钥或目录访问规则';
-    if (status == 404) return '服务器地址或远端目录不存在';
-    if (status == 405) return '服务器不接受该请求方法，请确认地址指向支持 WebDAV 的目录';
-    if (status == 409) return '远端路径冲突，请检查远端目录下是否存在同名目录';
-    if (status == 412) return '远端文件已被其他设备修改，请先同步后再重试';
-    if (status == 423) return '远端文件被服务器锁定，请稍后再试';
-    if (status == 429 || status == 503) return '服务端请求过于频繁，请稍后再试';
-    if (status == 507 || status == 509) return '云端空间不足，请清理网盘或对象存储后重试';
-    if (status != null) return '服务器返回错误（HTTP $status）';
+    if (status == 400) return _withServerHint('服务器拒绝了请求，请检查服务器地址是否指向 WebDAV 根路径', error);
+    if (status == 401) return _withServerHint('认证失败，请检查账号与密码', error);
+    if (status == 403) return _withServerHint('没有访问权限，请检查账号权限、密钥或目录访问规则', error);
+    if (status == 404) return _withServerHint('服务器地址或远端目录不存在', error);
+    if (status == 405) return _withServerHint('服务器不接受该请求方法，请确认地址指向支持 WebDAV 的目录', error);
+    if (status == 409) return _withServerHint('远端路径冲突，请检查远端目录下是否存在同名目录', error);
+    if (status == 412) return _withServerHint('远端文件已被其他设备修改，请先同步后再重试', error);
+    if (status == 423) return _withServerHint('远端文件被服务器锁定，请稍后再试', error);
+    if (status == 429 || status == 503) return _withServerHint('服务端请求过于频繁，请稍后再试', error);
+    if (status == 507 || status == 509) return _withServerHint('云端空间不足，请清理网盘或对象存储后重试', error);
+    if (status != null) return _withServerHint('服务器返回错误（HTTP $status）', error);
 
     // 未收到响应时按异常类型给出更具体的指引
     switch (error.type) {
@@ -233,4 +233,62 @@ String describeRemoteError(Object error) {
     return '无法连接到服务器，请检查网络与服务器地址';
   }
   return error.toString();
+}
+
+/// 只是把状态码换了个说法的响应文本，展示出来对用户没有帮助
+const Set<String> _genericServerTexts = {
+  'bad request',
+  'conflict',
+  'error',
+  'forbidden',
+  'insufficient storage',
+  'internal server error',
+  'locked',
+  'not found',
+  'ok',
+  'precondition failed',
+  'service unavailable',
+  'too many requests',
+  'unauthorized',
+};
+
+/// 在提示后追加服务端给出的原因
+///
+/// 网盘与自建服务常在响应体里写明失败原因（空间不足、路径被占用、只读挂载等），
+/// 这些信息比状态码更有指向性
+String _withServerHint(String base, DioException error) {
+  final hint = _serverHintOf(error);
+  if (hint == null || base.contains(hint)) return base;
+  return '$base（服务端说明：$hint）';
+}
+
+/// 从异常中提取服务端说明，取不到有用内容时返回 null
+String? _serverHintOf(DioException error) {
+  final raw = _rawServerTextOf(error);
+  if (raw == null) return null;
+
+  var text = raw;
+  // XML 响应优先取 message / responsedescription 节点
+  final match = RegExp(
+    r'<(?:[a-zA-Z]+:)?(?:message|responsedescription)>([^<]{1,200})<',
+    caseSensitive: false,
+  ).firstMatch(text);
+  if (match != null) text = match.group(1) ?? '';
+  text = text.replaceAll(RegExp(r'\s+'), ' ').trim();
+
+  if (text.isEmpty) return null;
+  // 无法解析的结构化内容（如整页 HTML 错误页）直接忽略，避免把标记当成提示
+  if (text.startsWith('<')) return null;
+  if (_genericServerTexts.contains(text.toLowerCase())) return null;
+  return text.length > 80 ? '${text.substring(0, 80)}…' : text;
+}
+
+/// 读取异常携带的原始响应文本
+String? _rawServerTextOf(DioException error) {
+  final custom = error.error;
+  if (custom is String && custom.trim().isNotEmpty) return custom;
+
+  final data = error.response?.data;
+  if (data is String && data.trim().isNotEmpty) return data;
+  return null;
 }
