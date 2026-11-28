@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
+import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:quick_write/core/services/cloud_sync/chapter_archive.dart';
 import 'package:quick_write/core/services/cloud_sync/sync_models.dart';
@@ -75,8 +76,20 @@ class SyncTransfer {
   /// 避免为每个文件额外发起一次属性查询，从而减少请求次数
   Future<void> _uploadPlain(SyncPlanItem item) async {
     final remotePath = _storage.remotePathOf(item.key);
-    final tempPath = '$remotePath$kSyncTempSuffix';
 
+    // 按请求次数计费的服务端（如坚果云）直接覆盖目标路径，
+    // 省掉「临时名 → 移动」的第二次请求，配额消耗减半
+    if (_storage.prefersDirectUpload) {
+      try {
+        await _storage.uploadFile(item.local!.localPath, remotePath);
+      } catch (e) {
+        await _discardPartialRemote(remotePath, e);
+        rethrow;
+      }
+      return;
+    }
+
+    final tempPath = '$remotePath$kSyncTempSuffix';
     await _storage.uploadFile(item.local!.localPath, tempPath);
     await _storage.moveFile(tempPath, remotePath);
   }
@@ -171,6 +184,18 @@ class SyncTransfer {
     final bytes = await packArchive(manifest, sources);
 
     final remotePath = _storage.remotePathOf(item.key);
+
+    // 同上：计费按请求数计算的服务端直传覆盖，避免多一次移动请求
+    if (_storage.prefersDirectUpload) {
+      try {
+        await _storage.uploadBytes(bytes, remotePath);
+      } catch (e) {
+        await _discardPartialRemote(remotePath, e);
+        rethrow;
+      }
+      return;
+    }
+
     await _storage.uploadBytes(bytes, '$remotePath$kSyncTempSuffix');
     await _storage.moveFile('$remotePath$kSyncTempSuffix', remotePath);
   }
@@ -193,6 +218,21 @@ class SyncTransfer {
 
     _recordArchiveBaseline(item.key, item.remote!, content, result.written);
     return result.copies;
+  }
+
+  /// 直传中断后清理远端可能残缺的文件
+  ///
+  /// 覆盖写是原地进行的，连接中断可能留下半个文件；若不清理，
+  /// 下次同步会把残缺内容当成完整版本下载，造成本地数据损坏。
+  /// 只在「连响应都没拿到」的中断下清理：限流、权限不足等失败通常发生在
+  /// 写入之前，此时远端仍是完整内容，不能删
+  Future<void> _discardPartialRemote(String remotePath, Object error) async {
+    if (error is! DioException || error.response != null) return;
+    try {
+      await _storage.deleteFile(remotePath);
+    } catch (e) {
+      debugPrint('清理远端残缺文件失败: $remotePath $e');
+    }
   }
 
   /// 处理章节归档包的两端同时修改
@@ -357,10 +397,15 @@ class SyncTransfer {
       await targetDir.create(recursive: true);
     }
 
-    // 清理可能残留的临时文件
+    // 上次中断留下的临时文件若仍小于远端大小且时间不远，保留下来续传，
+    // 避免弱网下每次重试都从头下载消耗流量；其余情况一律清理，防止残留被误用
     final tempFile = File('$targetPath$kSyncTempSuffix');
     if (await tempFile.exists()) {
-      await tempFile.delete();
+      final stat = await tempFile.stat();
+      final recent =
+          DateTime.now().difference(stat.modified) < const Duration(minutes: 10);
+      final resumable = recent && remote.size > 0 && stat.size < remote.size;
+      if (!resumable) await tempFile.delete();
     }
 
     await _storage.downloadFile(_storage.remotePathOf(remote.key), tempFile.path);

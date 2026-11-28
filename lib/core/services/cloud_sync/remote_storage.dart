@@ -182,6 +182,13 @@ abstract class RemoteStorage {
   /// 判断远端文件是否存在
   Future<bool> exists(String key);
 
+  /// 是否直接覆盖写入目标路径
+  ///
+  /// 默认先写临时文件名再移动，保证目标文件不会出现半截内容；
+  /// 但一次上传要占用两个请求，对按请求次数计费的网盘（如坚果云）
+  /// 代价翻倍，这类服务端可以改为直传，省下移动请求
+  bool get prefersDirectUpload => false;
+
   /// 释放底层连接资源
   void dispose();
 }
@@ -193,10 +200,55 @@ bool isRemoteRateLimitError(Object error) {
   return status == 429 || status == 503;
 }
 
+/// 云端配额耗尽时服务端的说明文字
+///
+/// 坚果云等网盘在流量或容量超出套餐上限时返回 403，
+/// 并在响应体中给出类似 "The traffic limit has been exceeded" 的说明；
+/// 短时频率限制同为 503，但重试即可恢复，因此不在此列
+const List<String> _quotaTexts = [
+  'insufficient storage',
+  'insufficient_quota',
+  'quota',
+  'traffic limit',
+  'storage limit',
+  '超过使用限制',
+  '超出限制',
+  '配额',
+  '空间不足',
+  '流量',
+];
+
+/// 判断异常是否由云端配额（流量、容量）耗尽引起
+///
+/// 这类失败不会因为重试而恢复，必须等配额重置或升级套餐，
+/// 因此不能按临时错误反复重试，否则只会白白消耗剩余配额；
+/// 频率限制（429/503）不属于配额耗尽，交给重试机制处理
+bool isRemoteQuotaExceeded(Object error) {
+  if (error is! DioException) return false;
+
+  final status = error.response?.statusCode;
+  if (status == 507 || status == 509) return true;
+  if (status != 403) return false;
+
+  final raw = _rawServerTextOf(error);
+  if (raw == null) return false;
+  final text = raw.toLowerCase();
+  return _quotaTexts.any(text.contains);
+}
+
 /// 将远端通信过程中的异常转换为便于用户理解的提示文本
 String describeRemoteError(Object error) {
   if (error is DioException) {
     final status = error.response?.statusCode;
+
+    // 配额耗尽与普通权限错误同为 403，必须优先识别，否则用户会误以为账号没权限
+    if (isRemoteQuotaExceeded(error)) {
+      return _withServerHint(
+        '云端配额已用完（流量或容量超出套餐上限），请等待配额重置或升级套餐后再同步',
+        error,
+      );
+    }
+
     if (status == 400) return _withServerHint('服务器拒绝了请求，请检查服务器地址是否指向 WebDAV 根路径', error);
     if (status == 401) return _withServerHint('认证失败，请检查账号与密码', error);
     if (status == 403) return _withServerHint('没有访问权限，请检查账号权限、密钥或目录访问规则', error);

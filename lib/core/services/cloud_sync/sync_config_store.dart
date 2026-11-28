@@ -298,7 +298,9 @@ class SyncConfigStore {
   /// 规范化服务器地址
   ///
   /// 用户经常直接粘贴域名或带尾部斜杠的地址，这里补齐 https:// 并去掉末尾斜杠，
-  /// 避免地址校验通过、拼接出来的请求路径却多出斜杠
+  /// 避免地址校验通过、拼接出来的请求路径却多出斜杠；
+  /// 坚果云的 WebDAV 入口固定为 dav.jianguoyun.com/dav，只填了主域名或漏了
+  /// /dav 时一并纠正，否则后续所有请求都会落到 404
   static String normalizeServerUrl(String url) {
     var value = url.trim();
     if (value.isEmpty) return value;
@@ -307,10 +309,15 @@ class SyncConfigStore {
     final uri = Uri.tryParse(value);
     if (uri == null || uri.host.isEmpty) return value;
 
+    var host = uri.host;
+    if (host.toLowerCase() == kJianguoyunHost) host = 'dav.$kJianguoyunHost';
+
     var path = uri.path;
     while (path.endsWith('/')) {
       path = path.substring(0, path.length - 1);
     }
-    return uri.replace(path: path).toString();
+    if (isJianguoyunHost(host) && path.isEmpty) path = '/dav';
+
+    return uri.replace(host: host, path: path).toString();
   }
 }

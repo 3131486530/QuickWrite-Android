@@ -58,6 +58,10 @@ class S3Client implements RemoteStorage {
   /// 服务端点（已去除结尾斜杠）
   final Uri _baseUri;
 
+  /// 对象存储按流量计费、不限制请求次数，保留「先写临时名再复制」的原子写入
+  @override
+  bool get prefersDirectUpload => false;
+
   /// 存储桶名称
   final String bucket;
 

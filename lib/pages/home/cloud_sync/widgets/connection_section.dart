@@ -364,7 +364,7 @@ class _ConnectionSectionState extends State<ConnectionSection> {
       icon: Icons.info_outline,
       title: '识别结果：${config.platformLabel}',
       subtitle: packsChapters
-          ? '该平台限制请求次数，章节将每 100 章打包为一个文件上传'
+          ? '该平台限制请求次数，章节每 100 章打包为一个文件，并直接覆盖写入以减少请求'
           : '章节将逐章上传，每次同步只传输改动过的章节',
     );
   }

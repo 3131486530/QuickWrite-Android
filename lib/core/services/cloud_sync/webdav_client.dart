@@ -49,11 +49,30 @@ class WebDavClient implements RemoteStorage {
   /// 请求间隔放宽后的上限
   static const Duration _maxRequestInterval = Duration(seconds: 5);
 
+  /// 坚果云的起始请求间隔
+  ///
+  /// 坚果云对每 30 分钟的 WebDAV 请求次数有硬上限（免费账号约 600 次），
+  /// 按 800ms 的间隔发起请求才不会在长同步中撞上线
+  static const Duration _jianguoyunRequestInterval =
+      Duration(milliseconds: 800);
+
+  /// 按服务端选择起始请求间隔
+  static Duration _initialIntervalFor(String serverUrl) =>
+      isJianguoyunHost(serverUrl)
+      ? _jianguoyunRequestInterval
+      : _minRequestInterval;
+
   /// 服务端限流时的退避基数
   static const Duration _rateLimitBaseDelay = Duration(seconds: 5);
 
   /// 单次重试等待的上限
   static const Duration _maxRetryDelay = Duration(seconds: 30);
+
+  /// 坚果云单次重试等待的上限
+  ///
+  /// 坚果云的频率限制按分钟级窗口恢复，短等反复试探只会把冷却窗口不断推后，
+  /// 因此允许更长的单次等待
+  static const Duration _jianguoyunMaxRetryDelay = Duration(seconds: 60);
 
   /// 普通临时错误的基础等待时间
   static const Duration _retryBaseDelay = Duration(milliseconds: 800);
@@ -112,6 +131,14 @@ class WebDavClient implements RemoteStorage {
   /// 开启后接受任意证书，仅建议在自有服务器上使用
   final bool ignoreCertificateErrors;
 
+  /// 是否直接覆盖写入目标路径
+  ///
+  /// 坚果云按请求次数计费（每月有明确上限），「先写临时名再移动」会让
+  /// 每次上传占用两个请求，章节多时配额翻倍消耗；因此对坚果云改为直传，
+  /// 目标文件被覆盖时由服务端保证写入完整性
+  @override
+  bool get prefersDirectUpload => isJianguoyunHost(serverUrl);
+
   /// 底层 WebDAV 客户端（首次使用时创建）
   webdav.Client? _rawClient;
 
@@ -129,8 +156,10 @@ class WebDavClient implements RemoteStorage {
   DateTime? _listCacheAt;
 
   /// 请求节流器
-  final _RequestThrottle _throttle = _RequestThrottle(
-    initialInterval: _minRequestInterval,
+  ///
+  /// 延迟创建：不同服务端的配额宽严差别很大，需要按实际地址选择起始间隔
+  late final _RequestThrottle _throttle = _RequestThrottle(
+    initialInterval: _initialIntervalFor(serverUrl),
     maxInterval: _maxRequestInterval,
   );
 
@@ -139,7 +168,7 @@ class WebDavClient implements RemoteStorage {
 
   // ================= 连接操作 =================
 
-  /// 校验服务器地址是否合法
+  /// 判断服务器地址是否合法
   ///
   /// 要求地址格式正确；默认只接受 HTTPS，[allowHttp] 为 true 时同时接受 HTTP
   static bool isValidServerUrl(String url, {bool allowHttp = false}) {
@@ -481,9 +510,59 @@ class WebDavClient implements RemoteStorage {
   }
 
   /// 下载远端文件到本地指定路径
+  ///
+  /// 目标文件已有部分内容时带上 Range 续传剩余部分，避免弱网下大文件
+  /// 反复从头下载白白消耗流量；服务端不支持续传而返回完整内容时整份覆盖写入
   @override
-  Future<void> downloadFile(String remotePath, String localPath) =>
-      _withRetry(() => _client.read2File(remotePath, localPath));
+  Future<void> downloadFile(String remotePath, String localPath) async {
+    final target = File(localPath);
+    var received = await target.exists() ? await target.length() : 0;
+
+    await _withRetry(() async {
+      final response = await _client.c.req<dynamic>(
+        _client,
+        'GET',
+        remotePath,
+        optionsHandler: (options) {
+          options.responseType = ResponseType.bytes;
+          if (received > 0) options.headers['range'] = 'bytes=$received-';
+        },
+      );
+
+      final status = response.statusCode ?? 0;
+      // 本地残留内容已经无法接续（远端文件变小或已更换），删掉后整份重下
+      if (status == 416) {
+        if (await target.exists()) await target.delete();
+        received = 0;
+        throw _badResponseError(response);
+      }
+      if (status != 200 && status != 206) throw _badResponseError(response);
+
+      final data = response.data;
+      if (data is! List<int>) {
+        throw DioException(
+          requestOptions: response.requestOptions,
+          response: response,
+          type: DioExceptionType.badResponse,
+          error: '服务端未返回文件内容',
+        );
+      }
+
+      // 服务端支持续传时追加剩余部分，返回完整内容时从头覆盖
+      final append = status == 206 && received > 0;
+      final raf = await target.open(
+        mode: append ? FileMode.append : FileMode.write,
+      );
+      try {
+        await raf.writeFrom(data);
+        await raf.flush();
+      } finally {
+        await raf.close();
+        // 记录已落盘的字节数，本次中断后重试可从断点继续
+        received = await target.length();
+      }
+    });
+  }
 
   /// 移动远端文件
   ///
@@ -714,7 +793,10 @@ class WebDavClient implements RemoteStorage {
         attempt++;
         final rateLimited = isRateLimitError(e);
         final maxAttempts = rateLimited ? _maxRateLimitRetries : _maxRetries;
-        if (!_isRetryable(e) || attempt > maxAttempts) {
+        // 配额耗尽重试也不会成功，继续重试只会白白消耗剩余配额
+        if (!_isRetryable(e) ||
+            isRemoteQuotaExceeded(e) ||
+            attempt > maxAttempts) {
           // 连接级失败（断网、切换网络、代理抖动）后底层连接池可能已失效，
           // 继续复用会让后续请求持续失败，此处丢弃连接以便下次重建
           if (_isTransportFailure(e)) _resetTransport();
@@ -766,10 +848,14 @@ class WebDavClient implements RemoteStorage {
   ///
   /// 服务端限流时采用指数退避并附加随机抖动，避免多个并发请求同时重试
   Duration _retryDelayFor(Object error, int attempt) {
+    final maxWait = isJianguoyunHost(serverUrl)
+        ? _jianguoyunMaxRetryDelay
+        : _maxRetryDelay;
+
     // 服务端给出 Retry-After 时按服务端要求等待，避免无效重试继续冲击配额
     final serverDelay = _retryAfterOf(error);
     if (serverDelay != null) {
-      return serverDelay > _maxRetryDelay ? _maxRetryDelay : serverDelay;
+      return serverDelay > maxWait ? maxWait : serverDelay;
     }
 
     if (!isRateLimitError(error)) {
@@ -777,7 +863,7 @@ class WebDavClient implements RemoteStorage {
     }
 
     final exponential = _rateLimitBaseDelay * (1 << (attempt - 1));
-    final capped = exponential > _maxRetryDelay ? _maxRetryDelay : exponential;
+    final capped = exponential > maxWait ? maxWait : exponential;
     return capped + Duration(milliseconds: _random.nextInt(500));
   }
 
