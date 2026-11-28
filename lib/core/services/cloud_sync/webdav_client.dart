@@ -745,6 +745,7 @@ class WebDavClient implements RemoteStorage {
       case DioExceptionType.badCertificate:
       case DioExceptionType.badResponse:
       case DioExceptionType.cancel:
+      case DioExceptionType.transformTimeout:
       case DioExceptionType.unknown:
         return false;
     }
